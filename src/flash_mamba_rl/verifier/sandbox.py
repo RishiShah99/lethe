@@ -1,0 +1,227 @@
+"""Subprocess sandbox: run a kernel callable in an isolated child process.
+
+Isolates segfaults, OOM kills, and CUDA IMA faults from the parent process.
+Input and output are marshalled via pickle over stdin/stdout.
+
+Memory limit enforcement:
+- POSIX: ``resource.setrlimit(RLIMIT_AS, ...)`` applied in the child process
+  before execution via the *preexec_fn* mechanism.
+- Windows: No in-process virtual-address limit is available via the standard
+  library.  The memory_limit_mb parameter is accepted for API consistency but
+  not enforced; a warning is written to stderr in the child script.
+"""
+
+from __future__ import annotations
+
+import pickle
+import subprocess
+import sys
+import textwrap
+from dataclasses import dataclass
+from typing import Any
+
+from flash_mamba_rl.verifier.compile import ErrorClass
+
+# Return codes we care about
+_RC_TIMEOUT = -998  # synthetic sentinel
+_RC_OOM = -999  # synthetic sentinel
+
+# POSIX segfault return code
+_RC_SEGFAULT_POSIX = -11
+
+# Windows access violation exit code (as signed 32-bit: 0xC0000005 → -1073741819)
+_RC_ACCESS_VIOLATION_WIN = -1073741819
+# Also check unsigned representation that some shells report
+_RC_ACCESS_VIOLATION_WIN_U = 0xC0000005
+
+_CUDA_IMA_PATTERNS = [
+    "an illegal memory access",
+    "CUDA error: device-side assert triggered",
+    "cudaErrorIllegalAddress",
+    "CUDA_ERROR_ILLEGAL_ADDRESS",
+]
+
+_OOM_PATTERNS = [
+    "out of memory",
+    "CUDA out of memory",
+    "ResourceExhausted",
+    "std::bad_alloc",
+    "MemoryError",
+]
+
+# Child worker script template.
+# The child reads a pickled (module_path, callable_name, inputs) tuple from
+# stdin, calls the function, and writes the pickled result to stdout.
+_WORKER_SCRIPT = textwrap.dedent(
+    """\
+    import sys, pickle, importlib, os, platform
+
+    # --- Memory limit (POSIX only) ---
+    limit_mb = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    if limit_mb > 0:
+        if platform.system() != "Windows":
+            try:
+                import resource
+                limit_bytes = limit_mb * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+            except Exception as e:
+                print(f"[sandbox] WARNING: could not set memory limit: {e}", file=sys.stderr)
+        else:
+            print(
+                "[sandbox] WARNING: memory_limit_mb not enforced on Windows "
+                f"(requested {limit_mb} MB)",
+                file=sys.stderr,
+            )
+
+    # --- Read task ---
+    raw = sys.stdin.buffer.read()
+    module_path, callable_name, inputs = pickle.loads(raw)
+
+    # Import the module containing the callable
+    if module_path.endswith(".py"):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_sandbox_mod", module_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    else:
+        mod = importlib.import_module(module_path)
+
+    fn = getattr(mod, callable_name)
+    result = fn(*inputs)
+
+    # Write result
+    sys.stdout.buffer.write(pickle.dumps(result))
+    sys.stdout.buffer.flush()
+    """
+)
+
+
+@dataclass(frozen=True)
+class SubprocessResult:
+    success: bool
+    output: Any
+    error_class: ErrorClass
+    stderr: str
+    exit_code: int
+
+
+def _classify_subprocess_failure(stderr: str, rc: int) -> ErrorClass:
+    """Map return code + stderr to an ErrorClass."""
+    if rc == _RC_TIMEOUT:
+        return ErrorClass.TIMEOUT
+    if rc == _RC_OOM:
+        return ErrorClass.OOM
+    if rc in (_RC_SEGFAULT_POSIX, _RC_ACCESS_VIOLATION_WIN, _RC_ACCESS_VIOLATION_WIN_U):
+        return ErrorClass.OTHER  # segfault — "OTHER" since ErrorClass has no SEGFAULT variant
+
+    stderr_lower = stderr.lower()
+    if any(p.lower() in stderr_lower for p in _OOM_PATTERNS):
+        return ErrorClass.OOM
+    if any(p.lower() in stderr_lower for p in _CUDA_IMA_PATTERNS):
+        return ErrorClass.OTHER  # CUDA IMA
+
+    # Non-zero but unclassified
+    return ErrorClass.OTHER
+
+
+def run_in_subprocess(
+    callable_module: str,
+    callable_name: str,
+    inputs: tuple[Any, ...],
+    *,
+    timeout_s: float = 60.0,
+    memory_limit_mb: int = 8192,
+) -> SubprocessResult:
+    """Run ``<callable_module>.<callable_name>(*inputs)`` in an isolated subprocess.
+
+    Parameters
+    ----------
+    callable_module:
+        Dotted module path (e.g., ``"flash_mamba_rl.kernels.some_op"``) OR an
+        absolute path to a ``.py`` file for ad-hoc kernel sources.
+    callable_name:
+        Name of the callable inside the module.
+    inputs:
+        Positional arguments to pass to the callable (must be picklable).
+    timeout_s:
+        Wall-clock timeout in seconds.
+    memory_limit_mb:
+        Virtual-address limit for the child process (POSIX only; ignored on
+        Windows — see module docstring).
+
+    Returns
+    -------
+    SubprocessResult
+        Frozen dataclass with outcome and marshalled output (if successful).
+    """
+    import tempfile
+    from pathlib import Path
+
+    # Write the worker script to a temp file
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".py",
+        prefix="fmrl_sandbox_",
+        delete=False,
+        encoding="utf-8",
+    ) as f:
+        f.write(_WORKER_SCRIPT)
+        worker_path = Path(f.name)
+
+    task_bytes = pickle.dumps((callable_module, callable_name, inputs))
+
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(worker_path), str(memory_limit_mb)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = proc.communicate(input=task_bytes, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return SubprocessResult(
+                success=False,
+                output=None,
+                error_class=ErrorClass.TIMEOUT,
+                stderr="",
+                exit_code=_RC_TIMEOUT,
+            )
+    finally:
+        worker_path.unlink(missing_ok=True)
+
+    rc = proc.returncode
+    stderr_text = stderr_bytes.decode(errors="replace")
+
+    if rc != 0:
+        error_class = _classify_subprocess_failure(stderr_text, rc)
+        return SubprocessResult(
+            success=False,
+            output=None,
+            error_class=error_class,
+            stderr=stderr_text,
+            exit_code=rc,
+        )
+
+    # Attempt to unpickle the result
+    try:
+        output = pickle.loads(stdout_bytes)
+    except Exception as exc:
+        return SubprocessResult(
+            success=False,
+            output=None,
+            error_class=ErrorClass.OTHER,
+            stderr=f"unpickle error: {exc}",
+            exit_code=rc,
+        )
+
+    return SubprocessResult(
+        success=True,
+        output=output,
+        error_class=ErrorClass.OK,
+        stderr=stderr_text,
+        exit_code=rc,
+    )
