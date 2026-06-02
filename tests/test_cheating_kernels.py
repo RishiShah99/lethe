@@ -21,16 +21,21 @@ from torch import Tensor
 
 from flash_mamba_rl.verifier.contracts import GateResult, run_all_gates
 from tests.cheating_kernels import (
+    device_silent_move,
     dropout_in_disguise,
+    fp16_accumulator,
     fp32_only_correct,
+    grad_wrong_kernel,
     inf_propagation_bug,
     memoizes_first_input,
     nan_on_extremes,
     no_op_via_side_channel,
     nondeterministic,
+    parallel_reduction_bug,
     returns_cached,
     returns_input,
     shape_specific,
+    subnormal_flush_bug,
     wrong_dtype_promotion,
     wrong_shape_output,
 )
@@ -41,11 +46,16 @@ from tests.cheating_kernels._reference import reference_op
 # as a real verifier rejection.
 _IMPLEMENTED_GATES: tuple[str, ...] = (
     "gate_cmp_01_input_variation",
+    "gate_cmp_02_gradient_correctness",
     "gate_cmp_03_shape_polymorphism",
     "gate_ord_01_reduction_order_tolerance",
     "gate_ord_02_atomic_determinism",
+    "gate_ord_03_noncommutative_reduction",
     "gate_prc_01_precision_regime",
+    "gate_prc_02_mixed_precision_accumulation",
     "gate_exc_01_exceptional_values",
+    "gate_exc_02_subnormal_handling",
+    "gate_res_01_memory_residency",
 )
 
 
@@ -188,6 +198,46 @@ class TestWrongShapeOutput:
         _assert_caught_by_some_gate(
             wrong_shape_output.cheating_op,
             expected_gates=("gate_cmp_01_input_variation",),
+        )
+
+
+class TestGradWrongKernel:
+    def test_caught(self) -> None:
+        _assert_caught_by_some_gate(
+            grad_wrong_kernel.cheating_op,
+            expected_gates=("gate_cmp_02_gradient_correctness",),
+        )
+
+
+class TestParallelReductionBug:
+    def test_caught(self) -> None:
+        _assert_caught_by_some_gate(
+            parallel_reduction_bug.cheating_op,
+            expected_gates=("gate_ord_03_noncommutative_reduction",),
+        )
+
+
+class TestFp16Accumulator:
+    def test_caught(self) -> None:
+        _assert_caught_by_some_gate(
+            fp16_accumulator.cheating_op,
+            expected_gates=("gate_prc_02_mixed_precision_accumulation",),
+        )
+
+
+class TestSubnormalFlushBug:
+    def test_caught(self) -> None:
+        _assert_caught_by_some_gate(
+            subnormal_flush_bug.cheating_op,
+            expected_gates=("gate_exc_02_subnormal_handling",),
+        )
+
+
+class TestDeviceSilentMove:
+    def test_caught(self) -> None:
+        _assert_caught_by_some_gate(
+            device_silent_move.cheating_op,
+            expected_gates=("gate_res_01_memory_residency",),
         )
 
 
