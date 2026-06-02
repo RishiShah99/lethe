@@ -338,65 +338,282 @@ def gate_exc_01_exceptional_values(
 # ---------------------------------------------------------------------------
 
 
-def gate_cmp_02_gradient_correctness(  # TODO: cross-check name + spec against arXiv 2604.22032
+def gate_cmp_02_gradient_correctness(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    shape: tuple[int, ...] = (2, 8, 4),
+    eps: float = 1e-6,
+    atol: float = 1e-4,
+    rtol: float = 1e-3,
     **kwargs: Any,
 ) -> GateResult:
-    """CMP-02: Gradient correctness — autograd gradients must match reference.
+    """CMP-02: Gradient correctness — candidate's autograd gradients must agree
+    with finite-difference approximations of its own forward pass.
 
-    Verifies that ``torch.autograd.gradcheck`` passes for the candidate kernel,
-    ensuring backward-pass correctness within a tolerance derived from finite
-    differences.
+    Self-consistency check via ``torch.autograd.gradcheck`` on an FP64 input.
+    A kernel that returns correct values but breaks the gradient graph (e.g.,
+    ``.detach()`` on an intermediate, in-place operation on a non-leaf tensor)
+    is rejected. Combined with CMP-01's value-correctness, this gives
+    gradient agreement with the reference by transitivity.
     """
-    raise NotImplementedError("gate_cmp_02_gradient_correctness not yet implemented")
+    t = torch.randn(shape, dtype=torch.float64, requires_grad=True)
+    try:
+        ok = torch.autograd.gradcheck(
+            candidate,
+            (t,),
+            eps=eps,
+            atol=atol,
+            rtol=rtol,
+            check_undefined_grad=False,
+            raise_exception=False,
+        )
+    except Exception as exc:
+        return GateResult(
+            passed=False,
+            reason=f"gradcheck raised: {exc}",
+            details={"eps": eps, "atol": atol, "rtol": rtol},
+        )
+    return GateResult(
+        passed=bool(ok),
+        reason="gradcheck passed" if ok else "gradcheck reported mismatch",
+        details={"eps": eps, "atol": atol, "rtol": rtol},
+    )
 
 
-def gate_ord_03_noncommutative_reduction(  # TODO: cross-check name + spec against arXiv 2604.22032
+def gate_ord_03_noncommutative_reduction(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    shape: tuple[int, ...] = (4, 64, 32),
+    dtype: torch.dtype = torch.float32,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-03: Non-commutative reduction — operations that are not commutative
-    (e.g., sequential scan / prefix-sum) must produce outputs that match the
-    reference *exactly*, regardless of parallelisation strategy.
+    """ORD-03: Non-commutative reduction — outputs must be bitwise-identical to
+    reference on inputs designed to expose order-dependent reductions.
+
+    Floating-point addition is not associative; a kernel that reduces in a
+    different order than the reference (parallel tree vs left-to-right, or
+    reverse vs forward) produces ULP-level differences. The reference defines
+    the canonical order for scan / prefix-sum / accumulator ops, and the
+    candidate must match it byte-for-byte.
+
+    The input is an alternating large-positive / tiny / large-negative
+    pattern where reduction order materially changes the bit pattern.
     """
-    raise NotImplementedError("gate_ord_03_noncommutative_reduction not yet implemented")
+    pattern = torch.tensor([1.0, 1e-7, -1.0, 1e-7], dtype=dtype)
+    n_elements = 1
+    for d in shape:
+        n_elements *= d
+    repeats = (n_elements + pattern.numel() - 1) // pattern.numel()
+    t = pattern.repeat(repeats)[:n_elements].reshape(shape)
+
+    try:
+        out_ref = reference(t)
+        out_cand = candidate(t)
+    except Exception as exc:
+        return GateResult(
+            passed=False,
+            reason=f"exception during execution: {exc}",
+            details={},
+        )
+
+    if out_cand.shape != out_ref.shape:
+        return GateResult(
+            passed=False,
+            reason=f"shape mismatch {out_cand.shape} vs {out_ref.shape}",
+            details={},
+        )
+
+    if not torch.equal(out_ref, out_cand):
+        max_err = (out_ref.float() - out_cand.float()).abs().max().item()
+        return GateResult(
+            passed=False,
+            reason=f"not bitwise-identical: max_err={max_err:.3e} (reduction order differs)",
+            details={"max_err": max_err},
+        )
+    return GateResult(
+        passed=True,
+        reason="bitwise-identical to reference on adversarial reduction input",
+        details={},
+    )
 
 
-def gate_prc_02_mixed_precision_accumulation(  # TODO: cross-check name + spec against arXiv 2604.22032
+def gate_prc_02_mixed_precision_accumulation(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    shape: tuple[int, ...] = (2, 32, 1024),
+    atol: float = 2e-2,
     **kwargs: Any,
 ) -> GateResult:
-    """PRC-02: Mixed-precision accumulation — verify that intermediate
-    accumulation in a higher precision (e.g., FP32 accumulator for FP16 input)
-    yields outputs within the expected tolerance of the full-precision reference.
+    """PRC-02: Mixed-precision accumulation — FP16 inputs must produce outputs
+    within FP16-ULP of the FP32 reference, implying an FP32 internal accumulator.
+
+    A kernel that naively accumulates in FP16 across a long reduction loses
+    precision proportionally to ``sqrt(N) * scale``. The default shape uses
+    a 1024-element reduction dimension to make the gap between FP16-only
+    accumulation and FP32-accumulating implementations visible.
+
+    Comparing the FP16 candidate output (upcast to FP32) against the FP32
+    reference output exposes the missing FP32 accumulator.
     """
-    raise NotImplementedError("gate_prc_02_mixed_precision_accumulation not yet implemented")
+    t_fp32 = torch.randn(shape, dtype=torch.float32)
+    t_fp16 = t_fp32.to(torch.float16)
+    try:
+        out_ref = reference(t_fp32)
+        out_cand = candidate(t_fp16)
+    except Exception as exc:
+        return GateResult(
+            passed=False,
+            reason=f"exception during execution: {exc}",
+            details={"atol": atol},
+        )
+
+    if out_cand.shape != out_ref.shape:
+        return GateResult(
+            passed=False,
+            reason=f"shape mismatch {out_cand.shape} vs {out_ref.shape}",
+            details={"atol": atol},
+        )
+
+    diff = (out_cand.float() - out_ref.float()).abs()
+    max_err = diff.max().item()
+    if max_err > atol:
+        return GateResult(
+            passed=False,
+            reason=(
+                f"max_err={max_err:.3e} > atol={atol} — likely missing FP32 accumulator"
+            ),
+            details={"max_err": max_err, "atol": atol},
+        )
+    return GateResult(
+        passed=True,
+        reason=f"max_err={max_err:.3e} within FP16 tolerance — FP32 accumulator inferred",
+        details={"max_err": max_err, "atol": atol},
+    )
 
 
-def gate_exc_02_subnormal_handling(  # TODO: cross-check name + spec against arXiv 2604.22032
+def gate_exc_02_subnormal_handling(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    shape: tuple[int, ...] = (4, 64, 32),
+    dtype: torch.dtype = torch.float32,
+    atol: float = 1e-30,
     **kwargs: Any,
 ) -> GateResult:
-    """EXC-02: Subnormal handling — inputs in the subnormal (denormal) range
-    must be handled consistently with the reference; flush-to-zero behaviour
-    must match if the reference also flushes.
+    """EXC-02: Subnormal handling — the candidate's flush-to-zero behaviour
+    on subnormal inputs must match the reference.
+
+    Generates inputs in the subnormal range for the given dtype (e.g.,
+    ``~1e-40`` for FP32, below ``~1.18e-38``). Compares the zero-mask
+    between candidate and reference. If the reference preserves subnormals,
+    the candidate must too; if the reference flushes, the candidate must
+    also flush. Where both produce non-zero outputs, values must agree.
     """
-    raise NotImplementedError("gate_exc_02_subnormal_handling not yet implemented")
+    if dtype == torch.float32:
+        subnormal_min = 1e-40
+    elif dtype == torch.float16:
+        subnormal_min = 1e-7
+    else:  # bfloat16
+        subnormal_min = 1e-39
+
+    t = torch.full(shape, subnormal_min, dtype=dtype)
+    flat = t.view(-1)
+    flat[::3] = -subnormal_min
+    flat[::7] = 0.0
+
+    try:
+        out_ref = reference(t)
+        out_cand = candidate(t)
+    except Exception as exc:
+        return GateResult(
+            passed=False,
+            reason=f"exception during execution: {exc}",
+            details={},
+        )
+
+    if out_cand.shape != out_ref.shape:
+        return GateResult(
+            passed=False,
+            reason=f"shape mismatch {out_cand.shape} vs {out_ref.shape}",
+            details={},
+        )
+
+    zero_ref = out_ref == 0
+    zero_cand = out_cand == 0
+    if not torch.equal(zero_ref, zero_cand):
+        return GateResult(
+            passed=False,
+            reason="flush-to-zero behaviour disagrees with reference",
+            details={
+                "ref_zeros": int(zero_ref.sum().item()),
+                "cand_zeros": int(zero_cand.sum().item()),
+            },
+        )
+
+    nonzero_mask = ~zero_ref
+    if nonzero_mask.any():
+        diff = (out_ref[nonzero_mask].float() - out_cand[nonzero_mask].float()).abs()
+        max_err = diff.max().item()
+        if max_err > atol:
+            return GateResult(
+                passed=False,
+                reason=f"subnormal non-zero values disagree: max_err={max_err:.3e}",
+                details={"max_err": max_err, "atol": atol},
+            )
+
+    return GateResult(
+        passed=True,
+        reason="subnormal handling matches reference",
+        details={},
+    )
 
 
-def gate_res_01_memory_residency(  # TODO: cross-check name + spec against arXiv 2604.22032
+def gate_res_01_memory_residency(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    shape: tuple[int, ...] = (4, 64, 32),
+    dtype: torch.dtype = torch.float32,
     **kwargs: Any,
 ) -> GateResult:
-    """RES-01: Memory residency / no host roundtrip — outputs must remain on the
-    same device as the inputs (no silent CPU↔GPU copies that inflate latency).
+    """RES-01: Memory residency — output device must match input device.
+
+    A kernel that silently moves data through a different device (CPU↔GPU,
+    meta, or quantisation backends) hides latency. Tests every available
+    device (CPU always; CUDA if present) and checks that ``out.device.type``
+    matches ``input.device.type``.
     """
-    raise NotImplementedError("gate_res_01_memory_residency not yet implemented")
+    devices: list[torch.device] = [torch.device("cpu")]
+    if torch.cuda.is_available():
+        devices.append(torch.device("cuda"))
+
+    failures: list[str] = []
+    for device in devices:
+        t = torch.randn(shape, dtype=dtype, device=device)
+        try:
+            out = candidate(t)
+        except Exception as exc:
+            failures.append(f"device={device.type}: exception — {exc}")
+            continue
+        if out.device.type != t.device.type:
+            failures.append(
+                f"input device={t.device.type} → output device={out.device.type}"
+            )
+
+    if failures:
+        return GateResult(
+            passed=False,
+            reason=f"{len(failures)} residency violation(s)",
+            details={"failures": failures, "devices_tested": [d.type for d in devices]},
+        )
+    return GateResult(
+        passed=True,
+        reason=f"output device matches input on {len(devices)} device(s)",
+        details={"devices_tested": [d.type for d in devices]},
+    )
 
 
 def gate_res_02_resource_limits(  # TODO: cross-check name + spec against arXiv 2604.22032
@@ -453,8 +670,11 @@ def run_all_gates(
 ) -> dict[str, GateResult]:
     """Run all 12 Kernel Contract gates and return results keyed by gate name.
 
-    Stubbed gates that raise ``NotImplementedError`` are captured and recorded
-    as ``passed=False`` with reason ``"not_implemented"``.
+    Stubbed gates that raise ``NotImplementedError`` are recorded as
+    ``passed=False`` with reason ``"not_implemented"``. Any other exception
+    escaping a gate (e.g., a malformed candidate output crashes an internal
+    comparison) is also caught and recorded as a failure — a misbehaving
+    candidate must not crash the verifier loop.
     """
     results: dict[str, GateResult] = {}
     for name in _ALL_GATE_NAMES:
@@ -466,5 +686,11 @@ def run_all_gates(
                 passed=False,
                 reason="not_implemented",
                 details={"stub": True},
+            )
+        except Exception as exc:
+            results[name] = GateResult(
+                passed=False,
+                reason=f"gate crashed: {type(exc).__name__}: {exc}",
+                details={"exception_type": type(exc).__name__},
             )
     return results

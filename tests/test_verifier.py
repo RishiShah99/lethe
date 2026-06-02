@@ -241,27 +241,91 @@ class TestGateExc01ExceptionalValues:
 # ---------------------------------------------------------------------------
 
 
+class TestGateCmp02GradientCorrectness:
+    def test_pass_for_identity(self) -> None:
+        result = gate_cmp_02_gradient_correctness(_identity, _identity)
+        assert result.passed is True
+
+    def test_fail_when_gradient_graph_broken(self) -> None:
+        """A kernel that detaches inputs has zero gradient — gradcheck fails."""
+
+        def _detached(t: torch.Tensor) -> torch.Tensor:
+            return t.detach().clone().requires_grad_(False) + 0.0 * t
+
+        result = gate_cmp_02_gradient_correctness(_detached, _identity)
+        assert result.passed is False
+
+
+class TestGateOrd03NoncommutativeReduction:
+    def test_pass_for_identity(self) -> None:
+        result = gate_ord_03_noncommutative_reduction(_identity, _identity)
+        assert result.passed is True
+
+    def test_fail_when_reduction_order_differs(self) -> None:
+        """Candidate that does reverse-order sum differs bitwise from ref."""
+
+        def _ref(t: torch.Tensor) -> torch.Tensor:
+            return t.sum(dim=-1, keepdim=True)
+
+        def _cand(t: torch.Tensor) -> torch.Tensor:
+            return t.flip(-1).sum(dim=-1, keepdim=True)
+
+        result = gate_ord_03_noncommutative_reduction(_cand, _ref)
+        assert result.passed is False
+
+
+class TestGatePrc02MixedPrecisionAccumulation:
+    def test_pass_for_identity(self) -> None:
+        result = gate_prc_02_mixed_precision_accumulation(_identity, _identity)
+        assert result.passed is True
+
+    def test_fail_for_fp16_accumulator(self) -> None:
+        """A candidate that returns a noisy fp16 reduction blows the atol."""
+
+        def _ref(t: torch.Tensor) -> torch.Tensor:
+            return t.float().sum(dim=-1, keepdim=True)
+
+        def _cand(t: torch.Tensor) -> torch.Tensor:
+            # Manual fp16 loop accumulation — known precision loss.
+            acc = torch.zeros(*t.shape[:-1], 1, dtype=t.dtype, device=t.device)
+            for i in range(t.shape[-1]):
+                acc = acc + t[..., i : i + 1]
+            return acc
+
+        result = gate_prc_02_mixed_precision_accumulation(_cand, _ref)
+        assert result.passed is False
+
+
+class TestGateExc02SubnormalHandling:
+    def test_pass_for_identity(self) -> None:
+        result = gate_exc_02_subnormal_handling(_identity, _identity)
+        assert result.passed is True
+
+    def test_fail_when_candidate_flushes_subnormals(self) -> None:
+        """Candidate flushes subnormals; reference preserves them."""
+
+        def _flush(t: torch.Tensor) -> torch.Tensor:
+            tiny = torch.finfo(t.dtype).tiny
+            return torch.where(t.abs() < tiny, torch.zeros_like(t), t)
+
+        result = gate_exc_02_subnormal_handling(_flush, _identity)
+        assert result.passed is False
+
+
+class TestGateRes01MemoryResidency:
+    def test_pass_for_identity(self) -> None:
+        result = gate_res_01_memory_residency(_identity, _identity)
+        assert result.passed is True
+
+    def test_fail_when_candidate_moves_device(self) -> None:
+        def _to_meta(t: torch.Tensor) -> torch.Tensor:
+            return t.to("meta")
+
+        result = gate_res_01_memory_residency(_to_meta, _identity)
+        assert result.passed is False
+
+
 class TestStubbedGates:
-    def test_gate_cmp_02_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            gate_cmp_02_gradient_correctness(_identity, _identity)
-
-    def test_gate_ord_03_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            gate_ord_03_noncommutative_reduction(_identity, _identity)
-
-    def test_gate_prc_02_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            gate_prc_02_mixed_precision_accumulation(_identity, _identity)
-
-    def test_gate_exc_02_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            gate_exc_02_subnormal_handling(_identity, _identity)
-
-    def test_gate_res_01_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            gate_res_01_memory_residency(_identity, _identity)
-
     def test_gate_res_02_raises(self) -> None:
         with pytest.raises(NotImplementedError):
             gate_res_02_resource_limits(_identity, _identity)
@@ -281,11 +345,16 @@ class TestRunAllGates:
         results = run_all_gates(_identity, _identity)
         implemented = [
             "gate_cmp_01_input_variation",
+            "gate_cmp_02_gradient_correctness",
             "gate_cmp_03_shape_polymorphism",
             "gate_ord_01_reduction_order_tolerance",
             "gate_ord_02_atomic_determinism",
+            "gate_ord_03_noncommutative_reduction",
             "gate_prc_01_precision_regime",
+            "gate_prc_02_mixed_precision_accumulation",
             "gate_exc_01_exceptional_values",
+            "gate_exc_02_subnormal_handling",
+            "gate_res_01_memory_residency",
         ]
         for name in implemented:
             assert results[name].passed is True, f"{name} should pass for identity"
@@ -293,11 +362,6 @@ class TestRunAllGates:
     def test_stubbed_gates_recorded_as_not_implemented(self) -> None:
         results = run_all_gates(_identity, _identity)
         stubbed = [
-            "gate_cmp_02_gradient_correctness",
-            "gate_ord_03_noncommutative_reduction",
-            "gate_prc_02_mixed_precision_accumulation",
-            "gate_exc_02_subnormal_handling",
-            "gate_res_01_memory_residency",
             "gate_res_02_resource_limits",
         ]
         for name in stubbed:
