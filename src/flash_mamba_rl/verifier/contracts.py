@@ -274,7 +274,12 @@ def gate_exc_01_exceptional_values(
     dtype: torch.dtype = torch.float32,
     **kwargs: Any,
 ) -> GateResult:
-    """EXC-01: Exceptional values — NaN and Inf positions must agree with reference."""
+    """EXC-01: Exceptional values — NaN and signed-Inf positions must agree.
+
+    Compares ``isposinf`` and ``isneginf`` independently rather than the
+    union ``isinf`` mask, so a kernel that silently flips +inf to -inf
+    (or vice versa) is rejected.
+    """
     failures: list[str] = []
 
     def _check_exceptional(t: torch.Tensor, label: str) -> None:
@@ -291,10 +296,14 @@ def gate_exc_01_exceptional_values(
         nan_cand = torch.isnan(out_cand)
         if not torch.equal(nan_ref, nan_cand):
             failures.append(f"{label}: NaN mask mismatch")
-        inf_ref = torch.isinf(out_ref)
-        inf_cand = torch.isinf(out_cand)
-        if not torch.equal(inf_ref, inf_cand):
-            failures.append(f"{label}: Inf mask mismatch")
+        posinf_ref = torch.isposinf(out_ref)
+        posinf_cand = torch.isposinf(out_cand)
+        if not torch.equal(posinf_ref, posinf_cand):
+            failures.append(f"{label}: +Inf mask mismatch (sign flip?)")
+        neginf_ref = torch.isneginf(out_ref)
+        neginf_cand = torch.isneginf(out_cand)
+        if not torch.equal(neginf_ref, neginf_cand):
+            failures.append(f"{label}: -Inf mask mismatch (sign flip?)")
 
     # Input with NaN scattered at known positions
     t_nan = torch.randn(shape, dtype=dtype)
@@ -317,7 +326,11 @@ def gate_exc_01_exceptional_values(
             reason=f"{len(failures)} exceptional-value check(s) failed",
             details={"failures": failures},
         )
-    return GateResult(passed=True, reason="NaN/Inf masks agree with reference", details={})
+    return GateResult(
+        passed=True,
+        reason="NaN/+Inf/-Inf masks agree with reference",
+        details={},
+    )
 
 
 # ---------------------------------------------------------------------------

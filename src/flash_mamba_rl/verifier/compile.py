@@ -54,7 +54,7 @@ _COMPILE_SCRIPT = textwrap.dedent(
         import triton
         import triton.language as tl
         import tempfile, importlib.util, os
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8") as f:
             f.write(source)
             fname = f.name
         spec = importlib.util.spec_from_file_location("_candidate", fname)
