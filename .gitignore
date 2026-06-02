@@ -1,0 +1,65 @@
+# Markdown — never push docs/plans to GitHub (strategic notes stay local)
+*.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv / venv
+.venv/
+venv/
+env/
+.python-version
+
+# Build / dist
+build/
+dist/
+*.whl
+
+# Triton / CUDA artifacts
+.triton/
+*.cubin
+*.ptx
+*.fatbin
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Project-local artifacts
+scratch/runs/
+results/runs/
+results/logs/
+results/checkpoints/
+*.log
+wandb/
+
+# Datasets (PTB-XL etc. — fetched on demand, never committed)
+data/
+*.h5
+*.zarr
+*.npy
+*.pkl
+
+# Secrets / credentials
+.env
+.env.*
+!.env.example
+credentials.json
+*.pem
