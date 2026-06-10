@@ -52,6 +52,34 @@ def _fp16_accumulator_scan(
     return torch.stack(ys, dim=1).to(u.dtype)
 
 
+def _cumprod_trick_scan(
+    u: torch.Tensor,
+    delta: torch.Tensor,
+    a: torch.Tensor,
+    b_proj: torch.Tensor,
+    c_proj: torch.Tensor,
+    d_skip: torch.Tensor,
+    *,
+    chunk_size: int = 8,
+) -> torch.Tensor:
+    """Cheating scan: 'parallelises' the recurrence as P_t * cumsum(bu_t / P_t).
+
+    Algebraically exact, numerically catastrophic: P_t underflows over long
+    near-integrator sequences and the ratio cumsum amplifies tiny terms.
+    The classic wrong way to vectorise a selective scan — ORD-03's target.
+    """
+    import torch.nn.functional as F
+
+    delta_bar = F.softplus(delta.float())
+    log_a_bar = delta_bar.unsqueeze(-1) * a.float().unsqueeze(0).unsqueeze(0)  # [B,L,D,N]
+    b_bar = delta_bar.unsqueeze(-1) * b_proj.float().unsqueeze(2)
+    bu = b_bar * u.float().unsqueeze(-1)
+    p = torch.exp(torch.cumsum(log_a_bar, dim=1))  # running decay products
+    h = p * torch.cumsum(bu / p, dim=1)
+    y = (h * c_proj.float().unsqueeze(2)).sum(-1) + d_skip.float() * u.float()
+    return y.to(u.dtype)
+
+
 def _scan_inputs(
     b: int = 2,
     seq: int = 8,
@@ -162,6 +190,17 @@ class TestScanHarness:
         results = verify_scan_op(_fp16_accumulator_scan)
         prc02 = results["gate_prc_02_mixed_precision_accumulation"]
         assert not prc02.passed, "PRC-02 lost its discriminative power for the scan op"
+
+    def test_cumprod_trick_caught_by_ord03_with_scan_tolerances(self) -> None:
+        # ORD-03 runs with a tolerance for the scan op (hardware kernels
+        # cannot be bitwise against torch eager); this pins that the
+        # relaxation keeps rejecting numerically unstable scan orderings.
+        # The cumprod-ratio trick tracks the oracle to ~3e-5 up to L=4096,
+        # then its decay products underflow: at the override length L=8192
+        # it NaNs out while honest reorder noise stays ~1e-4 vs atol 1e-3.
+        results = verify_scan_op(_cumprod_trick_scan)
+        ord03 = results["gate_ord_03_noncommutative_reduction"]
+        assert not ord03.passed, "ORD-03 lost its discriminative power for the scan op"
 
     def test_gate_overrides_reach_named_gate_only(self) -> None:
         candidate = scan_candidate_adapter(forward_chunked_scan)

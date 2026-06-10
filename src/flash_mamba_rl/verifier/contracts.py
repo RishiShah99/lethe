@@ -46,6 +46,13 @@ def gate_cmp_01_input_variation(
     (zeros, large magnitudes, small magnitudes, denormals, long sequences).
     For every input the candidate and reference outputs are compared with
     ``torch.allclose``.
+
+    The absolute tolerance is scaled by the reference output's magnitude
+    (``max(1, |out_ref|_inf)``): on a large-magnitude problem the error of
+    *any* correctly-rounded but differently-ordered implementation carries
+    the scale of the large intermediates, and elements that cancel to near
+    zero would otherwise demand cancellation noise below one ULP of those
+    intermediates. ``atol`` is interpreted at unit scale.
     """
     failures: list[str] = []
 
@@ -59,9 +66,13 @@ def gate_cmp_01_input_variation(
         if out_cand.shape != out_ref.shape:
             failures.append(f"{label}: shape mismatch {out_cand.shape} vs {out_ref.shape}")
             return
-        if not torch.allclose(out_cand.float(), out_ref.float(), atol=atol, rtol=rtol):
-            max_err = (out_cand.float() - out_ref.float()).abs().max().item()
-            failures.append(f"{label}: max_err={max_err:.3e} > atol={atol}")
+        ref32 = out_ref.float()
+        finite = ref32[torch.isfinite(ref32)]
+        scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
+        atol_eff = atol * scale
+        if not torch.allclose(out_cand.float(), ref32, atol=atol_eff, rtol=rtol):
+            max_err = (out_cand.float() - ref32).abs().max().item()
+            failures.append(f"{label}: max_err={max_err:.3e} > atol={atol_eff:.3e} (scaled)")
 
     # Random inputs
     for i in range(n_random):
@@ -147,16 +158,29 @@ def gate_ord_01_reduction_order_tolerance(
     shape: tuple[int, ...] = (4, 512, 32),
     dtype: torch.dtype = torch.float32,
     device: str | torch.device = "cpu",
+    reduction_elements: int | None = None,
+    safety_factor: float = 4.0,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-01: Reduction-order tolerance — loosen atol based on sqrt(N).
+    """ORD-01: Reduction-order tolerance — atol scaled to the reduction extent.
 
-    Floating-point reductions are order-dependent; a kernel that reduces in a
-    different order than the reference may still be numerically correct.  The
-    tolerance is scaled by ``eps * sqrt(N) * dtype_eps`` where N is the number
-    of elements being reduced (last dimension by convention).
+    Floating-point reductions are order-dependent; a kernel that reduces in
+    a different order than the reference may still be numerically correct.
+    Two correctly-rounded implementations of an N-term accumulation differ
+    by a random walk of rounding errors, so the tolerance is
+    ``safety_factor * dtype_eps * sqrt(N) * max(1, |out_ref|_inf)``:
+
+    - ``N`` is ``reduction_elements`` — the op's true accumulation extent
+      (for a scan, the sequence length; for a row-sum, the row width).
+      Defaults to ``shape[-1]`` (the row-op convention).
+    - the output-magnitude factor carries the scale of the intermediates;
+      a unit-scale atol would demand sub-ULP cancellation noise.
+    - ``safety_factor`` covers the stochastic spread of the random-walk
+      bound (measured ~1.1x the sqrt-N estimate for the C1 Triton scan on
+      B200; 4x keeps honest kernels clear while staying orders of
+      magnitude below wrong-math errors).
     """
-    n_elements = shape[-1]
+    n_elements = reduction_elements if reduction_elements is not None else shape[-1]
     dtype_eps: float
     if dtype == torch.float16:
         dtype_eps = 9.77e-4  # torch.finfo(torch.float16).eps
@@ -164,8 +188,6 @@ def gate_ord_01_reduction_order_tolerance(
         dtype_eps = 7.81e-3  # torch.finfo(torch.bfloat16).eps
     else:
         dtype_eps = 1.19e-7  # torch.finfo(torch.float32).eps
-
-    atol = dtype_eps * math.sqrt(n_elements)
 
     t = torch.randn(shape, dtype=dtype, device=device)
     try:
@@ -175,15 +197,18 @@ def gate_ord_01_reduction_order_tolerance(
         return GateResult(
             passed=False,
             reason=f"exception during execution: {exc}",
-            details={"atol_used": atol},
+            details={"n_elements": n_elements},
         )
 
     if out_cand.shape != out_ref.shape:
         return GateResult(
             passed=False,
             reason=f"shape mismatch {out_cand.shape} vs {out_ref.shape}",
-            details={"atol_used": atol},
+            details={"n_elements": n_elements},
         )
+
+    scale = max(1.0, out_ref.float().abs().max().item())
+    atol = safety_factor * dtype_eps * math.sqrt(n_elements) * scale
 
     ok = torch.allclose(out_cand.float(), out_ref.float(), atol=atol, rtol=0.0)
     max_err = (out_cand.float() - out_ref.float()).abs().max().item()
@@ -192,7 +217,12 @@ def gate_ord_01_reduction_order_tolerance(
         reason="within reduction-order tolerance"
         if ok
         else f"max_err={max_err:.3e} > atol={atol:.3e}",
-        details={"atol_used": atol, "max_err": max_err, "n_elements": n_elements},
+        details={
+            "atol_used": atol,
+            "max_err": max_err,
+            "n_elements": n_elements,
+            "output_scale": scale,
+        },
     )
 
 
@@ -397,19 +427,27 @@ def gate_ord_03_noncommutative_reduction(
     shape: tuple[int, ...] = (4, 64, 32),
     dtype: torch.dtype = torch.float32,
     device: str | torch.device = "cpu",
+    atol: float = 0.0,
+    rtol: float = 0.0,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-03: Non-commutative reduction — outputs must be bitwise-identical to
-    reference on inputs designed to expose order-dependent reductions.
+    """ORD-03: Non-commutative reduction — candidate must match the reference
+    on inputs designed to expose order-dependent reductions.
 
-    Floating-point addition is not associative; a kernel that reduces in a
-    different order than the reference (parallel tree vs left-to-right, or
-    reverse vs forward) produces ULP-level differences. The reference defines
-    the canonical order for scan / prefix-sum / accumulator ops, and the
-    candidate must match it byte-for-byte.
+    Floating-point addition is not associative; the alternating
+    large-positive / tiny / large-negative input makes reduction order
+    matter materially: numerically unstable orderings (reversed
+    accumulation, the cumprod-ratio scan trick, lost compensation terms)
+    produce errors orders of magnitude above ULP noise here.
 
-    The input is an alternating large-positive / tiny / large-negative
-    pattern where reduction order materially changes the bit pattern.
+    Tolerances default to zero — bitwise identity, the right contract when
+    the candidate can replicate the reference's exact operation order (CPU
+    torch compositions). Hardware kernels reduce in trees and contract
+    multiply-adds into FMAs, so bitwise identity against a torch eager
+    reference is unachievable in principle; op harnesses override atol/rtol
+    to a near-ULP budget instead (the C1 Triton scan measures ~2e-6 against
+    the eager reference on B200 where unstable orderings err > 1e-2 — the
+    adversarial input keeps the gate discriminative without bitwise).
     """
     pattern = torch.tensor([1.0, 1e-7, -1.0, 1e-7], dtype=dtype, device=device)
     n_elements = 1
@@ -435,17 +473,27 @@ def gate_ord_03_noncommutative_reduction(
             details={},
         )
 
-    if not torch.equal(out_ref, out_cand):
+    bitwise = atol == 0.0 and rtol == 0.0
+    if bitwise:
+        ok = torch.equal(out_ref, out_cand)
+    else:
+        ok = torch.allclose(out_cand.float(), out_ref.float(), atol=atol, rtol=rtol)
+    if not ok:
         max_err = (out_ref.float() - out_cand.float()).abs().max().item()
+        kind = "bitwise-identical" if bitwise else f"within atol={atol:.1e}/rtol={rtol:.1e}"
         return GateResult(
             passed=False,
-            reason=f"not bitwise-identical: max_err={max_err:.3e} (reduction order differs)",
-            details={"max_err": max_err},
+            reason=f"not {kind}: max_err={max_err:.3e} (reduction order differs)",
+            details={"max_err": max_err, "atol": atol, "rtol": rtol},
         )
     return GateResult(
         passed=True,
-        reason="bitwise-identical to reference on adversarial reduction input",
-        details={},
+        reason=(
+            "bitwise-identical to reference on adversarial reduction input"
+            if bitwise
+            else "within tolerance on adversarial reduction input"
+        ),
+        details={"atol": atol, "rtol": rtol},
     )
 
 

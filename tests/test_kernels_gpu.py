@@ -62,7 +62,9 @@ class TestC1TritonParity:
         y_triton = forward_chunked_scan(*args, chunk_size=8)
         y_ref = reference_forward_chunked_scan(*args, chunk_size=8)
         max_err = (y_triton - y_ref).abs().max().item()
-        assert torch.allclose(y_triton, y_ref, atol=1e-5, rtol=1e-5), f"max_err={max_err:.3e}"
+        # Same standard as the official-kernel parity test: fp32 reorder
+        # noise grows ~eps*sqrt(L)*|y| (measured 2.6e-4 at L=256, N=32).
+        assert torch.allclose(y_triton, y_ref, atol=1e-4, rtol=1e-3), f"max_err={max_err:.3e}"
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_low_precision_matches_fp32_oracle(self, dtype: torch.dtype) -> None:

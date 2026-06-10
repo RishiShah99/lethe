@@ -36,7 +36,8 @@ except ImportError:  # pragma: no cover - depends on installed triton
     from triton.language.extra.cuda import libdevice
 
 # torch.nn.functional.softplus switches to the identity above this threshold.
-_SOFTPLUS_THRESHOLD = 20.0
+# Instantiated as tl.constexpr: triton >= 3.7 rejects plain globals in jit code.
+_SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 
 # One CTA holds the whole state dim; N above this needs a multi-block design.
 MAX_BLOCK_N = 128

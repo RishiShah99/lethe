@@ -54,6 +54,23 @@ SCAN_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     # an fp16 accumulator lands at ~1.5e-1, so the gate's default atol=2e-2
     # separates them with margin (pinned by a discriminative test).
     "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32)},
+    # The scan's accumulation chain is the sequence, not the trailing dim:
+    # at the gate's (4, 512, 32) shape the reduction extent is L=512.
+    "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
+    # Bitwise identity vs a torch eager reference is unachievable for a
+    # tree-reducing, FMA-contracting hardware kernel (C1 measures ~2e-6 on
+    # B200), so run with a tolerance — but at a length where unstable
+    # orderings have actually diverged. The cumprod-ratio scan trick is
+    # algebraically exact and stays within ~3e-5 of the oracle up to
+    # L=4096 with this aux distribution; at L=8192 its decay products
+    # underflow and it NaNs out, while honest reorder noise follows
+    # eps*sqrt(L)*scale ~ 1e-4. atol=1e-3 sits 9x above honest noise and
+    # rejects the collapse (pinned by a discriminative test).
+    "gate_ord_03_noncommutative_reduction": {
+        "shape": (1, 8192, 16),
+        "atol": 1e-3,
+        "rtol": 1e-3,
+    },
 }
 
 # Official Mamba dt initialisation range (state-spaces/mamba,
