@@ -79,6 +79,9 @@ class TestCompileOnGPU:
         result = compile_kernel(BROKEN_AT_LAUNCH, timeout_s=120.0)
         assert not result.success
         assert result.error_class is not ErrorClass.OK
+        # The captured stderr must carry the actual launch-time diagnostic,
+        # not be empty — that's the evidence channel the classifier reads.
+        assert result.stderr.strip(), "launch failure produced no stderr evidence"
 
     def test_candidate_import_error_does_not_pass(self) -> None:
         # With triton importable, a candidate's own ImportError must fail the

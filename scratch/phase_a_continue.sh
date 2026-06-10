@@ -27,8 +27,10 @@ echo "=== [3/5] exit: $? ==="
 
 echo "=== [4/5] GPU verifier suite (post-fixes) + env capture ==="
 uv run pytest tests/test_gpu_verifier.py -q 2>&1 | tail -3
-uv run python scratch/capture_env.py > /dev/null 2>&1 && echo "env captured"
-echo "=== [4/5] exit: $? ==="
+uv run python scratch/capture_env.py > /dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && echo "env captured"
+echo "=== [4/5] exit: $rc ==="
 
 echo "=== [5/5] #904 reproduction (single GPU) ==="
 CUDA_VISIBLE_DEVICES=0 uv run python scratch/repro_904.py 2>&1 | tail -25

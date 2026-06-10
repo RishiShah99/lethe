@@ -115,6 +115,40 @@ class TestCompileKernel:
         assert result.blackwell_failure is True
         assert result.error_class == ErrorClass.TMEM_BUDGET
 
+    def test_tmem_detected_on_success_autotune_masked_form(self) -> None:
+        """rc=0 with TMEM strings on stderr = the autotune-masked #904 form.
+
+        The reference kernel 'succeeds' on crippled num_warps=2 survivors
+        while the overflowing configs print TMEM failures — the flag must be
+        set even though success=True, or the perf-cliff form is invisible.
+        """
+        fake_stderr = (
+            b"Autotuning failed with out of resource: tensor memory, "
+            b"Required: 544, Hardware limit: 512.\n"
+        )
+
+        class _FakeProc:
+            returncode = 0
+
+            def communicate(
+                self, input: bytes | None = None, timeout: float | None = None
+            ) -> tuple[bytes, bytes]:
+                return b"OK", fake_stderr
+
+            def kill(self) -> None:
+                pass
+
+            def wait(self) -> None:
+                pass
+
+        with patch("subprocess.Popen", return_value=_FakeProc()):
+            result = compile_kernel("x = 1\n")
+
+        assert result.success is True
+        assert result.error_class == ErrorClass.OK
+        assert result.tmem_budget is True
+        assert result.blackwell_failure is True
+
     def test_tmem_outranks_generic_oom_classification(self) -> None:
         """'out of resource: tensor memory' must not be swallowed by OOM."""
         fake_stderr = (

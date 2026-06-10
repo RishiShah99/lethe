@@ -75,7 +75,7 @@ def compute_group_advantages(
     signal inflated by a tiny denominator.
     """
     mean = rewards.mean()
-    std = rewards.std(unbiased=False)
+    std = rewards.std(correction=0)
     return (rewards - mean) / (std + eps)
 
 

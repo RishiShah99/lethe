@@ -40,7 +40,13 @@ _C7907_PATTERNS: list[re.Pattern[str]] = [
 # the same eager TMEM-promotion failure mode and both must trip bug-routing.
 _TMEM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"out of resource:\s*tensor memory", re.IGNORECASE),
-    re.compile(r"tensor memory.*Required:\s*\d+.*Hardware limit:\s*\d+", re.IGNORECASE),
+    # Anchored on the OutOfResources prefix so candidate-emitted prose can't
+    # match incidentally; the structured tail keeps it specific to the
+    # budget-overflow form.
+    re.compile(
+        r"out of resource.*tensor memory.*Required:\s*\d+.*Hardware limit:\s*\d+",
+        re.IGNORECASE,
+    ),
 ]
 
 _OOM_PATTERNS: list[re.Pattern[str]] = [
@@ -89,11 +95,18 @@ _COMPILE_SCRIPT = textwrap.dedent(
             fname = f.name
         spec = importlib.util.spec_from_file_location("_candidate", fname)
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        os.unlink(fname)
-        warmup = getattr(mod, "__warmup__", None)
-        if warmup is not None:
-            warmup()
+        # Register before exec so dataclasses/pickle/inspect paths that
+        # re-resolve the module by name work, and keep the source file
+        # alive through __warmup__ so launch-time tracebacks (the
+        # C7907/TMEM evidence) reference real source lines.
+        sys.modules["_candidate"] = mod
+        try:
+            spec.loader.exec_module(mod)
+            warmup = getattr(mod, "__warmup__", None)
+            if warmup is not None:
+                warmup()
+        finally:
+            os.unlink(fname)
         print("OK", flush=True)
         sys.exit(0)
 
@@ -122,9 +135,18 @@ class CompileResult:
     def blackwell_failure(self) -> bool:
         """True if either signature of the Blackwell TMEM-promotion failure
         family was observed (raw ptxas C7907 in older toolchains, or the
-        OutOfResources tensor-memory message in triton >= 3.7). This is the
-        bug-routing signal: a hand-written kernel tripping it on Blackwell is
-        what RL candidates earn the routing bonus for avoiding."""
+        OutOfResources tensor-memory message in triton >= 3.7).
+
+        Deliberately may be True alongside ``success=True``: the
+        autotune-masked form of #904 prunes the TMEM-overflowing configs and
+        completes on crippled survivors — the failure strings appear on
+        stderr while the run "succeeds". That perf-cliff form IS the bug.
+
+        Reward-gaming note: the bug-routing bonus is keyed on the
+        *hand-written reference* tripping this flag, never on a candidate's
+        own flag — so a policy emitting these strings to its own stderr
+        marks itself failure-prone and earns nothing.
+        """
         return self.ptxas_c7907 or self.tmem_budget
 
 
