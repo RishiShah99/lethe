@@ -139,6 +139,24 @@ def _official_leaves(args: ScanArgs) -> tuple[Tensor, ...]:
     )
 
 
+def _parity_stats(got: Tensor, want: Tensor) -> dict[str, float]:
+    """Absolute max error plus the comparand's scale.
+
+    grad_A magnitudes grow superlinearly with L in the near-integrator
+    regime, so a bare max_err reads as divergence when it is reorder noise
+    riding a large output — scale_rel (max_err / |want|_inf) is the
+    comparable number across shapes.
+    """
+    diff = (got.float() - want.float()).abs()
+    ref_inf = float(want.float().abs().max().item())
+    max_err = float(diff.max().item())
+    return {
+        "max_err": max_err,
+        "ref_inf": ref_inf,
+        "scale_rel": max_err / max(1.0, ref_inf),
+    }
+
+
 def _from_official_grads(grads: tuple[Tensor, ...]) -> tuple[Tensor, ...]:
     gu, gdelta, ga, gb, gc, gd = grads
     return (
@@ -183,8 +201,8 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
             grads_official = _from_official_grads(
                 torch.autograd.grad(y, leaves, dy_o, retain_graph=True)
             )
-            parity["ours_vs_official_max_err"] = {
-                field: float((got.float() - want.float()).abs().max().item())
+            parity["ours_vs_official"] = {
+                field: _parity_stats(got, want)
                 for field, got, want in zip(
                     BWD_GRAD_FIELDS, grads_ours, grads_official, strict=True
                 )
@@ -212,8 +230,8 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
     if spec.seq_len <= _REFERENCE_LOOP_MAX_SEQ and dtype == torch.float32:
         grads_ref = reference_backward_selective_scan(*args, dy, chunk_size=64)
-        parity["ours_vs_reference_max_err"] = {
-            field: float((got.float() - want.float()).abs().max().item())
+        parity["ours_vs_reference"] = {
+            field: _parity_stats(got, want)
             for field, got, want in zip(BWD_GRAD_FIELDS, grads_ours, grads_ref, strict=True)
         }
         impls["reference_loop_bwd"] = _time(
@@ -298,9 +316,8 @@ def _num_warps_sweep(quick: bool) -> dict[str, Any]:
             if base is None:
                 base = grads
             else:
-                entry["max_err_vs_first_config"] = max(
-                    float((g.float() - b.float()).abs().max().item())
-                    for g, b in zip(grads, base, strict=True)
+                entry["max_scale_rel_vs_first_config"] = max(
+                    _parity_stats(g, b)["scale_rel"] for g, b in zip(grads, base, strict=True)
                 )
         except Exception:
             entry["compiles"] = False

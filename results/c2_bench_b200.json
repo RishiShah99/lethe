@@ -1,0 +1,483 @@
+{
+  "op": "backward_selective_scan",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.12.0+cu130",
+    "triton": "3.7.0",
+    "mamba_ssm": "2.3.2.post1",
+    "python": "3.12.3"
+  },
+  "runs": [
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 512,
+        "d_model": 1024,
+        "n_state": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 0.8827680051326752,
+          "std_ms": 0.003310667670625342,
+          "min_ms": 0.8786240220069885,
+          "max_ms": 0.9015679955482483,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 0.16392000019550323,
+          "std_ms": 0.003757567974075577,
+          "min_ms": 0.1557759940624237,
+          "max_ms": 0.17443199455738068,
+          "n_trials": 50.0
+        },
+        "official_eager_bwd": {
+          "median_ms": 85.67814636230469,
+          "std_ms": 0.25873233070988244,
+          "min_ms": 85.13878631591797,
+          "max_ms": 85.74527740478516,
+          "n_trials": 5.0
+        },
+        "reference_loop_bwd": {
+          "median_ms": 159.52423095703125,
+          "std_ms": 3.811498071350496,
+          "min_ms": 159.22540283203125,
+          "max_ms": 165.97145080566406,
+          "n_trials": 3.0
+        }
+      },
+      "skipped": {},
+      "parity": {
+        "ours_vs_official_max_err": {
+          "grad_u": 0.001556396484375,
+          "grad_delta": 0.00084686279296875,
+          "grad_A": 2.34375,
+          "grad_B": 0.0015869140625,
+          "grad_C": 0.0011444091796875,
+          "grad_D": 6.866455078125e-05
+        },
+        "ours_vs_reference_max_err": {
+          "grad_u": 6.103515625e-05,
+          "grad_delta": 3.0517578125e-05,
+          "grad_A": 0.140625,
+          "grad_B": 7.62939453125e-05,
+          "grad_C": 0.0001373291015625,
+          "grad_D": 9.918212890625e-05
+        }
+      },
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.18568865119988912,
+        "official_eager_bwd": 97.05624338914247,
+        "reference_loop_bwd": 180.70912179588524
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 512,
+        "d_model": 1024,
+        "n_state": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 1.190288007259369,
+          "std_ms": 0.003313654011560037,
+          "min_ms": 1.186400055885315,
+          "max_ms": 1.2018879652023315,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 0.1549919992685318,
+          "std_ms": 0.006450906940666874,
+          "min_ms": 0.1475840061903,
+          "max_ms": 0.18774400651454926,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.1302138627989708
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 6.623536109924316,
+          "std_ms": 0.004434455993884231,
+          "min_ms": 6.616032123565674,
+          "max_ms": 6.635583877563477,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 4.992384195327759,
+          "std_ms": 0.031136970797739208,
+          "min_ms": 4.9798078536987305,
+          "max_ms": 5.204639911651611,
+          "n_trials": 50.0
+        },
+        "official_eager_bwd": {
+          "median_ms": 15152.875,
+          "std_ms": 2.190106022153984,
+          "min_ms": 15151.7490234375,
+          "max_ms": 15157.3271484375,
+          "n_trials": 5.0
+        }
+      },
+      "skipped": {
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_official_max_err": {
+          "grad_u": 0.01336669921875,
+          "grad_delta": 0.009674072265625,
+          "grad_A": 205.0,
+          "grad_B": 0.0137939453125,
+          "grad_C": 0.0152587890625,
+          "grad_D": 0.0006103515625
+        }
+      },
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.7537339741905331,
+        "official_eager_bwd": 2287.7319227256608
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 15.911648273468018,
+          "std_ms": 0.28974516542376905,
+          "min_ms": 15.248384475708008,
+          "max_ms": 15.997920036315918,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 3.76583993434906,
+          "std_ms": 0.01644794208381792,
+          "min_ms": 3.7554879188537598,
+          "max_ms": 3.866976022720337,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.23667189405062672
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 4096,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 13.163296222686768,
+          "std_ms": 0.0075922801487691635,
+          "min_ms": 13.148768424987793,
+          "max_ms": 13.184736251831055,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 9.442896366119385,
+          "std_ms": 0.09655721320103308,
+          "min_ms": 9.351263999938965,
+          "max_ms": 9.595871925354004,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_official_max_err": {
+          "grad_u": 0.0517578125,
+          "grad_delta": 0.03497314453125,
+          "grad_A": 1148.0,
+          "grad_B": 0.0694580078125,
+          "grad_C": 0.0267333984375,
+          "grad_D": 0.001068115234375
+        }
+      },
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.7173656359601387
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 4096,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 31.00278377532959,
+          "std_ms": 0.4577086309743026,
+          "min_ms": 30.257535934448242,
+          "max_ms": 32.204959869384766,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 7.329632043838501,
+          "std_ms": 0.032062483080765806,
+          "min_ms": 7.31820821762085,
+          "max_ms": 7.5483198165893555,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.23641851315529422
+      }
+    },
+    {
+      "shape": {
+        "batch": 4,
+        "seq_len": 8192,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 22.108128547668457,
+          "std_ms": 0.021920675600869292,
+          "min_ms": 22.061119079589844,
+          "max_ms": 22.163040161132812,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 9.436416149139404,
+          "std_ms": 0.09136171417910958,
+          "min_ms": 9.372127532958984,
+          "max_ms": 9.604703903198242,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_official_max_err": {
+          "grad_u": 0.1292724609375,
+          "grad_delta": 0.10833740234375,
+          "grad_A": 5692.0,
+          "grad_B": 0.1378173828125,
+          "grad_C": 0.07928466796875,
+          "grad_D": 0.001384735107421875
+        }
+      },
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.4268301646968023
+      }
+    },
+    {
+      "shape": {
+        "batch": 4,
+        "seq_len": 8192,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 31.34353542327881,
+          "std_ms": 0.08022437430342846,
+          "min_ms": 31.14022445678711,
+          "max_ms": 31.46892738342285,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 7.355232000350952,
+          "std_ms": 0.035660146954103265,
+          "min_ms": 7.343455791473389,
+          "max_ms": 7.593952178955078,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.23466504020756476
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 16384,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 41.78620719909668,
+          "std_ms": 0.01305790879293745,
+          "min_ms": 41.75075149536133,
+          "max_ms": 41.81795120239258,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 10.029040336608887,
+          "std_ms": 0.11148711894793772,
+          "min_ms": 9.8274564743042,
+          "max_ms": 10.291711807250977,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_official_max_err": {
+          "grad_u": 0.3804931640625,
+          "grad_delta": 0.312744140625,
+          "grad_A": 35024.0,
+          "grad_B": 0.4183349609375,
+          "grad_C": 0.2330322265625,
+          "grad_D": 0.003387451171875
+        }
+      },
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.24000839053958672
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 16384,
+        "d_model": 4096,
+        "n_state": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 58.79580879211426,
+          "std_ms": 0.024555776108304745,
+          "min_ms": 58.74582290649414,
+          "max_ms": 58.85331344604492,
+          "n_trials": 50.0
+        },
+        "official_cuda_bwd": {
+          "median_ms": 7.513744115829468,
+          "std_ms": 0.0333244713094748,
+          "min_ms": 7.494207859039307,
+          "max_ms": 7.736415863037109,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_eager_bwd": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {
+        "official_cuda_bwd": 0.12779387289995434
+      }
+    }
+  ],
+  "num_warps_sweep": {
+    "shape": "B8xL2048xD4096xN16",
+    "configs": {
+      "num_warps=2": {
+        "compiles": true,
+        "median_ms": 7.607951879501343,
+        "std_ms": 0.00912117654638665,
+        "min_ms": 7.590559959411621,
+        "max_ms": 7.6341118812561035,
+        "n_trials": 30.0
+      },
+      "num_warps=4": {
+        "compiles": true,
+        "median_ms": 6.621135950088501,
+        "std_ms": 0.00694781927924596,
+        "min_ms": 6.614175796508789,
+        "max_ms": 6.640384197235107,
+        "n_trials": 30.0,
+        "max_err_vs_first_config": 1.0
+      },
+      "num_warps=8": {
+        "compiles": true,
+        "median_ms": 14.270127773284912,
+        "std_ms": 0.01102419213048583,
+        "min_ms": 14.258527755737305,
+        "max_ms": 14.308064460754395,
+        "n_trials": 30.0,
+        "max_err_vs_first_config": 1.0
+      }
+    },
+    "specializations": [
+      {
+        "num_warps": 4,
+        "n_regs": 128,
+        "spill_bytes": 4,
+        "shared_bytes": 256,
+        "name": "_bwd_scan_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 155,
+        "spill_bytes": 0,
+        "shared_bytes": 4096,
+        "name": "_bwd_scan_kernel"
+      },
+      {
+        "num_warps": 2,
+        "n_regs": 213,
+        "spill_bytes": 0,
+        "shared_bytes": 256,
+        "name": "_bwd_scan_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 80,
+        "spill_bytes": 4,
+        "shared_bytes": 512,
+        "name": "_bwd_scan_kernel"
+      }
+    ],
+    "official_mamba3_triton_bwd": "fails compile at all num_warps>=4 on sm_100 (TMEM 544 > 512); evidence: docs/904_reproducer.md, results/repro_904_report.json"
+  },
+  "resource_meta": {
+    "n_regs": 213,
+    "spill_bytes": 4,
+    "shared_bytes": 4096
+  }
+}
