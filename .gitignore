@@ -50,6 +50,10 @@ results/checkpoints/
 *.log
 wandb/
 
+# fleet (GPU VM state + pulled artifacts)
+.fleet.json
+out/
+
 # Datasets (PTB-XL etc. — fetched on demand, never committed)
 data/
 *.h5
