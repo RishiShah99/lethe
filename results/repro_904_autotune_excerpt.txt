@@ -1,0 +1,207 @@
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 32, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dzdo with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_dqkv with config num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning failed with out of resource: tensor memory, Required: 544, Hardware limit: 512. Reducing block sizes or `num_stages` may help.
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_rotary_bias_angles with config num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 128, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 1, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 2, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: 256
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 128
+Autotuning kernel mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states with config CHUNK_SIZE: 256, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: 256
