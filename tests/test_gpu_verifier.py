@@ -111,7 +111,13 @@ class TestTimingOnGPU:
 class TestSandboxOnGPU:
     def test_runs_gpu_callable(self) -> None:
         x = torch.arange(16, dtype=torch.float32)
-        result = run_in_subprocess("tests._gpu_helpers", "gpu_square", (x,), timeout_s=300.0)
+        # memory_limit_mb=0: CUDA context init maps more virtual address
+        # space than any sane RLIMIT_AS allows (multi-GPU unified addressing),
+        # so GPU sandbox runs must disable the AS cap. Isolation + timeout
+        # still apply.
+        result = run_in_subprocess(
+            "tests._gpu_helpers", "gpu_square", (x,), timeout_s=300.0, memory_limit_mb=0
+        )
         assert result.success, result.stderr
         assert torch.equal(result.output, x**2)
 

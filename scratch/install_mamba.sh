@@ -10,6 +10,8 @@ export PATH="$HOME/.local/bin:$PATH"
 # Builds must see the CUDA 13.0 toolkit (matches torch +cu130).
 export CUDA_HOME=/usr/local/cuda-13.0
 export PATH="$CUDA_HOME/bin:$PATH"
+# Build only for Hopper + Blackwell instead of every known arch.
+export TORCH_CUDA_ARCH_LIST="9.0;10.0"
 nvcc --version | tail -1
 
 echo ">> installing causal-conv1d + mamba-ssm (no build isolation; needs torch in env)"

@@ -148,7 +148,11 @@ def run_in_subprocess(
         Wall-clock timeout in seconds.
     memory_limit_mb:
         Virtual-address limit for the child process (POSIX only; ignored on
-        Windows — see module docstring).
+        Windows — see module docstring). Pass ``0`` to disable. IMPORTANT:
+        CUDA context initialisation maps more virtual address space than any
+        practical RLIMIT_AS (multi-GPU unified addressing), so GPU-executing
+        candidates must run with ``memory_limit_mb=0`` — rely on the timeout
+        and process isolation instead. The default suits CPU-only work.
 
     Returns
     -------
