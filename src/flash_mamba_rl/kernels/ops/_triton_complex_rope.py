@@ -140,11 +140,14 @@ def launch_complex_scan_rope(
     dt: Tensor,
     a: Tensor,
     angle_proj: Tensor,
+    *,
+    num_warps: int | None = None,
 ) -> Tensor:
     """Launch the fused rotary scan on CUDA tensors.
 
     Dispatch keys on ``x`` (device, dtype); every load upcasts to fp32 and
-    ``y`` rounds once at store into ``x``'s dtype.
+    ``y`` rounds once at store into ``x``'s dtype. ``num_warps`` overrides
+    the launch config for the bench's compile-behaviour sweep.
     """
     batch, seq_len, nheads, headdim = x.shape
     n_state = b_proj.shape[-1]
@@ -164,7 +167,7 @@ def launch_complex_scan_rope(
     y = torch.empty_like(x_c)
 
     grid = (batch, nheads, triton.cdiv(headdim, block_p))
-    num_warps = 4 if block_p * block_n >= 512 else 2
+    warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     _complex_rope_kernel[grid](
         x_c,
         b_c,
@@ -180,7 +183,7 @@ def launch_complex_scan_rope(
         s_angles,
         BLOCK_P=block_p,
         BLOCK_N=block_n,
-        num_warps=num_warps,
+        num_warps=warps,
     )
     return y
 

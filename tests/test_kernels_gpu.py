@@ -15,9 +15,11 @@ import torch
 
 from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
+    complex_scan_rope,
     forward_chunked_scan,
     mimo_backward,
     triton_bwd_scan_resource_meta,
+    triton_complex_rope_resource_meta,
     triton_mimo_bwd_resource_meta,
     triton_scan_resource_meta,
 )
@@ -25,11 +27,13 @@ from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
+from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
 from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads, reference_mimo_backward
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
     verify_bwd_scan_op_all_grads,
     verify_mimo_bwd_op_all_grads,
+    verify_rope_op,
     verify_scan_op,
 )
 from flash_mamba_rl.verifier.timing import benchmark
@@ -522,3 +526,121 @@ class TestC3ContractGates:
         meta = triton_mimo_bwd_resource_meta()
         assert meta is not None, "no resource metadata from the compiled kernel cache"
         assert 0 < meta["n_regs"] <= 255
+
+
+def _rope_inputs(
+    b: int,
+    seq: int,
+    h: int,
+    p: int,
+    n: int,
+    s: int,
+    dtype: torch.dtype = torch.float32,
+    seed: int = 0,
+) -> tuple[torch.Tensor, ...]:
+    torch.manual_seed(seed)
+    dev = torch.device("cuda")
+    x = torch.randn(b, seq, h, p, device=dev).to(dtype)
+    bb = torch.randn(b, seq, h, n, device=dev).to(dtype)
+    cc = torch.randn(b, seq, h, n, device=dev).to(dtype)
+    dt = (torch.rand(b, seq, h, device=dev) * 0.1 + 1e-3).to(dtype)
+    a = (-torch.rand(h, device=dev)).to(dtype)
+    angle = torch.randn(b, seq, h, s, device=dev).to(dtype)
+    return x, bb, cc, dt, a, angle
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC4TritonParity:
+    @pytest.mark.parametrize(
+        ("b", "seq", "h", "p", "n", "s"),
+        [
+            (1, 8, 2, 4, 8, 3),  # tiny, partial rotary (6 < 8)
+            (2, 64, 3, 24, 16, 8),  # non-pow2 H and P, full rotary (16 = N)
+            (3, 121, 4, 100, 10, 4),  # odd L, non-pow2 P/N, masked N lanes
+            (2, 256, 8, 64, 128, 64),  # training-like, N at MAX_BLOCK_N
+            (2, 64, 2, 80, 16, 6),  # P split across blocks (BLOCK_P=64)
+            (1, 1, 2, 4, 8, 2),  # L=1
+        ],
+    )
+    def test_fp32_matches_reference(self, b: int, seq: int, h: int, p: int, n: int, s: int) -> None:
+        args = _rope_inputs(b, seq, h, p, n, s)
+        got = complex_scan_rope(*args)
+        want = reference_complex_scan_rope(*args)
+        max_err = (got - want).abs().max().item()
+        scale = want.abs().max().clamp(min=1.0).item()
+        # scale_rel is the C2-honest metric; provisional bounds, tightened
+        # from B200 measurement like C1-C3's.
+        assert torch.allclose(got, want, atol=1e-3 * scale, rtol=1e-3), (
+            f"max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
+        )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_matches_fp32_oracle(self, dtype: torch.dtype) -> None:
+        args = _rope_inputs(2, 128, 2, 16, 16, 4, dtype=dtype)
+        got = complex_scan_rope(*args)
+        want = reference_complex_scan_rope(*(t.to(torch.float32) for t in args))
+        assert got.dtype == dtype
+        atol = 1e-2 if dtype == torch.float16 else 5e-2
+        scale = want.abs().max().clamp(min=1.0).item()
+        assert torch.allclose(got.float(), want, atol=atol * scale, rtol=atol)
+
+    def test_deterministic_across_runs(self) -> None:
+        args = _rope_inputs(2, 128, 2, 16, 16, 4)
+        first = complex_scan_rope(*args)
+        for _ in range(4):
+            assert torch.equal(complex_scan_rope(*args), first)
+
+    def test_noncontiguous_inputs_match_contiguous(self) -> None:
+        args = _rope_inputs(2, 64, 2, 16, 16, 4)
+        base = complex_scan_rope(*args)
+        x, bb, cc, dt, a, angle = args
+        x_nc = x.transpose(1, 2).contiguous().transpose(1, 2)
+        b_nc = bb.transpose(2, 3).contiguous().transpose(2, 3)
+        assert not (x_nc.is_contiguous() or b_nc.is_contiguous())
+        assert torch.equal(complex_scan_rope(x_nc, b_nc, cc, dt, a, angle), base)
+
+    def test_nonfinite_x_masks_match_oracle(self) -> None:
+        args = _rope_inputs(2, 64, 2, 8, 16, 4, seed=5)
+        x = args[0]
+        x[0, 9, 0, 1] = float("inf")
+        x[1, 33, 1, 2] = float("nan")
+        got = complex_scan_rope(*args)
+        want = reference_complex_scan_rope(*args)
+        assert torch.equal(torch.isnan(got), torch.isnan(want))
+        assert torch.equal(torch.isinf(got), torch.isinf(want))
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC4NumWarpsCompile:
+    def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
+        # Same #904 framing as C1-C3: no tl.dot anywhere, so the
+        # TMEM-promotion pass never engages on sm_100.
+        from flash_mamba_rl.kernels.ops import _triton_complex_rope
+
+        args = _rope_inputs(2, 256, 4, 32, 16, 8)
+        base = _triton_complex_rope.launch_complex_scan_rope(*args, num_warps=2)
+        for warps in (4, 8):
+            got = _triton_complex_rope.launch_complex_scan_rope(*args, num_warps=warps)
+            assert torch.allclose(got, base, atol=1e-4, rtol=1e-4), warps
+        meta = triton_complex_rope_resource_meta()
+        assert meta is not None
+        assert 0 < meta["n_regs"] <= 255
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC4ContractGates:
+    def test_all_gates_pass_on_cuda(self) -> None:
+        args = _rope_inputs(1, 8, 2, 4, 16, 6)
+        complex_scan_rope(*args)  # warm the cache
+        meta = triton_complex_rope_resource_meta()
+
+        results = verify_rope_op(complex_scan_rope, device="cuda", resource_meta=meta)
+        failed = {
+            name: (result.reason, result.details)
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"rope gates failed on CUDA (resource_meta={meta}): {failed}"
