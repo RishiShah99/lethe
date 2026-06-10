@@ -20,6 +20,17 @@ argument sets (``u, delta, A, B, C, D``). Per op this module provides:
   op (e.g. PRC-02's accumulation stress belongs on the scan length L, not
   on the elementwise D axis its default shape implies).
 
+Backward ops return gradient *tuples*, so they get one gate view per
+gradient output (``BWD_GRAD_FIELDS``): the primary tensor the gates drive
+is the upstream gradient ``dy`` — same [B, L, D] shape conventions, and
+the gates' non-finite injections flow through ``dy`` exactly as the
+forward gates flow them through ``u`` — while ``u`` joins the
+deterministic auxiliaries. Each view runs the full 12-gate suite against
+the autograd oracle's corresponding output, with per-view tolerance
+overrides (``SCAN_BWD_GATE_OVERRIDES``): the accumulation extents differ
+per output — grad_A sums over batch*L of L-long carry chains where
+grad_u sees one chain — so one tolerance table cannot serve all six.
+
 This is the same wiring the RL reward path needs to score generated
 kernels per op; Phase D consumes it via ``score_candidate(gate_kwargs=...)``.
 """
@@ -33,7 +44,10 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.references import reference_forward_chunked_scan
+from flash_mamba_rl.kernels.references import (
+    reference_backward_selective_scan,
+    reference_forward_chunked_scan,
+)
 from flash_mamba_rl.verifier.contracts import (
     GateResult,
     gate_prc_02_mixed_precision_accumulation,
@@ -41,12 +55,20 @@ from flash_mamba_rl.verifier.contracts import (
 )
 
 ScanCallable = Callable[..., Tensor]
+# Backward-scan signature: (u, delta, A, B, C, D, dy, *, chunk_size) -> the
+# six gradients as an indexable sequence (SelectiveScanGrads or plain tuple).
+BwdScanCallable = Callable[..., Any]
 
 SCAN_N_STATE = 16
 # Must divide every sequence length the gates use (CMP-02's default L=8 is
 # the smallest); the scan result itself does not depend on chunking.
 SCAN_CHUNK_SIZE = 8
 _SCAN_AUX_SEED = 23117
+_BWD_AUX_SEED = 9241
+
+# Gradient outputs of the backward scan, in SelectiveScanGrads field order;
+# each gets its own full gate run (one single-tensor view per output).
+BWD_GRAD_FIELDS: tuple[str, ...] = ("grad_u", "grad_delta", "grad_A", "grad_B", "grad_C", "grad_D")
 
 # Per-gate overrides appropriate for the scan op.
 SCAN_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
@@ -84,16 +106,15 @@ _DT_MIN = 1e-3
 _DT_MAX = 1e-1
 
 
-def _scan_aux(
+def _aux_from_gen(
+    gen: torch.Generator,
     batch: int,
     seq_len: int,
     d_model: int,
     n_state: int,
-    device: torch.device,
-    dtype: torch.dtype,
-    saturate: bool = True,
+    saturate: bool,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Deterministic (delta, A, B, C, D_skip) for a [batch, seq_len, d_model] primary.
+    """CPU-side (delta, A, B, C, D_skip) drawn from ``gen`` — shared aux core.
 
     ``delta`` is drawn so that ``softplus(delta)`` is log-uniform in
     [1e-3, 1e-1] — the official Mamba dt-init distribution. This matters
@@ -117,8 +138,6 @@ def _scan_aux(
     inject non-finites through the primary only) and is covered by the
     kernels' direct tests.
     """
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(_SCAN_AUX_SEED)
     log_lo = math.log(_DT_MIN)
     log_hi = math.log(_DT_MAX)
     dt = torch.exp(torch.rand(batch, seq_len, d_model, generator=gen) * (log_hi - log_lo) + log_lo)
@@ -132,11 +151,64 @@ def _scan_aux(
     b_proj = torch.randn(batch, seq_len, n_state, generator=gen)
     c_proj = torch.randn(batch, seq_len, n_state, generator=gen)
     d_skip = torch.randn(d_model, generator=gen)
+    return delta, a, b_proj, c_proj, d_skip
+
+
+def _scan_aux(
+    batch: int,
+    seq_len: int,
+    d_model: int,
+    n_state: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    saturate: bool = True,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Deterministic (delta, A, B, C, D_skip) for a [batch, seq_len, d_model] primary.
+
+    Distribution rationale lives on ``_aux_from_gen``. Draw order under
+    ``_SCAN_AUX_SEED`` is pinned: the measured cheat-vs-honest separations
+    in the discriminative tests depend on these exact values.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_SCAN_AUX_SEED)
+    delta, a, b_proj, c_proj, d_skip = _aux_from_gen(
+        gen, batch, seq_len, d_model, n_state, saturate
+    )
 
     def cast(t: Tensor) -> Tensor:
         return t.to(device=device, dtype=dtype)
 
     return cast(delta), cast(a), cast(b_proj), cast(c_proj), cast(d_skip)
+
+
+def _bwd_scan_aux(
+    batch: int,
+    seq_len: int,
+    d_model: int,
+    n_state: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    saturate: bool = True,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Deterministic (u, delta, A, B, C, D_skip) for a [batch, seq_len, d_model] ``dy``.
+
+    The backward op's primary is the upstream gradient ``dy``, so the
+    forward input ``u`` joins the auxiliaries: unit-normal, like the
+    primaries the gates drive the forward op with. Same distribution
+    rationale as ``_aux_from_gen``; a distinct seed keeps the backward
+    aux decorrelated from any forward-harness primary.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_BWD_AUX_SEED)
+    u = torch.randn(batch, seq_len, d_model, generator=gen)
+    delta, a, b_proj, c_proj, d_skip = _aux_from_gen(
+        gen, batch, seq_len, d_model, n_state, saturate
+    )
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype)
+
+    return cast(u), cast(delta), cast(a), cast(b_proj), cast(c_proj), cast(d_skip)
 
 
 def scan_candidate_adapter(
@@ -230,3 +302,189 @@ def verify_scan_op(
             details={"exception_type": type(exc).__name__},
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Backward scan: one gate view per gradient output
+# ---------------------------------------------------------------------------
+
+
+def _bwd_view_overrides(
+    *,
+    ord01_reduction_elements: int,
+    ord03_atol: float,
+    ord03_rtol: float,
+) -> dict[str, dict[str, Any]]:
+    """Per-view gate overrides sharing the backward op's fixed shapes.
+
+    PRC-02 keeps the forward's L-axis stress shape and adds rtol=1e-3:
+    gradient magnitudes span decades across outputs (grad_A accumulates
+    batch*L near-integrator terms), so the fp16 *input-rounding* floor is
+    relative to local output scale exactly as the gate docstring
+    anticipates — while the fp16-accumulator signal sits ~30x above that
+    rtol at this shape's sqrt(L)*eps16 error.
+
+    ORD-01's ``reduction_elements`` is the view's honest accumulation
+    extent under the eps*sqrt(chain)*scale random-walk model (C1's
+    calibration approach). ORD-03 keeps the forward's L=8192 collapse
+    length. Tolerances are theory-seeded and provisional until the B200
+    calibration pass measures the real noise floors (C1 measured within
+    1.1x of the model; expect the same and tighten accordingly).
+    """
+    return {
+        "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32), "rtol": 1e-3},
+        "gate_ord_01_reduction_order_tolerance": {"reduction_elements": ord01_reduction_elements},
+        "gate_ord_03_noncommutative_reduction": {
+            "shape": (1, 8192, 16),
+            "atol": ord03_atol,
+            "rtol": ord03_rtol,
+        },
+    }
+
+
+# Accumulation extents at ORD-01's (4, 512, 32) gate shape:
+# grad_u / grad_delta see one reverse carry chain (~L); grad_B / grad_C sum
+# D=32 chain-carrying terms (~D*L/2); grad_A sums batch*L terms each with an
+# ~L/2 chain (~B*L^2/2); grad_D is a flat batch*L product sum (no chains).
+SCAN_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    "grad_u": _bwd_view_overrides(ord01_reduction_elements=512, ord03_atol=1e-3, ord03_rtol=1e-3),
+    "grad_delta": _bwd_view_overrides(
+        ord01_reduction_elements=512, ord03_atol=1e-3, ord03_rtol=1e-3
+    ),
+    "grad_A": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2, ord03_atol=1e-2, ord03_rtol=1e-2
+    ),
+    "grad_B": _bwd_view_overrides(
+        ord01_reduction_elements=32 * 512 // 2, ord03_atol=3e-3, ord03_rtol=3e-3
+    ),
+    "grad_C": _bwd_view_overrides(
+        ord01_reduction_elements=32 * 512 // 2, ord03_atol=3e-3, ord03_rtol=3e-3
+    ),
+    "grad_D": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512, ord03_atol=1e-3, ord03_rtol=1e-3
+    ),
+}
+
+
+def bwd_scan_candidate_adapter(
+    bwd_fn: BwdScanCallable,
+    grad_field: str,
+    *,
+    n_state: int = SCAN_N_STATE,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``."""
+    idx = BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(dy: Tensor) -> Tensor:
+        batch, seq_len, d_model = dy.shape
+        inputs = _bwd_scan_aux(
+            batch, seq_len, d_model, n_state, dy.device, dy.dtype, saturate=saturate
+        )
+        grads = bwd_fn(*inputs, dy, chunk_size=chunk_size)
+        out: Tensor = grads[idx]
+        return out
+
+    return adapted
+
+
+def bwd_scan_reference_adapter(
+    grad_field: str,
+    *,
+    n_state: int = SCAN_N_STATE,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The autograd oracle behind the same per-gradient single-tensor interface."""
+    idx = BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(dy: Tensor) -> Tensor:
+        batch, seq_len, d_model = dy.shape
+        inputs = _bwd_scan_aux(
+            batch, seq_len, d_model, n_state, dy.device, dy.dtype, saturate=saturate
+        )
+        if dy.dtype == torch.float32:
+            return reference_backward_selective_scan(*inputs, dy, chunk_size=chunk_size)[idx]
+        # Mixed-precision contract: oracle computes in fp32 from the same
+        # (already rounded) operand bits, rounds once at the output.
+        u32, delta32, a32, b32, c32, d32 = (t.to(torch.float32) for t in inputs)
+        grads = reference_backward_selective_scan(
+            u32, delta32, a32, b32, c32, d32, dy.to(torch.float32), chunk_size=chunk_size
+        )
+        return grads[idx].to(dy.dtype)
+
+    return adapted
+
+
+def verify_bwd_scan_op(
+    bwd_fn: BwdScanCallable,
+    *,
+    grad_field: str,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    n_state: int = SCAN_N_STATE,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+) -> dict[str, GateResult]:
+    """Run all 12 contract gates over one gradient-output view of a backward op.
+
+    Mirrors ``verify_scan_op`` per view, including the saturation-free
+    PRC-02 re-run (same rationale: the saturated channels' ~100x local
+    amplification drowns the accumulator signal in fp16 input-rounding
+    noise; saturation value-correctness is CMP-01's job on this view).
+    """
+    view_overrides = SCAN_BWD_GATE_OVERRIDES.get(grad_field, {})
+    overrides: dict[str, dict[str, Any]] = {k: dict(v) for k, v in view_overrides.items()}
+    if resource_meta is not None:
+        overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
+    results = run_all_gates(
+        bwd_scan_candidate_adapter(bwd_fn, grad_field, n_state=n_state, chunk_size=chunk_size),
+        bwd_scan_reference_adapter(grad_field, n_state=n_state, chunk_size=chunk_size),
+        device=device,
+        gate_overrides=overrides,
+    )
+    prc02_kwargs: dict[str, Any] = {
+        "device": device,
+        **view_overrides.get("gate_prc_02_mixed_precision_accumulation", {}),
+    }
+    try:
+        results["gate_prc_02_mixed_precision_accumulation"] = (
+            gate_prc_02_mixed_precision_accumulation(
+                bwd_scan_candidate_adapter(
+                    bwd_fn, grad_field, n_state=n_state, chunk_size=chunk_size, saturate=False
+                ),
+                bwd_scan_reference_adapter(
+                    grad_field, n_state=n_state, chunk_size=chunk_size, saturate=False
+                ),
+                **prc02_kwargs,
+            )
+        )
+    except Exception as exc:  # mirror run_all_gates' crash containment
+        results["gate_prc_02_mixed_precision_accumulation"] = GateResult(
+            passed=False,
+            reason=f"gate crashed: {type(exc).__name__}: {exc}",
+            details={"exception_type": type(exc).__name__},
+        )
+    return results
+
+
+def verify_bwd_scan_op_all_grads(
+    bwd_fn: BwdScanCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    n_state: int = SCAN_N_STATE,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over all six gradient views — the backward op's full verdict."""
+    return {
+        grad_field: verify_bwd_scan_op(
+            bwd_fn,
+            grad_field=grad_field,
+            device=device,
+            resource_meta=resource_meta,
+            n_state=n_state,
+            chunk_size=chunk_size,
+        )
+        for grad_field in BWD_GRAD_FIELDS
+    }

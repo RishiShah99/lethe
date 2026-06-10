@@ -1,9 +1,11 @@
 """GPU validation for the hand-written Phase C kernels.
 
-Runs on the fleet box (``bash scratch/detach.sh bash scratch/c1_gpu_suite.sh``).
-Skips cleanly on CPU-only hosts. The headline test is
-``TestC1ContractGates::test_all_gates_pass_on_cuda`` — C1's 12/12 exit
-criterion — with parity-vs-official as the independent oracle check.
+Runs on the fleet box (``bash scratch/detach.sh bash scratch/c2_gpu_suite.sh``).
+Skips cleanly on CPU-only hosts. The headline tests are the per-kernel
+contract-gate suites — C1's 12/12 and C2's 6x12/12 exit criteria — with
+parity-vs-official as the independent oracle checks, plus C2's
+num_warps>=4 compile assertion (the config family where the official
+Mamba-3 backward dies on sm_100, #904).
 """
 
 from __future__ import annotations
@@ -11,9 +13,21 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import forward_chunked_scan, triton_scan_resource_meta
-from flash_mamba_rl.kernels.references import reference_forward_chunked_scan
-from flash_mamba_rl.verifier.op_harness import verify_scan_op
+from flash_mamba_rl.kernels.ops import (
+    backward_selective_scan,
+    forward_chunked_scan,
+    triton_bwd_scan_resource_meta,
+    triton_scan_resource_meta,
+)
+from flash_mamba_rl.kernels.references import (
+    reference_backward_selective_scan,
+    reference_forward_chunked_scan,
+)
+from flash_mamba_rl.verifier.op_harness import (
+    BWD_GRAD_FIELDS,
+    verify_bwd_scan_op_all_grads,
+    verify_scan_op,
+)
 from flash_mamba_rl.verifier.timing import benchmark
 
 requires_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
@@ -156,6 +170,190 @@ class TestC1BenchSmoke:
         )
         t_ref = benchmark(
             lambda: reference_forward_chunked_scan(*args, chunk_size=8), (), warmup=2, trials=5
+        )
+        assert t_triton.median_ms < t_ref.median_ms, (
+            f"triton {t_triton.median_ms:.3f} ms not faster than eager {t_ref.median_ms:.3f} ms"
+        )
+
+
+def _bwd_inputs(
+    b: int,
+    seq: int,
+    d: int,
+    n: int,
+    dtype: torch.dtype = torch.float32,
+    seed: int = 0,
+) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    args = _scan_inputs(b, seq, d, n, dtype=dtype, seed=seed)
+    torch.manual_seed(seed + 1)
+    dy = torch.randn(b, seq, d, device="cuda").to(dtype)
+    return args, dy
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC2TritonParity:
+    @pytest.mark.parametrize(
+        ("b", "seq", "d", "n"),
+        [
+            (1, 8, 4, 8),  # tiny
+            (2, 64, 96, 16),  # non-pow2 D
+            (3, 120, 100, 10),  # non-pow2 L (chunk_k=8), D and N
+            (2, 256, 512, 32),  # larger state
+        ],
+    )
+    def test_fp32_grads_match_reference(self, b: int, seq: int, d: int, n: int) -> None:
+        args, dy = _bwd_inputs(b, seq, d, n)
+        ours = backward_selective_scan(*args, dy, chunk_size=8)
+        ref = reference_backward_selective_scan(*args, dy, chunk_size=8)
+        for field, got, want in zip(BWD_GRAD_FIELDS, ours, ref, strict=True):
+            max_err = (got.float() - want.float()).abs().max().item()
+            # Cross-implementation reorder noise; grad_A accumulates over
+            # batch*L chains so it carries the widest spread (provisional,
+            # tightened from B200 measurement like C1's parity bounds).
+            assert torch.allclose(got, want, atol=1e-3, rtol=1e-3), (
+                f"{field}: max_err={max_err:.3e}"
+            )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_grads_match_fp32_oracle(self, dtype: torch.dtype) -> None:
+        args, dy = _bwd_inputs(2, 128, 64, 16, dtype=dtype)
+        ours = backward_selective_scan(*args, dy, chunk_size=8)
+        ref = reference_backward_selective_scan(
+            *(t.to(torch.float32) for t in args), dy.to(torch.float32), chunk_size=8
+        )
+        atol = 1e-2 if dtype == torch.float16 else 5e-2
+        for field, got, want in zip(BWD_GRAD_FIELDS, ours, ref, strict=True):
+            assert got.dtype == dtype, field
+            assert torch.allclose(got.float(), want, atol=atol, rtol=atol), field
+
+    def test_deterministic_across_runs(self) -> None:
+        args, dy = _bwd_inputs(2, 128, 64, 16)
+        first = backward_selective_scan(*args, dy, chunk_size=8)
+        for _ in range(4):
+            again = backward_selective_scan(*args, dy, chunk_size=8)
+            for field, a_, b_ in zip(BWD_GRAD_FIELDS, first, again, strict=True):
+                assert torch.equal(a_, b_), field
+
+    def test_forward_op_autograd_uses_this_kernel(self) -> None:
+        # The C1 forward op's autograd backward now dispatches to the C2
+        # kernel: differentiating it must reproduce the public backward op
+        # bit-for-bit (same launcher, same inputs, deterministic kernel).
+        args, dy = _bwd_inputs(2, 64, 32, 16, seed=5)
+        direct = backward_selective_scan(*args, dy, chunk_size=8)
+        leaves = tuple(t.detach().requires_grad_(True) for t in args)
+        y = forward_chunked_scan(*leaves, chunk_size=8)
+        via_autograd = torch.autograd.grad(y, leaves, dy)
+        for field, got, want in zip(BWD_GRAD_FIELDS, direct, via_autograd, strict=True):
+            assert torch.equal(got, want), field
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC2NumWarpsCompile:
+    def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
+        # The #904 contrast: the official Mamba-3 Triton backward fails to
+        # compile at every num_warps >= 4 config on sm_100 (TMEM budget).
+        # Ours carries the recurrence without tl.dot, so the TMEM-promotion
+        # pass never engages — these launches raising OutOfResources would
+        # falsify the C2 story outright.
+        from flash_mamba_rl.kernels.ops import _triton_bwd_scan
+
+        args, dy = _bwd_inputs(2, 256, 128, 16)
+        base = _triton_bwd_scan.launch_backward_scan(*args, dy, num_warps=2)
+        for warps in (4, 8):
+            got = _triton_bwd_scan.launch_backward_scan(*args, dy, num_warps=warps)
+            for field, g, want in zip(BWD_GRAD_FIELDS, got, base, strict=True):
+                # Reduction trees shift with the warp layout; values must
+                # stay within reorder noise of the num_warps=2 run.
+                assert torch.allclose(g, want, atol=1e-4, rtol=1e-4), (warps, field)
+        meta = triton_bwd_scan_resource_meta()
+        assert meta is not None
+        assert 0 < meta["n_regs"] <= 255
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC2ContractGates:
+    def test_all_gates_all_grads_pass_on_cuda(self) -> None:
+        # C2's exit criterion: 12/12 gates on every gradient view, with the
+        # compiled kernel's resource envelope feeding RES-02.
+        args, dy = _bwd_inputs(1, 8, 4, 16)
+        backward_selective_scan(*args, dy, chunk_size=8)  # warm the cache
+        meta = triton_bwd_scan_resource_meta()
+
+        all_results = verify_bwd_scan_op_all_grads(
+            backward_selective_scan, device="cuda", resource_meta=meta
+        )
+        failed = {
+            f"{view}.{name}": (result.reason, result.details)
+            for view, results in all_results.items()
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"gates failed on CUDA (resource_meta={meta}): {failed}"
+
+    def test_resource_meta_extracted(self) -> None:
+        args, dy = _bwd_inputs(1, 8, 4, 16)
+        backward_selective_scan(*args, dy, chunk_size=8)
+        meta = triton_bwd_scan_resource_meta()
+        assert meta is not None, "no resource metadata from the compiled kernel cache"
+        assert 0 < meta["n_regs"] <= 255
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.skipif(not _HAS_MAMBA, reason="mamba_ssm not installed")
+class TestC2VsOfficialMamba:
+    def test_grads_match_selective_scan_fn(self) -> None:
+        # Independent oracle: the official Mamba-1 CUDA backward (healthy on
+        # Blackwell, unlike the Mamba-3 Triton path) computes the same VJP in
+        # [B, D, L] layout.
+        u, delta, a, b_proj, c_proj, d_skip = _scan_inputs(2, 256, 64, 16, seed=7)
+        torch.manual_seed(11)
+        dy = torch.randn(2, 256, 64, device="cuda")
+        ours = backward_selective_scan(u, delta, a, b_proj, c_proj, d_skip, dy, chunk_size=8)
+
+        u_o = u.transpose(1, 2).contiguous().requires_grad_(True)
+        delta_o = delta.transpose(1, 2).contiguous().requires_grad_(True)
+        a_o = a.clone().requires_grad_(True)
+        b_o = b_proj.transpose(1, 2).unsqueeze(1).contiguous().requires_grad_(True)
+        c_o = c_proj.transpose(1, 2).unsqueeze(1).contiguous().requires_grad_(True)
+        d_o = d_skip.clone().requires_grad_(True)
+        y = selective_scan_fn(u_o, delta_o, a_o, b_o, c_o, d_o, delta_softplus=True)
+        y.backward(dy.transpose(1, 2).contiguous())
+
+        assert u_o.grad is not None and delta_o.grad is not None and a_o.grad is not None
+        assert b_o.grad is not None and c_o.grad is not None and d_o.grad is not None
+        official = (
+            u_o.grad.transpose(1, 2),
+            delta_o.grad.transpose(1, 2),
+            a_o.grad,
+            b_o.grad.squeeze(1).transpose(1, 2),
+            c_o.grad.squeeze(1).transpose(1, 2),
+            d_o.grad,
+        )
+        for field, got, want in zip(BWD_GRAD_FIELDS, ours, official, strict=True):
+            max_err = (got.float() - want.float()).abs().max().item()
+            assert torch.allclose(got, want, atol=1e-3, rtol=1e-3), (
+                f"disagrees with official mamba_ssm backward on {field}: max_err={max_err:.3e}"
+            )
+
+
+@pytest.mark.gpu
+@pytest.mark.slow
+@requires_gpu
+class TestC2BenchSmoke:
+    def test_faster_than_eager_reference_backward(self) -> None:
+        args, dy = _bwd_inputs(4, 512, 256, 16)
+        t_triton = benchmark(
+            lambda: backward_selective_scan(*args, dy, chunk_size=8), (), warmup=5, trials=20
+        )
+        t_ref = benchmark(
+            lambda: reference_backward_selective_scan(*args, dy, chunk_size=8),
+            (),
+            warmup=1,
+            trials=3,
         )
         assert t_triton.median_ms < t_ref.median_ms, (
             f"triton {t_triton.median_ms:.3f} ms not faster than eager {t_ref.median_ms:.3f} ms"

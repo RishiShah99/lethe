@@ -7,16 +7,31 @@ overrides) so the GPU run only has to answer GPU-specific questions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import forward_chunked_scan
-from flash_mamba_rl.kernels.references import reference_forward_chunked_scan
-from flash_mamba_rl.verifier.contracts import run_all_gates
+from flash_mamba_rl.kernels.ops import backward_selective_scan, forward_chunked_scan
+from flash_mamba_rl.kernels.references import (
+    reference_backward_selective_scan,
+    reference_forward_chunked_scan,
+)
+from flash_mamba_rl.verifier.contracts import (
+    gate_cmp_01_input_variation,
+    gate_ord_03_noncommutative_reduction,
+    gate_prc_02_mixed_precision_accumulation,
+    run_all_gates,
+)
 from flash_mamba_rl.verifier.op_harness import (
+    BWD_GRAD_FIELDS,
+    SCAN_BWD_GATE_OVERRIDES,
     SCAN_CHUNK_SIZE,
+    bwd_scan_candidate_adapter,
+    bwd_scan_reference_adapter,
     scan_candidate_adapter,
     scan_reference_adapter,
+    verify_bwd_scan_op,
     verify_scan_op,
 )
 
@@ -275,3 +290,181 @@ class TestScanHarness:
         # or gates fail on the ValueError instead of testing the kernel.
         for seq_len in (8, 16, 32, 64, 128, 256, 512, 1024):
             assert seq_len % SCAN_CHUNK_SIZE == 0
+
+
+def _bwd_via_autograd(
+    fwd_fn: Callable[..., torch.Tensor],
+) -> Callable[..., tuple[torch.Tensor, ...]]:
+    """Backward-signature wrapper differentiating through a (cheating) forward.
+
+    The forward cheats above carry their pathologies into their gradients —
+    fp16 state means an fp16 backward carry, an unguarded softplus NaNs the
+    whole graph at saturated delta — so autograd through them yields the
+    matching *backward* cheats for the per-gradient gate views.
+    """
+
+    def bwd(
+        u: torch.Tensor,
+        delta: torch.Tensor,
+        a: torch.Tensor,
+        b_proj: torch.Tensor,
+        c_proj: torch.Tensor,
+        d_skip: torch.Tensor,
+        dy: torch.Tensor,
+        *,
+        chunk_size: int = 8,
+    ) -> tuple[torch.Tensor, ...]:
+        with torch.enable_grad():
+            leaves = [
+                t.detach().requires_grad_(True) for t in (u, delta, a, b_proj, c_proj, d_skip)
+            ]
+            y = fwd_fn(*leaves, chunk_size=chunk_size)
+            return torch.autograd.grad(y, leaves, dy)
+
+    return bwd
+
+
+class TestBackwardSelectiveScanCpu:
+    def test_matches_reference_fp32(self) -> None:
+        args = _scan_inputs()
+        dy = torch.randn(2, 8, 4)
+        ours = backward_selective_scan(*args, dy, chunk_size=4)
+        ref = reference_backward_selective_scan(*args, dy, chunk_size=4)
+        for field, got, want in zip(BWD_GRAD_FIELDS, ours, ref, strict=True):
+            assert torch.equal(got, want), f"{field}: eager path must replicate the reference"
+
+    def test_fp16_grads_close_to_fp32_oracle(self) -> None:
+        args32 = _scan_inputs(seq=16, d=8)
+        args16 = tuple(t.to(torch.float16) for t in args32)
+        dy16 = torch.randn(2, 16, 8, dtype=torch.float16)
+        ours = backward_selective_scan(*args16, dy16, chunk_size=8)
+        ref = reference_backward_selective_scan(
+            *(t.to(torch.float32) for t in args16), dy16.to(torch.float32), chunk_size=8
+        )
+        for field, got, want in zip(BWD_GRAD_FIELDS, ours, ref, strict=True):
+            assert got.dtype == torch.float16, field
+            assert torch.allclose(got.float(), want, atol=1e-2, rtol=1e-2), field
+
+    def test_fp64_native(self) -> None:
+        args64 = tuple(t.to(torch.float64) for t in _scan_inputs())
+        dy = torch.randn(2, 8, 4, dtype=torch.float64)
+        grads = backward_selective_scan(*args64, dy, chunk_size=4)
+        for field, g in zip(BWD_GRAD_FIELDS, grads, strict=True):
+            assert g.dtype == torch.float64, field
+            assert torch.isfinite(g).all(), field
+
+    def test_chunk_divisibility_error_parity(self) -> None:
+        args = _scan_inputs(seq=8)
+        dy = torch.randn(2, 8, 4)
+        with pytest.raises(ValueError, match="divisible"):
+            backward_selective_scan(*args, dy, chunk_size=3)
+        with pytest.raises(ValueError, match="divisible"):
+            reference_backward_selective_scan(*args, dy, chunk_size=3)
+
+    def test_consistent_with_public_forward_autograd(self) -> None:
+        # The op pair must be self-consistent: differentiating the public
+        # forward must give the same gradients the public backward returns.
+        args = _scan_inputs(seed=11)
+        dy = torch.randn(2, 8, 4)
+        direct = backward_selective_scan(*args, dy, chunk_size=4)
+
+        leaves = tuple(t.detach().requires_grad_(True) for t in args)
+        y = forward_chunked_scan(*leaves, chunk_size=4)
+        via_autograd = torch.autograd.grad(y, leaves, dy)
+        for field, got, want in zip(BWD_GRAD_FIELDS, direct, via_autograd, strict=True):
+            assert torch.equal(got, want), field
+
+    def test_differentiable_wrt_dy_when_required(self) -> None:
+        # CMP-02's gradcheck differentiates the op w.r.t. dy; the eager path
+        # must build that graph (the VJP is linear in dy).
+        args = _scan_inputs()
+        dy = torch.randn(2, 8, 4, requires_grad=True)
+        grads = backward_selective_scan(*args, dy, chunk_size=4)
+        assert grads.grad_u.requires_grad
+        (dd,) = torch.autograd.grad(grads.grad_u.sum(), dy)
+        assert dd.shape == dy.shape
+        assert torch.isfinite(dd).all()
+
+
+class TestBackwardScanHarness:
+    def test_adapters_deterministic_per_view(self) -> None:
+        dy = torch.randn(2, 16, 4)
+        for field in BWD_GRAD_FIELDS:
+            adapted = bwd_scan_candidate_adapter(backward_selective_scan, field)
+            assert torch.equal(adapted(dy), adapted(dy.clone())), field
+
+    def test_reference_adapter_matches_direct_reference(self) -> None:
+        dy = torch.randn(2, 16, 4)
+        for field in BWD_GRAD_FIELDS:
+            ref_adapted = bwd_scan_reference_adapter(field)
+            cand_adapted = bwd_scan_candidate_adapter(reference_backward_selective_scan, field)
+            assert torch.equal(ref_adapted(dy), cand_adapted(dy)), field
+
+    def test_view_outputs_have_expected_shapes(self) -> None:
+        b, seq, d = 2, 16, 4
+        dy = torch.randn(b, seq, d)
+        expected = {
+            "grad_u": (b, seq, d),
+            "grad_delta": (b, seq, d),
+            "grad_A": (d, 16),
+            "grad_B": (b, seq, 16),
+            "grad_C": (b, seq, 16),
+            "grad_D": (d,),
+        }
+        for field, shape in expected.items():
+            out = bwd_scan_candidate_adapter(backward_selective_scan, field)(dy)
+            assert out.shape == shape, field
+
+    def test_all_gates_pass_on_cpu_grad_u_view(self) -> None:
+        # One full-suite view exercises every gate against the backward op on
+        # CPU (the eager path). The remaining five views run the full suite
+        # on the GPU box, where the Triton kernel — the actual target — is
+        # live; re-running all six against the eager path here would only
+        # re-verify autograd against autograd at ~6x the suite cost.
+        # resource_meta rides along to pin that the verify wrapper forwards
+        # it into RES-02 (applicable instead of not-applicable).
+        results = verify_bwd_scan_op(
+            backward_selective_scan,
+            grad_field="grad_u",
+            resource_meta={"n_regs": 64, "shared_bytes": 1024},
+        )
+        assert len(results) == _ALL_GATES_COUNT
+        failed = {name: result.reason for name, result in results.items() if not result.passed}
+        assert not failed, f"grad_u gates failed on CPU: {failed}"
+        assert results["gate_res_02_resource_limits"].details.get("applicable") is True
+
+    def test_fp16_accumulator_bwd_cheat_caught_by_prc02(self) -> None:
+        # Autograd through an fp16-state forward keeps the backward carry in
+        # fp16 too; PRC-02 on the grad_u view must reject it while the honest
+        # op passes (test_all_gates_pass_on_cpu_grad_u_view).
+        kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_u"]["gate_prc_02_mixed_precision_accumulation"])
+        result = gate_prc_02_mixed_precision_accumulation(
+            bwd_scan_candidate_adapter(
+                _bwd_via_autograd(_fp16_accumulator_scan), "grad_u", saturate=False
+            ),
+            bwd_scan_reference_adapter("grad_u", saturate=False),
+            **kwargs,
+        )
+        assert not result.passed, "PRC-02 lost its discriminative power for the backward op"
+
+    def test_unguarded_softplus_bwd_cheat_caught_by_cmp01(self) -> None:
+        # The saturation probe carries over to the backward: an unguarded
+        # softplus turns delta=95 into Inf, and every gradient inherits the
+        # NaN where the reference stays finite.
+        result = gate_cmp_01_input_variation(
+            bwd_scan_candidate_adapter(_bwd_via_autograd(_unguarded_softplus_scan), "grad_delta"),
+            bwd_scan_reference_adapter("grad_delta"),
+        )
+        assert not result.passed, "saturation probe lost for the backward op"
+
+    def test_cumprod_trick_bwd_cheat_caught_by_ord03(self) -> None:
+        # The ratio-cumsum 'parallelisation' underflows its decay products at
+        # ORD-03's L=8192 and the gradients NaN out, while honest reorder
+        # noise stays within the view tolerance.
+        kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_u"]["gate_ord_03_noncommutative_reduction"])
+        result = gate_ord_03_noncommutative_reduction(
+            bwd_scan_candidate_adapter(_bwd_via_autograd(_cumprod_trick_scan), "grad_u"),
+            bwd_scan_reference_adapter("grad_u"),
+            **kwargs,
+        )
+        assert not result.passed, "ORD-03 lost its discriminative power for the backward op"
