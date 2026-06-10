@@ -9,7 +9,7 @@ hardware limits, and reports not-applicable when no metadata is supplied
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +34,7 @@ def gate_cmp_01_input_variation(
     *,
     shape: tuple[int, ...] = (4, 64, 32),
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     atol: float = 1e-5,
     rtol: float = 1e-5,
     n_random: int = 8,
@@ -64,26 +65,26 @@ def gate_cmp_01_input_variation(
 
     # Random inputs
     for i in range(n_random):
-        t = torch.randn(shape, dtype=dtype)
+        t = torch.randn(shape, dtype=dtype, device=device)
         _check(t, f"random[{i}]")
 
     # Adversarial: zeros
-    _check(torch.zeros(shape, dtype=dtype), "zeros")
+    _check(torch.zeros(shape, dtype=dtype, device=device), "zeros")
 
     # Adversarial: large magnitude
-    _check(torch.full(shape, 1e6, dtype=dtype), "large_1e6")
+    _check(torch.full(shape, 1e6, dtype=dtype, device=device), "large_1e6")
 
     # Adversarial: small magnitude
-    _check(torch.full(shape, 1e-6, dtype=dtype), "small_1e-6")
+    _check(torch.full(shape, 1e-6, dtype=dtype, device=device), "small_1e-6")
 
     # Adversarial: denormals (smallest positive subnormal)
     if dtype == torch.float32:
         denorm_val = torch.tensor(1.175494e-38, dtype=torch.float32)
-        _check(torch.full(shape, denorm_val.item(), dtype=dtype), "denormals")
+        _check(torch.full(shape, denorm_val.item(), dtype=dtype, device=device), "denormals")
 
     # Adversarial: longer sequence (double the second dim)
     long_shape = (shape[0], shape[1] * 4, *shape[2:])
-    _check(torch.randn(long_shape, dtype=dtype), "long_seq")
+    _check(torch.randn(long_shape, dtype=dtype, device=device), "long_seq")
 
     if failures:
         return GateResult(
@@ -99,6 +100,7 @@ def gate_cmp_03_shape_polymorphism(
     reference: Callable[..., torch.Tensor],
     *,
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     atol: float = 1e-5,
     rtol: float = 1e-5,
     **kwargs: Any,
@@ -113,7 +115,7 @@ def gate_cmp_03_shape_polymorphism(
     ]
     failures: list[str] = []
     for shape in shapes:
-        t = torch.randn(shape, dtype=dtype)
+        t = torch.randn(shape, dtype=dtype, device=device)
         try:
             out_ref = reference(t)
             out_cand = candidate(t)
@@ -144,6 +146,7 @@ def gate_ord_01_reduction_order_tolerance(
     *,
     shape: tuple[int, ...] = (4, 512, 32),
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
     """ORD-01: Reduction-order tolerance — loosen atol based on sqrt(N).
@@ -164,7 +167,7 @@ def gate_ord_01_reduction_order_tolerance(
 
     atol = dtype_eps * math.sqrt(n_elements)
 
-    t = torch.randn(shape, dtype=dtype)
+    t = torch.randn(shape, dtype=dtype, device=device)
     try:
         out_ref = reference(t)
         out_cand = candidate(t)
@@ -199,11 +202,12 @@ def gate_ord_02_atomic_determinism(
     *,
     shape: tuple[int, ...] = (4, 64, 32),
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     n_runs: int = 5,
     **kwargs: Any,
 ) -> GateResult:
     """ORD-02: Atomic determinism — repeated calls with identical input must be byte-identical."""
-    t = torch.randn(shape, dtype=dtype)
+    t = torch.randn(shape, dtype=dtype, device=device)
     outputs: list[torch.Tensor] = []
     for _ in range(n_runs):
         try:
@@ -235,6 +239,7 @@ def gate_prc_01_precision_regime(
     reference: Callable[..., torch.Tensor],
     *,
     shape: tuple[int, ...] = (4, 64, 32),
+    device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
     """PRC-01: Precision regime — test FP32, FP16, BF16 with per-dtype tolerances."""
@@ -245,7 +250,7 @@ def gate_prc_01_precision_regime(
     ]
     failures: list[str] = []
     for dtype, atol, rtol in dtype_configs:
-        t = torch.randn(shape, dtype=dtype)
+        t = torch.randn(shape, dtype=dtype, device=device)
         try:
             out_ref = reference(t)
             out_cand = candidate(t)
@@ -274,6 +279,7 @@ def gate_exc_01_exceptional_values(
     *,
     shape: tuple[int, ...] = (4, 64, 32),
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
     """EXC-01: Exceptional values — NaN and signed-Inf positions must agree.
@@ -308,17 +314,17 @@ def gate_exc_01_exceptional_values(
             failures.append(f"{label}: -Inf mask mismatch (sign flip?)")
 
     # Input with NaN scattered at known positions
-    t_nan = torch.randn(shape, dtype=dtype)
+    t_nan = torch.randn(shape, dtype=dtype, device=device)
     t_nan.view(-1)[:: max(1, t_nan.numel() // 8)] = float("nan")
     _check_exceptional(t_nan, "scattered_nan")
 
     # Input with +Inf
-    t_inf = torch.randn(shape, dtype=dtype)
+    t_inf = torch.randn(shape, dtype=dtype, device=device)
     t_inf.view(-1)[:: max(1, t_inf.numel() // 8)] = float("inf")
     _check_exceptional(t_inf, "scattered_pos_inf")
 
     # Input with -Inf
-    t_neginf = torch.randn(shape, dtype=dtype)
+    t_neginf = torch.randn(shape, dtype=dtype, device=device)
     t_neginf.view(-1)[:: max(1, t_neginf.numel() // 8)] = float("-inf")
     _check_exceptional(t_neginf, "scattered_neg_inf")
 
@@ -345,6 +351,7 @@ def gate_cmp_02_gradient_correctness(
     reference: Callable[..., torch.Tensor],
     *,
     shape: tuple[int, ...] = (2, 8, 4),
+    device: str | torch.device = "cpu",
     eps: float = 1e-6,
     atol: float = 1e-4,
     rtol: float = 1e-3,
@@ -359,7 +366,7 @@ def gate_cmp_02_gradient_correctness(
     is rejected. Combined with CMP-01's value-correctness, this gives
     gradient agreement with the reference by transitivity.
     """
-    t = torch.randn(shape, dtype=torch.float64, requires_grad=True)
+    t = torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True)
     try:
         ok = torch.autograd.gradcheck(
             candidate,
@@ -389,6 +396,7 @@ def gate_ord_03_noncommutative_reduction(
     *,
     shape: tuple[int, ...] = (4, 64, 32),
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
     """ORD-03: Non-commutative reduction — outputs must be bitwise-identical to
@@ -403,7 +411,7 @@ def gate_ord_03_noncommutative_reduction(
     The input is an alternating large-positive / tiny / large-negative
     pattern where reduction order materially changes the bit pattern.
     """
-    pattern = torch.tensor([1.0, 1e-7, -1.0, 1e-7], dtype=dtype)
+    pattern = torch.tensor([1.0, 1e-7, -1.0, 1e-7], dtype=dtype, device=device)
     n_elements = 1
     for d in shape:
         n_elements *= d
@@ -446,6 +454,7 @@ def gate_prc_02_mixed_precision_accumulation(
     reference: Callable[..., torch.Tensor],
     *,
     shape: tuple[int, ...] = (2, 32, 1024),
+    device: str | torch.device = "cpu",
     atol: float = 2e-2,
     **kwargs: Any,
 ) -> GateResult:
@@ -460,7 +469,7 @@ def gate_prc_02_mixed_precision_accumulation(
     Comparing the FP16 candidate output (upcast to FP32) against the FP32
     reference output exposes the missing FP32 accumulator.
     """
-    t_fp32 = torch.randn(shape, dtype=torch.float32)
+    t_fp32 = torch.randn(shape, dtype=torch.float32, device=device)
     t_fp16 = t_fp32.to(torch.float16)
     try:
         out_ref = reference(t_fp32)
@@ -484,9 +493,7 @@ def gate_prc_02_mixed_precision_accumulation(
     if max_err > atol:
         return GateResult(
             passed=False,
-            reason=(
-                f"max_err={max_err:.3e} > atol={atol} — likely missing FP32 accumulator"
-            ),
+            reason=(f"max_err={max_err:.3e} > atol={atol} — likely missing FP32 accumulator"),
             details={"max_err": max_err, "atol": atol},
         )
     return GateResult(
@@ -502,6 +509,7 @@ def gate_exc_02_subnormal_handling(
     *,
     shape: tuple[int, ...] = (4, 64, 32),
     dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
     atol: float = 1e-30,
     **kwargs: Any,
 ) -> GateResult:
@@ -521,7 +529,7 @@ def gate_exc_02_subnormal_handling(
     else:  # bfloat16
         subnormal_min = 1e-39
 
-    t = torch.full(shape, subnormal_min, dtype=dtype)
+    t = torch.full(shape, subnormal_min, dtype=dtype, device=device)
     flat = t.view(-1)
     flat[::3] = -subnormal_min
     flat[::7] = 0.0
@@ -601,9 +609,7 @@ def gate_res_01_memory_residency(
             failures.append(f"device={device.type}: exception — {exc}")
             continue
         if out.device.type != t.device.type:
-            failures.append(
-                f"input device={t.device.type} → output device={out.device.type}"
-            )
+            failures.append(f"input device={t.device.type} → output device={out.device.type}")
 
     if failures:
         return GateResult(
@@ -739,9 +745,16 @@ _GATE_MAP: dict[str, Callable[..., GateResult]] = {
 def run_all_gates(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    gate_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     **kwargs: Any,
 ) -> dict[str, GateResult]:
     """Run all 12 Kernel Contract gates and return results keyed by gate name.
+
+    ``kwargs`` (e.g. ``shape``, ``dtype``, ``device``) are forwarded to every
+    gate uniformly; ``gate_overrides`` maps a gate name to kwargs applied to
+    that gate only, on top of the shared ``kwargs`` (use it for op-specific
+    shapes or to supply RES-02's ``resource_meta``).
 
     Stubbed gates that raise ``NotImplementedError`` are recorded as
     ``passed=False`` with reason ``"not_implemented"``. Any other exception
@@ -752,8 +765,11 @@ def run_all_gates(
     results: dict[str, GateResult] = {}
     for name in _ALL_GATE_NAMES:
         gate_fn = _GATE_MAP[name]
+        gate_kwargs = dict(kwargs)
+        if gate_overrides and name in gate_overrides:
+            gate_kwargs.update(gate_overrides[name])
         try:
-            results[name] = gate_fn(candidate, reference, **kwargs)
+            results[name] = gate_fn(candidate, reference, **gate_kwargs)
         except NotImplementedError:
             results[name] = GateResult(
                 passed=False,

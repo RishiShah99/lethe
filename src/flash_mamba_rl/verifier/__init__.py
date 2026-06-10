@@ -17,6 +17,11 @@ from .contracts import (
     gate_res_02_resource_limits,
     run_all_gates,
 )
+from .op_harness import (
+    scan_candidate_adapter,
+    scan_reference_adapter,
+    verify_scan_op,
+)
 from .reward import compute_reward
 from .sandbox import SubprocessResult, run_in_subprocess
 from .timing import TimingResult, benchmark
@@ -44,4 +49,7 @@ __all__ = [
     "gate_res_02_resource_limits",
     "run_all_gates",
     "run_in_subprocess",
+    "scan_candidate_adapter",
+    "scan_reference_adapter",
+    "verify_scan_op",
 ]
