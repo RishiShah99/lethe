@@ -78,6 +78,68 @@ class TestCompileKernel:
 
         assert result.ptxas_c7907 is True
         assert result.error_class == ErrorClass.PTXAS_C7907
+        assert result.blackwell_failure is True
+
+    def test_detects_tmem_budget_in_stderr(self) -> None:
+        """The triton >= 3.7 surface form of the Blackwell TMEM failure.
+
+        Fixture is VERBATIM from our B200 reproduction of
+        state-spaces/mamba#904 (mamba3_siso_bwd_kernel_dqkv, num_warps=4):
+        no C7907 string appears, so C7907-only detection would miss it.
+        """
+        fake_stderr = (
+            b"Autotuning failed with out of resource: tensor memory, "
+            b"Required: 544, Hardware limit: 512. Reducing block sizes or "
+            b"`num_stages` may help.\n"
+        )
+
+        class _FakeProc:
+            returncode = 1
+
+            def communicate(
+                self, input: bytes | None = None, timeout: float | None = None
+            ) -> tuple[bytes, bytes]:
+                return b"", fake_stderr
+
+            def kill(self) -> None:
+                pass
+
+            def wait(self) -> None:
+                pass
+
+        with patch("subprocess.Popen", return_value=_FakeProc()):
+            result = compile_kernel("x = 1\n")
+
+        assert result.tmem_budget is True
+        assert result.ptxas_c7907 is False  # the new form carries no C7907 string
+        assert result.blackwell_failure is True
+        assert result.error_class == ErrorClass.TMEM_BUDGET
+
+    def test_tmem_outranks_generic_oom_classification(self) -> None:
+        """'out of resource: tensor memory' must not be swallowed by OOM."""
+        fake_stderr = (
+            b"triton.runtime.errors.OutOfResources: out of resource: tensor memory, "
+            b"Required: 576, Hardware limit: 512.\n"
+        )
+
+        class _FakeProc:
+            returncode = 1
+
+            def communicate(
+                self, input: bytes | None = None, timeout: float | None = None
+            ) -> tuple[bytes, bytes]:
+                return b"", fake_stderr
+
+            def kill(self) -> None:
+                pass
+
+            def wait(self) -> None:
+                pass
+
+        with patch("subprocess.Popen", return_value=_FakeProc()):
+            result = compile_kernel("x = 1\n")
+
+        assert result.error_class == ErrorClass.TMEM_BUDGET
 
     def test_detects_internal_compiler_error_in_stderr(self) -> None:
         """'internal compiler error' phrase also triggers PTXAS_C7907."""

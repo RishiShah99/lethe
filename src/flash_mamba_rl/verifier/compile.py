@@ -20,6 +20,7 @@ class ErrorClass(Enum):
     OOM = auto()
     TIMEOUT = auto()
     PTXAS_C7907 = auto()
+    TMEM_BUDGET = auto()
     OTHER = auto()
 
 
@@ -27,6 +28,19 @@ _C7907_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"C7907", re.IGNORECASE),
     re.compile(r"internal compiler error", re.IGNORECASE),
     re.compile(r"ptxas.*error.*C\d{4}", re.IGNORECASE),
+]
+
+# The Blackwell TMEM-budget overflow as it actually surfaces in triton >= 3.7:
+# a clean OutOfResources exception, NOT a raw ptxas C7907. Verbatim from our
+# B200 reproduction of state-spaces/mamba#904 (mamba3_siso_bwd_kernel_dqkv,
+# num_warps >= 4):
+#   "out of resource: tensor memory, Required: 544, Hardware limit: 512.
+#    Reducing block sizes or `num_stages` may help."
+# C7907 was the surface symptom in older toolchains; both signatures map to
+# the same eager TMEM-promotion failure mode and both must trip bug-routing.
+_TMEM_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"out of resource:\s*tensor memory", re.IGNORECASE),
+    re.compile(r"tensor memory.*Required:\s*\d+.*Hardware limit:\s*\d+", re.IGNORECASE),
 ]
 
 _OOM_PATTERNS: list[re.Pattern[str]] = [
@@ -102,6 +116,16 @@ class CompileResult:
     stderr: str
     ptxas_c7907: bool
     compile_time_s: float
+    tmem_budget: bool = False
+
+    @property
+    def blackwell_failure(self) -> bool:
+        """True if either signature of the Blackwell TMEM-promotion failure
+        family was observed (raw ptxas C7907 in older toolchains, or the
+        OutOfResources tensor-memory message in triton >= 3.7). This is the
+        bug-routing signal: a hand-written kernel tripping it on Blackwell is
+        what RL candidates earn the routing bonus for avoiding."""
+        return self.ptxas_c7907 or self.tmem_budget
 
 
 def _scan_for_c7907(text: str) -> bool:
@@ -109,13 +133,21 @@ def _scan_for_c7907(text: str) -> bool:
     return any(p.search(text) for p in _C7907_PATTERNS)
 
 
+def _scan_for_tmem(text: str) -> bool:
+    """Return True if *text* contains the TMEM-budget OutOfResources pattern."""
+    return any(p.search(text) for p in _TMEM_PATTERNS)
+
+
 def _classify_stderr(stderr: str, return_code: int) -> ErrorClass:
     """Map subprocess stderr + return code to an ErrorClass."""
     if return_code == 0:
         return ErrorClass.OK
-    # Order matters: ptxas C7907 before generic OTHER.
+    # Order matters: the Blackwell-failure signatures outrank generic OOM,
+    # which outranks OTHER.
     if _scan_for_c7907(stderr):
         return ErrorClass.PTXAS_C7907
+    if _scan_for_tmem(stderr):
+        return ErrorClass.TMEM_BUDGET
     if any(p.search(stderr) for p in _OOM_PATTERNS):
         return ErrorClass.OOM
     if any(p.search(stderr) for p in _TYPE_PATTERNS):
@@ -189,6 +221,7 @@ def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
     rc = proc.returncode
 
     ptxas_c7907 = _scan_for_c7907(stderr_text)
+    tmem_budget = _scan_for_tmem(stderr_text)
 
     if rc == 0:
         return CompileResult(
@@ -197,6 +230,7 @@ def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
             stderr=stderr_text,
             ptxas_c7907=ptxas_c7907,
             compile_time_s=compile_time,
+            tmem_budget=tmem_budget,
         )
 
     error_class = _classify_stderr(stderr_text, rc)
@@ -206,4 +240,5 @@ def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
         stderr=stderr_text,
         ptxas_c7907=ptxas_c7907,
         compile_time_s=compile_time,
+        tmem_budget=tmem_budget,
     )
