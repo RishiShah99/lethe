@@ -421,10 +421,60 @@ class TestGateRes01MemoryResidency:
         assert result.passed is False
 
 
-class TestStubbedGates:
-    def test_gate_res_02_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            gate_res_02_resource_limits(_identity, _identity)
+class TestGateRes02ResourceLimits:
+    def test_not_applicable_without_metadata(self) -> None:
+        result = gate_res_02_resource_limits(_identity, _identity)
+        assert result.passed is True
+        assert result.details["applicable"] is False
+
+    def test_within_limits_passes(self) -> None:
+        meta = {"n_regs": 128, "shared_bytes": 100_000, "tmem_elems": 256}
+        result = gate_res_02_resource_limits(_identity, _identity, resource_meta=meta)
+        assert result.passed is True
+        assert result.details["applicable"] is True
+        assert len(result.details["checked"]) == 3
+
+    def test_register_overflow_fails(self) -> None:
+        result = gate_res_02_resource_limits(
+            _identity, _identity, resource_meta={"n_regs": 300}
+        )
+        assert result.passed is False
+        assert "n_regs: used 300 > limit 255" in result.details["violations"]
+
+    def test_tmem_budget_overflow_fails(self) -> None:
+        # The #904 number: 544 required vs the 512-element sm_100 budget.
+        result = gate_res_02_resource_limits(
+            _identity, _identity, resource_meta={"tmem_elems": 544}
+        )
+        assert result.passed is False
+        assert "tmem_elems: used 544 > limit 512" in result.details["violations"]
+
+    def test_shared_memory_overflow_fails(self) -> None:
+        result = gate_res_02_resource_limits(
+            _identity, _identity, resource_meta={"shared_bytes": 300 * 1024}
+        )
+        assert result.passed is False
+
+    def test_limit_override_respected(self) -> None:
+        meta = {"shared_bytes": 100 * 1024}
+        result = gate_res_02_resource_limits(
+            _identity,
+            _identity,
+            resource_meta=meta,
+            resource_limits={"shared_bytes": 64 * 1024},
+        )
+        assert result.passed is False
+
+    def test_spill_warns_but_does_not_fail(self) -> None:
+        # The #904 num_warps=2 survivors spill 42-50 KB: legal but crippled.
+        result = gate_res_02_resource_limits(
+            _identity,
+            _identity,
+            resource_meta={"n_regs": 32, "spill_bytes": 48 * 1024},
+        )
+        assert result.passed is True
+        assert "warning" in result.details
+        assert result.details["spill_bytes"] == 48 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -437,32 +487,10 @@ class TestRunAllGates:
         results = run_all_gates(_identity, _identity)
         assert len(results) == 12
 
-    def test_implemented_gates_pass_for_identity(self) -> None:
+    def test_all_12_gates_pass_for_identity(self) -> None:
         results = run_all_gates(_identity, _identity)
-        implemented = [
-            "gate_cmp_01_input_variation",
-            "gate_cmp_02_gradient_correctness",
-            "gate_cmp_03_shape_polymorphism",
-            "gate_ord_01_reduction_order_tolerance",
-            "gate_ord_02_atomic_determinism",
-            "gate_ord_03_noncommutative_reduction",
-            "gate_prc_01_precision_regime",
-            "gate_prc_02_mixed_precision_accumulation",
-            "gate_exc_01_exceptional_values",
-            "gate_exc_02_subnormal_handling",
-            "gate_res_01_memory_residency",
-        ]
-        for name in implemented:
-            assert results[name].passed is True, f"{name} should pass for identity"
-
-    def test_stubbed_gates_recorded_as_not_implemented(self) -> None:
-        results = run_all_gates(_identity, _identity)
-        stubbed = [
-            "gate_res_02_resource_limits",
-        ]
-        for name in stubbed:
-            assert results[name].passed is False
-            assert results[name].reason == "not_implemented"
+        for name, result in results.items():
+            assert result.passed is True, f"{name} should pass for identity"
 
 
 # ---------------------------------------------------------------------------

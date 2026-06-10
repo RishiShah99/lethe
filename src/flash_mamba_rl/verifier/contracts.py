@@ -1,7 +1,9 @@
 """Kernel Contract gates — arXiv 2604.22032.
 
-Six gates are fully implemented; six are stubbed with NotImplementedError
-pending cross-check against the paper's exact spec.
+All 12 gates implemented. RES-02 is evidence-based: it validates resource
+metadata extracted at compile time (registers, shared memory, TMEM) against
+hardware limits, and reports not-applicable when no metadata is supplied
+(plain-Python candidates have no compiled artifact to measure).
 """
 
 from __future__ import annotations
@@ -616,16 +618,87 @@ def gate_res_01_memory_residency(
     )
 
 
-def gate_res_02_resource_limits(  # TODO: cross-check name + spec against arXiv 2604.22032
+# Conservative defaults when no device is queryable. 255 registers/thread is
+# the architectural max across sm_70..sm_100; 227 KB dynamic shared memory per
+# block covers H100 (228 KB opt-in) and B200; 512 TMEM elements is the sm_100
+# budget from the #904 family ("Required: 544, Hardware limit: 512").
+_DEFAULT_RESOURCE_LIMITS: dict[str, int] = {
+    "n_regs": 255,
+    "shared_bytes": 227 * 1024,
+    "tmem_elems": 512,
+}
+
+
+def gate_res_02_resource_limits(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
+    *,
+    resource_meta: dict[str, int] | None = None,
+    resource_limits: dict[str, int] | None = None,
     **kwargs: Any,
 ) -> GateResult:
-    """RES-02: Resource limits — register count and shared-memory usage must not
-    exceed the hardware maximums for the target architecture (queried via
-    ``triton.compiler.get_arch_linear_id`` or ptxas ``--verbose`` output).
+    """RES-02: compiled-artifact resource usage must not exceed hardware limits.
+
+    Evidence-based gate: the verifier's compile stage extracts per-kernel
+    resource metadata (``n_regs`` and ``shared_bytes`` from the Triton
+    CompiledKernel handle / ptxas ``--verbose``; ``tmem_elems`` from the
+    OutOfResources diagnostics on Blackwell) and passes it here as
+    ``resource_meta``. The gate compares each supplied field against the
+    limit table.
+
+    With no ``resource_meta`` the gate passes as not-applicable — a plain
+    Python candidate has no compiled artifact to measure, and absence of
+    evidence is not a violation. ``resource_limits`` overrides the defaults
+    (use the actual device's queried properties when available).
+
+    ``spill_bytes`` in the metadata is recorded in details as a warning but
+    does not fail the gate: register spilling is legal-but-crippled (the
+    num_warps=2 survivors in #904 spill 42-50 KB), and the perf consequence
+    is the benchmark's job to expose, not this gate's.
     """
-    raise NotImplementedError("gate_res_02_resource_limits not yet implemented")
+    if resource_meta is None:
+        return GateResult(
+            passed=True,
+            reason="no resource metadata supplied; gate not applicable",
+            details={"applicable": False},
+        )
+
+    limits = dict(_DEFAULT_RESOURCE_LIMITS)
+    if resource_limits:
+        limits.update(resource_limits)
+
+    violations: list[str] = []
+    checked: dict[str, tuple[int, int]] = {}
+    for key, limit in limits.items():
+        if key in resource_meta:
+            used = int(resource_meta[key])
+            checked[key] = (used, limit)
+            if used > limit:
+                violations.append(f"{key}: used {used} > limit {limit}")
+
+    spill = int(resource_meta.get("spill_bytes", 0))
+
+    if violations:
+        return GateResult(
+            passed=False,
+            reason=f"{len(violations)} resource limit violation(s)",
+            details={
+                "applicable": True,
+                "violations": violations,
+                "checked": checked,
+                "spill_bytes": spill,
+            },
+        )
+    return GateResult(
+        passed=True,
+        reason=f"within limits on {len(checked)} measured resource(s)",
+        details={
+            "applicable": True,
+            "checked": checked,
+            "spill_bytes": spill,
+            **({"warning": f"register spill of {spill} bytes"} if spill > 0 else {}),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
