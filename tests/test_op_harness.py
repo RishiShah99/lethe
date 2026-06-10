@@ -12,11 +12,17 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import backward_selective_scan, forward_chunked_scan, mimo_backward
+from flash_mamba_rl.kernels.ops import (
+    backward_selective_scan,
+    complex_scan_rope,
+    forward_chunked_scan,
+    mimo_backward,
+)
 from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
+from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     gate_cmp_01_input_variation,
@@ -31,16 +37,23 @@ from flash_mamba_rl.verifier.op_harness import (
     MIMO_HEADDIM,
     MIMO_N_STATE,
     MIMO_RANK,
+    ROPE_GATE_OVERRIDES,
+    ROPE_HEADDIM,
+    ROPE_N_STATE,
+    ROPE_NUM_ANGLES,
     SCAN_BWD_GATE_OVERRIDES,
     SCAN_CHUNK_SIZE,
     bwd_scan_candidate_adapter,
     bwd_scan_reference_adapter,
     mimo_bwd_candidate_adapter,
     mimo_bwd_reference_adapter,
+    rope_candidate_adapter,
+    rope_reference_adapter,
     scan_candidate_adapter,
     scan_reference_adapter,
     verify_bwd_scan_op,
     verify_mimo_bwd_op,
+    verify_rope_op,
     verify_scan_op,
 )
 
@@ -629,3 +642,103 @@ class TestMimoPrc02Discrimination:
             **kwargs,
         )
         assert not cheat.passed, "PRC-02 lost its discriminative power on the MIMO backward"
+
+
+class TestRopeHarness:
+    def test_adapter_views_and_restores_d_model(self) -> None:
+        x = torch.randn(2, 16, 8)
+        out = rope_candidate_adapter(complex_scan_rope)(x)
+        assert out.shape == x.shape
+
+    def test_indivisible_d_model_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not divisible"):
+            rope_candidate_adapter(complex_scan_rope)(torch.randn(1, 8, 6))
+
+    def test_adapter_deterministic(self) -> None:
+        x = torch.randn(2, 16, 8)
+        adapted = rope_candidate_adapter(complex_scan_rope)
+        assert torch.equal(adapted(x), adapted(x.clone()))
+
+    def test_reference_adapter_matches_direct_reference(self) -> None:
+        x = torch.randn(2, 16, 8)
+        ref_adapted = rope_reference_adapter()
+        cand_adapted = rope_candidate_adapter(reference_complex_scan_rope)
+        assert torch.equal(ref_adapted(x), cand_adapted(x))
+
+    def test_adapter_follows_input_dtype(self) -> None:
+        for dtype in (torch.float16, torch.bfloat16, torch.float64):
+            out = rope_candidate_adapter(complex_scan_rope)(torch.randn(1, 8, 4, dtype=dtype))
+            assert out.dtype == dtype
+
+    def test_rotary_dim_fits_every_gate_d_model(self) -> None:
+        assert 2 * ROPE_NUM_ANGLES <= ROPE_N_STATE
+        for d_model in (4, 8, 16, 32, 64, 1024):
+            assert d_model % ROPE_HEADDIM == 0
+
+    def test_all_gates_pass_on_cpu(self) -> None:
+        results = verify_rope_op(
+            complex_scan_rope, resource_meta={"n_regs": 64, "shared_bytes": 1024}
+        )
+        assert len(results) == _ALL_GATES_COUNT
+        failed = {name: result.reason for name, result in results.items() if not result.passed}
+        assert not failed, f"rope gates failed on CPU: {failed}"
+        assert results["gate_res_02_resource_limits"].details.get("applicable") is True
+
+
+def _fp16_state_rope(
+    x: torch.Tensor,
+    b_in: torch.Tensor,
+    c_in: torch.Tensor,
+    dt: torch.Tensor,
+    a_head: torch.Tensor,
+    angle_proj: torch.Tensor,
+) -> torch.Tensor:
+    """Cheating rope scan: rotation/discretisation in fp32, running state in fp16."""
+    import math
+
+    from flash_mamba_rl.kernels.references.complex_scan_rope import _apply_rope_rotation
+
+    xf, bf, cf, dtf, af, angf = (t.float() for t in (x, b_in, c_in, dt, a_head, angle_proj))
+    delta_angle = torch.tanh(angf) * dtf.unsqueeze(-1) * math.pi
+    theta = torch.remainder(torch.cumsum(delta_angle, dim=1), 2.0 * math.pi)
+    cos_t, sin_t = torch.cos(theta), torch.sin(theta)
+    bl = bf.shape[0] * bf.shape[1] * bf.shape[2]
+    n_state = bf.shape[-1]
+    num_rope = angf.shape[-1]
+    b_rot = _apply_rope_rotation(
+        bf.reshape(bl, n_state), cos_t.reshape(bl, num_rope), sin_t.reshape(bl, num_rope)
+    ).reshape(bf.shape)
+    c_rot = _apply_rope_rotation(
+        cf.reshape(bl, n_state), cos_t.reshape(bl, num_rope), sin_t.reshape(bl, num_rope)
+    ).reshape(cf.shape)
+    alpha = torch.exp(dtf * af)
+    batch, seqlen, nheads, headdim = xf.shape
+    h = torch.zeros(batch, nheads, headdim, n_state, dtype=torch.float16)
+    ys: list[torch.Tensor] = []
+    for t in range(seqlen):
+        alpha_t = alpha[:, t].unsqueeze(-1).unsqueeze(-1)
+        bu = (dtf[:, t].unsqueeze(-1) * b_rot[:, t]).unsqueeze(2) * xf[:, t].unsqueeze(-1)
+        h = (alpha_t.half() * h + bu.half()).half()
+        ys.append((h.float() * c_rot[:, t].unsqueeze(2)).sum(-1))
+    return torch.stack(ys, dim=1).to(x.dtype)
+
+
+class TestRopePrc02Discrimination:
+    def test_prc02_separates_honest_from_fp16_state_cheat(self) -> None:
+        # Measured at the gate shape (2, 1024, 32) over 3 draws
+        # (scratch/c4_prc02_floor.py, scale-normalised): honest <= 7.3e-4 of
+        # output scale, fp16-state cheat >= 8.6e-3 — a ~12x corridor under
+        # the gate's default tolerance.
+        kwargs = dict(ROPE_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"])
+        honest = gate_prc_02_mixed_precision_accumulation(
+            rope_candidate_adapter(complex_scan_rope),
+            rope_reference_adapter(),
+            **kwargs,
+        )
+        assert honest.passed, f"honest fp32-accumulator rope scan rejected: {honest.reason}"
+        cheat = gate_prc_02_mixed_precision_accumulation(
+            rope_candidate_adapter(_fp16_state_rope),
+            rope_reference_adapter(),
+            **kwargs,
+        )
+        assert not cheat.passed, "PRC-02 lost its discriminative power on the rope scan"

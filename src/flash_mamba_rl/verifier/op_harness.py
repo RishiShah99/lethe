@@ -41,7 +41,9 @@ entries; the MIMO backward takes ``dt``/``alpha`` precomputed — no
 softplus exists inside the op, so its aux has no saturation analog and a
 single PRC-02 run already measures the accumulator. MIMO's 4D primary
 rides the gates' 3D [batch, seq, d_model] tensors by viewing d_model as
-(nheads, MIMO_HEADDIM) — every gate d_model is divisible by 4.
+(nheads, MIMO_HEADDIM) — every gate d_model is divisible by 4. The rope
+scan (C4) reuses the same 4D viewing for its forward primary ``x`` and,
+like MIMO, runs PRC-02 once (no softplus in the op).
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
+from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     GateResult,
@@ -782,3 +785,149 @@ def verify_mimo_bwd_op_all_grads(
         )
         for grad_field in MIMO_BWD_GRAD_FIELDS
     }
+
+
+# ---------------------------------------------------------------------------
+# Complex-RoPE scan (C4): forward op, one gate view
+# ---------------------------------------------------------------------------
+
+# Rope-scan signature: (x, B, C, dt, A, angle_proj) -> y.
+RopeCallable = Callable[..., Tensor]
+
+ROPE_HEADDIM = 4
+ROPE_N_STATE = 16
+# rotary_dim = 2*6 = 12 < N = 16: every gate run exercises the rotated
+# lanes and the identity tail simultaneously.
+ROPE_NUM_ANGLES = 6
+_ROPE_AUX_SEED = 27791
+
+
+def _rope_aux(
+    batch: int,
+    seq_len: int,
+    nheads: int,
+    n_state: int,
+    num_angles: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Deterministic (B, C, dt, A, angle_proj) for a 4D-viewed ``x``.
+
+    ``dt`` is log-uniform in the official dt-init range and ``A`` per-head
+    negative — the near-integrator regime, as in the scan aux. ``angle_proj``
+    is unit-normal: tanh maps it across both its linear and saturated
+    regions, and the rotation magnitude |tanh * dt * pi| stays well inside
+    one period per step. No saturation variant exists (no softplus in the
+    op). Draw order under ``_ROPE_AUX_SEED`` is pinned.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_ROPE_AUX_SEED)
+    b_proj = torch.randn(batch, seq_len, nheads, n_state, generator=gen)
+    c_proj = torch.randn(batch, seq_len, nheads, n_state, generator=gen)
+    log_lo = math.log(_DT_MIN)
+    log_hi = math.log(_DT_MAX)
+    dt = torch.exp(torch.rand(batch, seq_len, nheads, generator=gen) * (log_hi - log_lo) + log_lo)
+    a_head = -torch.rand(nheads, generator=gen)
+    angle = torch.randn(batch, seq_len, nheads, num_angles, generator=gen)
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype)
+
+    return cast(b_proj), cast(c_proj), cast(dt), cast(a_head), cast(angle)
+
+
+# The accumulation chain is the sequence (h carried over L), as for the
+# forward scan: extent L=512 at ORD-01's gate shape. ORD-03 keeps the
+# scan's L=8192 collapse length but with 3x the scan's tolerance: the
+# kernel accumulates theta with a per-step remainder while the reference
+# applies one mod after an fp32 cumsum whose magnitude reaches O(L*dt) —
+# the reference's own rounding there contributes ~1e-3 rad of honest
+# angle noise at L=8192, which the value tolerance must absorb on top of
+# reorder noise. PRC-02 runs the scan's stress shape and default atol:
+# the rotation factors are bounded by 1 and leave the accumulator-error
+# structure of the decay scan unchanged (pinned by a discriminative test).
+ROPE_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32)},
+    "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
+    "gate_ord_03_noncommutative_reduction": {
+        "shape": (1, 8192, 16),
+        "atol": 3e-3,
+        "rtol": 3e-3,
+    },
+}
+
+
+def rope_candidate_adapter(
+    rope_fn: RopeCallable,
+    *,
+    n_state: int = ROPE_N_STATE,
+    num_angles: int = ROPE_NUM_ANGLES,
+    headdim: int = ROPE_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of the rope scan: ``x -> y``, d_model as (nheads, headdim).
+
+    ``saturate`` is accepted for interface parity with the scan adapters
+    and ignored — the rope aux has no saturation variant.
+    """
+
+    def adapted(x: Tensor) -> Tensor:
+        batch, seq_len, d_model = x.shape
+        nheads = _mimo_nheads(d_model, headdim)
+        aux = _rope_aux(batch, seq_len, nheads, n_state, num_angles, x.device, x.dtype)
+        y = rope_fn(x.reshape(batch, seq_len, nheads, headdim), *aux)
+        return y.reshape(batch, seq_len, d_model)
+
+    return adapted
+
+
+def rope_reference_adapter(
+    *,
+    n_state: int = ROPE_N_STATE,
+    num_angles: int = ROPE_NUM_ANGLES,
+    headdim: int = ROPE_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The reference oracle behind the same single-tensor interface."""
+
+    def adapted(x: Tensor) -> Tensor:
+        batch, seq_len, d_model = x.shape
+        nheads = _mimo_nheads(d_model, headdim)
+        aux = _rope_aux(batch, seq_len, nheads, n_state, num_angles, x.device, x.dtype)
+        x4 = x.reshape(batch, seq_len, nheads, headdim)
+        if x.dtype == torch.float32:
+            return reference_complex_scan_rope(x4, *aux).reshape(batch, seq_len, d_model)
+        # Mixed-precision contract: oracle computes in fp32 from the same
+        # (already rounded) operand bits, rounds once at the output.
+        y = reference_complex_scan_rope(x4.to(torch.float32), *(t.to(torch.float32) for t in aux))
+        return y.to(x.dtype).reshape(batch, seq_len, d_model)
+
+    return adapted
+
+
+def verify_rope_op(
+    rope_fn: RopeCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    n_state: int = ROPE_N_STATE,
+    num_angles: int = ROPE_NUM_ANGLES,
+    headdim: int = ROPE_HEADDIM,
+) -> dict[str, GateResult]:
+    """Run all 12 contract gates over a rope-scan-signature callable."""
+    return _verify_op_views(
+        lambda saturate: rope_candidate_adapter(
+            rope_fn,
+            n_state=n_state,
+            num_angles=num_angles,
+            headdim=headdim,
+            saturate=saturate,
+        ),
+        lambda saturate: rope_reference_adapter(
+            n_state=n_state, num_angles=num_angles, headdim=headdim, saturate=saturate
+        ),
+        base_overrides=ROPE_GATE_OVERRIDES,
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=False,
+    )
