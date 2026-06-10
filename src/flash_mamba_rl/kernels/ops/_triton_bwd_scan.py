@@ -175,8 +175,11 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
         # uniformly from the scratch (the j=0 entry is the checkpoint
         # itself) and walks h_t backward in a register.
         h_prev = tl.load(ckpt_prog + c * BLOCK_D * BLOCK_N)
-        uld_base = pid_b.to(tl.int64) * seq_len * d_model + t0 * d_model + offs_d
-        bln_base = pid_b.to(tl.int64) * seq_len * n_state + t0 * n_state + offs_n
+        # Fold t0 into the int64 batch term before multiplying by the row
+        # stride: a bare int32 t0 * d_model overflows past L*D ~ 2^31 (the
+        # C1 invariant; j * d_model stays tiny, j < CHUNK_K).
+        uld_base = (pid_b.to(tl.int64) * seq_len + t0) * d_model + offs_d
+        bln_base = (pid_b.to(tl.int64) * seq_len + t0) * n_state + offs_n
         for j in range(CHUNK_K):
             tl.store(hbuf_prog + j * BLOCK_D * BLOCK_N, h_prev)
             u_t = tl.load(u_ptr + uld_base + j * d_model, mask=mask_d, other=0.0).to(tl.float32)
@@ -189,7 +192,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
 
         # Reverse sweep over the chunk. h_cur enters as the chunk-end state.
         h_cur = h_prev
-        gbc_base = (pid_bd * seq_len + t0).to(tl.int64) * n_state + offs_n
+        gbc_base = (pid_bd * seq_len + t0) * n_state + offs_n
         for jj in range(CHUNK_K):
             j = CHUNK_K - 1 - jj
             uld = uld_base + j * d_model
@@ -224,7 +227,10 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
 
             # grad_delta_bar: two separate N-reductions, mirroring autograd's
             # two AccumulateGrad paths (via exp and via b_bar) — the shared
-            # gm = (g*h_{t-1})*abar is also the grad_A integrand.
+            # gm = (g*h_{t-1})*abar is also the grad_A integrand. gm needs no
+            # mask of its own: g and h_tm1 are both pre-masked to exact zero
+            # in padded lanes, so gm is 0 there regardless of abar — that
+            # zero-ness is load-bearing for the re-masked uses below.
             gm = (g * h_tm1) * abar
             ddbar = tl.sum(tl.where(mask_dn, gm * a, 0.0), axis=1) + tl.sum(
                 tl.where(mask_dn, (g * u_t[:, None]) * b_t[None, :], 0.0), axis=1
@@ -241,6 +247,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
             ga_acc += tl.where(mask_dn, gm * dbar[:, None], 0.0)
             gd_acc += dy_t * u_t
             ag_carry = tl.where(mask_dn, abar * g, 0.0)
+            # Dead at j=0 (the next chunk re-seeds h_cur from its recompute).
             h_cur = h_tm1
 
     # Per-(batch, D-block) partials for the launcher's deterministic sums.

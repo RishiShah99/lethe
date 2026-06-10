@@ -8,7 +8,11 @@ infeasible:
   (the Mamba-1 CUDA backward — healthy on Blackwell, unlike the Mamba-3
   Triton backward this op replaces; timed via ``torch.autograd.grad`` with
   ``retain_graph``, so the number includes autograd dispatch like ours
-  includes launcher reductions)
+  includes launcher reductions). The comparison is conservative against
+  us: the official forward runs once outside the timed region, so its
+  timed backward reuses forward-saved activations, while every timed call
+  of ours pays the full Phase-1 forward recompute in-kernel — the price
+  of an activation-free backward.
 - ``official_eager_bwd`` — VJP through ``selective_scan_ref`` (vectorised
   torch eager; materialises [B, D, L, N] *and* its graph, so memory-gated)
 - ``reference_loop_bwd`` — our Python-loop oracle's autograd (small shapes)
