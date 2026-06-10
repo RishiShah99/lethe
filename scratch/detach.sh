@@ -4,6 +4,7 @@
 # Runs <command> from the repo root, detached from SSH (survives disconnect),
 # output to train.log so `fleet logs` can follow it.
 cd "$(dirname "$0")/.."
+export PATH="$HOME/.local/bin:$PATH"
 touch train.log
 nohup sh -c "$*" > train.log 2>&1 &
 echo "LAUNCHED pid $!"
