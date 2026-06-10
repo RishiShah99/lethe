@@ -223,18 +223,16 @@ class TestGRPOTrainerSkeleton:
 
 
 # ---------------------------------------------------------------------------
-# Loss stub
+# Loss smoke test (stub has been replaced — full coverage in test_grpo_loss.py)
 # ---------------------------------------------------------------------------
 
 
 class TestComputeGrpoLoss:
-    def test_raises_until_implemented(self) -> None:
-        with pytest.raises(NotImplementedError):
-            compute_grpo_loss(
-                torch.zeros(4),
-                torch.zeros(4),
-                torch.zeros(4),
-                torch.zeros(4),
-                clip_eps=0.2,
-                kl_coef=0.04,
-            )
+    def test_returns_scalar_tensor(self) -> None:
+        # K=4 sequences, T=3 tokens each.
+        K, T = 4, 3
+        adv = torch.zeros(K)
+        lp = torch.zeros(K, T)
+        loss = compute_grpo_loss(adv, lp, lp, lp, clip_eps=0.2, kl_coef=0.04)
+        assert loss.shape == ()
+        assert loss.item() == 0.0

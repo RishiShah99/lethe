@@ -1,6 +1,6 @@
 """GRPO from scratch + curriculum + rollout + policy wrapper."""
 
-from .grpo import GRPOConfig, GRPOTrainer, StepMetrics, compute_grpo_loss
+from .grpo import GRPOConfig, GRPOTrainer, StepMetrics, compute_group_advantages, compute_grpo_loss
 from .policy import PolicyInterface, StubPolicy
 from .reward import score_callable
 from .rollout import Candidate, Rollout, ScoredCandidate
@@ -14,6 +14,7 @@ __all__ = [
     "ScoredCandidate",
     "StepMetrics",
     "StubPolicy",
+    "compute_group_advantages",
     "compute_grpo_loss",
     "score_callable",
 ]
