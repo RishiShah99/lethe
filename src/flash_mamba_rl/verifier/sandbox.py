@@ -13,6 +13,7 @@ Memory limit enforcement:
 
 from __future__ import annotations
 
+import os
 import pickle
 import subprocess
 import sys
@@ -170,6 +171,15 @@ def run_in_subprocess(
 
     task_bytes = pickle.dumps((callable_module, callable_name, inputs))
 
+    # Propagate the parent's sys.path to the child via PYTHONPATH so dotted
+    # module paths resolve regardless of the child's cwd (the child only gets
+    # site-packages + the worker-script dir by default).
+    env = dict(os.environ)
+    parent_paths = [p for p in sys.path if p]
+    if env.get("PYTHONPATH"):
+        parent_paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(parent_paths)
+
     proc: subprocess.Popen[bytes] | None = None
     try:
         proc = subprocess.Popen(
@@ -177,6 +187,7 @@ def run_in_subprocess(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
         try:
             stdout_bytes, stderr_bytes = proc.communicate(input=task_bytes, timeout=timeout_s)
