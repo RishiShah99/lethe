@@ -41,30 +41,47 @@ _TYPE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"IncompatibleType", re.IGNORECASE),
 ]
 
-# Subprocess script template: try triton compile, fall back to ast.parse.
+# Subprocess script template: exec + optional __warmup__ launch under triton,
+# fall back to ast.parse on CPU-only hosts.
+#
+# The __warmup__ convention: Triton compiles PTX lazily at first *launch*, so
+# merely exec'ing a module (JIT registration) can never surface ptxas errors —
+# including the C7907 / TMEM-budget class this project's reward signal depends
+# on. A candidate module may therefore define a zero-arg ``__warmup__()`` that
+# launches its kernel(s) once on small inputs; any ptxas/launch failure then
+# lands in stderr and gets classified. Without __warmup__, success only means
+# "module exec'd and JIT-registered".
 _COMPILE_SCRIPT = textwrap.dedent(
     """\
     # -*- coding: utf-8 -*-
-    import sys, ast, time
+    import sys, ast
 
     source = sys.stdin.read()
 
-    # --- Attempt real Triton compilation ---
     try:
-        import triton
-        import triton.language as tl
+        import triton  # noqa: F401
+        _have_triton = True
+    except ImportError:
+        _have_triton = False
+
+    if _have_triton:
+        # Real path: exec the module (JIT registration), then run __warmup__
+        # if defined so PTX actually compiles. Candidate errors — including
+        # the candidate's own ImportError — must propagate, not fall through
+        # to the AST check.
         import tempfile, importlib.util, os
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8") as f:
             f.write(source)
             fname = f.name
         spec = importlib.util.spec_from_file_location("_candidate", fname)
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # triggers JIT registration
+        spec.loader.exec_module(mod)
         os.unlink(fname)
+        warmup = getattr(mod, "__warmup__", None)
+        if warmup is not None:
+            warmup()
         print("OK", flush=True)
         sys.exit(0)
-    except ImportError:
-        pass  # triton not available - fall through to AST check
 
     # --- CPU-only fallback: pure syntax check via ast.parse ---
     try:
@@ -113,6 +130,12 @@ def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
 
     Spawns a child process so that compiler crashes cannot kill the caller.
     On hosts where ``triton`` is not importable, falls back to ``ast.parse``.
+
+    Triton compiles PTX lazily at first launch, so sources that define a
+    zero-arg ``__warmup__()`` get it called after module exec — that is the
+    only way ptxas-level failures (the C7907 / TMEM-budget class) can be
+    detected at "compile" time. Sources without ``__warmup__`` are only
+    exec'd (JIT registration).
 
     Parameters
     ----------
