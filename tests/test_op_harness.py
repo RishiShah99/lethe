@@ -52,6 +52,39 @@ def _fp16_accumulator_scan(
     return torch.stack(ys, dim=1).to(u.dtype)
 
 
+def _unguarded_softplus_scan(
+    u: torch.Tensor,
+    delta: torch.Tensor,
+    a: torch.Tensor,
+    b_proj: torch.Tensor,
+    c_proj: torch.Tensor,
+    d_skip: torch.Tensor,
+    *,
+    chunk_size: int = 8,
+) -> torch.Tensor:
+    """Cheating scan: softplus written naively as log1p(exp(x)).
+
+    The single most natural way to write softplus, and exactly correct for
+    every delta below ~89 — but exp overflows to Inf above that, so the
+    saturated aux entries blow up where torch's thresholded softplus stays
+    linear. Without the saturation probe this kernel passes every gate.
+    """
+    import torch.nn.functional as F  # noqa: F401  (parallel structure with reference)
+
+    delta_bar = torch.log1p(torch.exp(delta.float()))  # no large-x guard
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * a.float().unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * b_proj.float().unsqueeze(2)
+    batch, seq_len, d_model = u.shape
+    h = torch.zeros(batch, d_model, a.shape[1], dtype=torch.float32, device=u.device)
+    ys: list[torch.Tensor] = []
+    for t in range(seq_len):
+        h = a_bar[:, t] * h + b_bar[:, t] * u[:, t].float().unsqueeze(-1)
+        ys.append(
+            (h * c_proj[:, t].float().unsqueeze(1)).sum(-1) + d_skip.float() * u[:, t].float()
+        )
+    return torch.stack(ys, dim=1).to(u.dtype)
+
+
 def _cumprod_trick_scan(
     u: torch.Tensor,
     delta: torch.Tensor,
@@ -190,6 +223,16 @@ class TestScanHarness:
         results = verify_scan_op(_fp16_accumulator_scan)
         prc02 = results["gate_prc_02_mixed_precision_accumulation"]
         assert not prc02.passed, "PRC-02 lost its discriminative power for the scan op"
+
+    def test_unguarded_softplus_caught(self) -> None:
+        # Review finding (C1 phase): without saturation-regime delta in the
+        # aux distribution, a softplus with no large-x guard — the most
+        # natural way to write it — passed all 12 gates. The saturated
+        # entries (delta=95 > fp32 exp overflow at ~89) force it to Inf
+        # where the reference stays linear.
+        results = verify_scan_op(_unguarded_softplus_scan)
+        cmp01 = results["gate_cmp_01_input_variation"]
+        assert not cmp01.passed, "saturation probe lost: unguarded softplus passed CMP-01"
 
     def test_cumprod_trick_caught_by_ord03_with_scan_tolerances(self) -> None:
         # ORD-03 runs with a tolerance for the scan op (hardware kernels

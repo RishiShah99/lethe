@@ -1,69 +1,58 @@
-"""Measure PRC-02 error floors for the scan op, to pin the gate tolerance.
+"""Measure PRC-02 floors for the scan op through the real harness.
 
-Compares, at the PRC-02 shape (2, 1024, 32) with Mamba-realistic delta
-(delta_bar log-uniform in [1e-3, 1e-1]):
-
-- honest floor: fp32-accumulating scan fed fp16-rounded inputs vs the fp32
-  reference fed unrounded inputs (irreducible input-rounding error)
-- cheat error: fp16-accumulating scan (h and the N-dot kept in fp16)
-
-The PRC-02 atol must sit between the two with margin.
+Runs the actual gate (with the scan overrides) over the honest op and the
+fp16-accumulator cheat, plus raw elementwise error stats, so the numbers
+in SCAN_GATE_OVERRIDES comments stay tied to what the gate truly measures.
+Run after any change to the aux distribution or the gate comparison.
 """
 
+import sys
+from pathlib import Path
+
 import torch
-import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from flash_mamba_rl.kernels.ops import forward_chunked_scan  # noqa: E402
+from flash_mamba_rl.verifier.contracts import gate_prc_02_mixed_precision_accumulation  # noqa: E402
+from flash_mamba_rl.verifier.op_harness import (  # noqa: E402
+    SCAN_GATE_OVERRIDES,
+    scan_candidate_adapter,
+    scan_reference_adapter,
+)
+from tests.test_op_harness import _fp16_accumulator_scan  # noqa: E402
 
 
-def make_inputs(b: int, length: int, d: int, n: int, seed: int = 23117):
-    gen = torch.Generator().manual_seed(seed)
-    u = torch.randn(b, length, d, generator=gen)
-    log_lo, log_hi = torch.log(torch.tensor(1e-3)), torch.log(torch.tensor(1e-1))
-    dt = torch.exp(torch.rand(b, length, d, generator=gen) * (log_hi - log_lo) + log_lo)
-    delta = dt + torch.log(-torch.expm1(-dt))  # inverse softplus
-    a = -torch.rand(d, n, generator=gen)
-    bp = torch.randn(b, length, n, generator=gen)
-    cp = torch.randn(b, length, n, generator=gen)
-    ds = torch.randn(d, generator=gen)
-    return u, delta, a, bp, cp, ds
+def floor_stats(scan_fn, label: str) -> None:
+    overrides = SCAN_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"]
+    shape = overrides["shape"]
+    rtol = overrides.get("rtol", 0.0)
 
+    # saturate=False mirrors verify_scan_op's PRC-02 re-run: the gate
+    # measures accumulator precision in the near-integrator regime only.
+    candidate = scan_candidate_adapter(scan_fn, saturate=False)
+    reference = scan_reference_adapter(saturate=False)
 
-def scan(u, delta, a, bp, cp, ds, acc_dtype):
-    compute = torch.float32
-    delta_bar = F.softplus(delta.to(compute))
-    a_bar = torch.exp(delta_bar.unsqueeze(-1) * a.to(compute).unsqueeze(0).unsqueeze(0))
-    b_bar = delta_bar.unsqueeze(-1) * bp.to(compute).unsqueeze(2)
-    bsz, length, d = u.shape
-    n = a.shape[1]
-    h = torch.zeros(bsz, d, n, dtype=acc_dtype)
-    ys = []
-    for t in range(length):
-        h = (
-            a_bar[:, t].to(acc_dtype) * h
-            + (b_bar[:, t] * u[:, t].to(compute).unsqueeze(-1)).to(acc_dtype)
-        )
-        y_t = (h * cp[:, t].to(acc_dtype).unsqueeze(1)).sum(-1) + (
-            ds.to(acc_dtype) * u[:, t].to(acc_dtype)
-        )
-        ys.append(y_t.to(compute))
-    return torch.stack(ys, dim=1)
+    result = gate_prc_02_mixed_precision_accumulation(
+        candidate, reference, shape=shape, rtol=rtol
+    )
+
+    torch.manual_seed(0)
+    t32 = torch.randn(shape)
+    ref = reference(t32).float()
+    cand = candidate(t32.to(torch.float16)).float()
+    diff = (cand - ref).abs()
+    margin = diff / (2e-2 + rtol * ref.abs())
+    print(
+        f"{label:<22} gate_passed={result.passed!s:<6} max_err={diff.max():.4e} "
+        f"worst_margin={margin.max():.3f} (>1 fails)  reason={result.reason}"
+    )
 
 
 def main() -> None:
-    shape = (2, 1024, 32, 16)
-    args32 = make_inputs(*shape)
-    args16 = tuple(t.to(torch.float16) for t in args32)
-
-    y_ref = scan(*args32, acc_dtype=torch.float32)
-    y_honest = scan(*(t.float() for t in args16), acc_dtype=torch.float32)
-    y_cheat = scan(*(t.float() for t in args16), acc_dtype=torch.float16)
-
-    scale = y_ref.abs().max().item()
-    honest = (y_honest - y_ref).abs().max().item()
-    cheat = (y_cheat - y_ref).abs().max().item()
-    print(f"output scale (max|y|):    {scale:.4f}")
-    print(f"honest floor (fp32 acc):  {honest:.5f}")
-    print(f"cheat error (fp16 acc):   {cheat:.5f}")
-    print(f"separation ratio:         {cheat / honest:.1f}x")
+    floor_stats(forward_chunked_scan, "honest (fp32 acc)")
+    floor_stats(_fp16_accumulator_scan, "cheat (fp16 acc)")
 
 
 if __name__ == "__main__":

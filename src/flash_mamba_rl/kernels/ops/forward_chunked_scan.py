@@ -65,6 +65,14 @@ def _scan_eager(u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Te
 
 
 class _ForwardScanCuda(torch.autograd.Function):
+    """Triton forward; backward recomputes through the eager path.
+
+    Provisional until C2 lands the Triton backward. First-order only:
+    ``backward`` calls ``torch.autograd.grad`` without ``create_graph``,
+    so double-backward (HVPs, gradient penalties) through the CUDA path
+    silently returns detached grads.
+    """
+
     @staticmethod
     def forward(
         ctx: Any,

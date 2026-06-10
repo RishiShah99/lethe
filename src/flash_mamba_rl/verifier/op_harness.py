@@ -34,7 +34,11 @@ import torch
 from torch import Tensor
 
 from flash_mamba_rl.kernels.references import reference_forward_chunked_scan
-from flash_mamba_rl.verifier.contracts import GateResult, run_all_gates
+from flash_mamba_rl.verifier.contracts import (
+    GateResult,
+    gate_prc_02_mixed_precision_accumulation,
+    run_all_gates,
+)
 
 ScanCallable = Callable[..., Tensor]
 
@@ -50,9 +54,10 @@ SCAN_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     # scan treats elementwise. The op's accumulation axes are the sequence
     # (h carried over L) and the N-dot; a missing fp32 accumulator shows up
     # on a long scan, so stress L instead. At this shape with the Mamba-
-    # realistic delta below, the honest fp32-accumulator floor is ~6e-3 and
-    # an fp16 accumulator lands at ~1.5e-1, so the gate's default atol=2e-2
-    # separates them with margin (pinned by a discriminative test).
+    # realistic delta below (saturation off — see verify_scan_op), the
+    # honest fp32-accumulator floor is ~6e-3 and an fp16 accumulator lands
+    # at ~1.5e-1, so the gate's default atol=2e-2 separates them with
+    # margin (pinned by a discriminative test).
     "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32)},
     # The scan's accumulation chain is the sequence, not the trailing dim:
     # at the gate's (4, 512, 32) shape the reduction extent is L=512.
@@ -86,6 +91,7 @@ def _scan_aux(
     n_state: int,
     device: torch.device,
     dtype: torch.dtype,
+    saturate: bool = True,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Deterministic (delta, A, B, C, D_skip) for a [batch, seq_len, d_model] primary.
 
@@ -96,6 +102,20 @@ def _scan_aux(
     where low-precision accumulators actually lose mass (PRC-02). A
     unit-scale delta would make the scan strongly contractive and mask
     accumulator cheats.
+
+    With ``saturate=True``, a sparse deterministic subset of ``delta``
+    entries is set into the softplus saturation regime (12 / 25 / 95):
+    an unguarded softplus (``log1p(exp(x))`` with no large-x branch)
+    overflows to Inf at x ~ 89 in fp32 and would otherwise pass every
+    gate, since the bulk distribution never leaves negative territory.
+    PRC-02 runs with ``saturate=False``: the saturated channels amplify
+    local magnitudes ~100x, so the candidate's irreducible fp16
+    *input-rounding* error there swamps the accumulator signal the gate
+    exists to measure (value correctness at saturation is CMP-01's job,
+    on same-bits fp32 inputs). Aux tensors stay finite by construction;
+    non-finite *aux* behaviour is outside the gate contract (the gates
+    inject non-finites through the primary only) and is covered by the
+    kernels' direct tests.
     """
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_SCAN_AUX_SEED)
@@ -103,6 +123,11 @@ def _scan_aux(
     log_hi = math.log(_DT_MAX)
     dt = torch.exp(torch.rand(batch, seq_len, d_model, generator=gen) * (log_hi - log_lo) + log_lo)
     delta = dt + torch.log(-torch.expm1(-dt))  # inverse softplus
+    if saturate:
+        flat = delta.view(-1)
+        saturation = torch.tensor([12.0, 25.0, 95.0])
+        idx = torch.arange(0, flat.numel(), 257)
+        flat[idx] = saturation.repeat((idx.numel() + 2) // 3)[: idx.numel()]
     a = -torch.rand(d_model, n_state, generator=gen)  # negative for stability
     b_proj = torch.randn(batch, seq_len, n_state, generator=gen)
     c_proj = torch.randn(batch, seq_len, n_state, generator=gen)
@@ -119,12 +144,13 @@ def scan_candidate_adapter(
     *,
     n_state: int = SCAN_N_STATE,
     chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
     """Wrap a scan-signature callable into the gates' single-tensor interface."""
 
     def adapted(u: Tensor) -> Tensor:
         batch, seq_len, d_model = u.shape
-        aux = _scan_aux(batch, seq_len, d_model, n_state, u.device, u.dtype)
+        aux = _scan_aux(batch, seq_len, d_model, n_state, u.device, u.dtype, saturate=saturate)
         return scan_fn(u, *aux, chunk_size=chunk_size)
 
     return adapted
@@ -134,12 +160,13 @@ def scan_reference_adapter(
     *,
     n_state: int = SCAN_N_STATE,
     chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
     """The reference oracle behind the same single-tensor interface."""
 
     def adapted(u: Tensor) -> Tensor:
         batch, seq_len, d_model = u.shape
-        aux = _scan_aux(batch, seq_len, d_model, n_state, u.device, u.dtype)
+        aux = _scan_aux(batch, seq_len, d_model, n_state, u.device, u.dtype, saturate=saturate)
         if u.dtype == torch.float32:
             return reference_forward_chunked_scan(u, *aux, chunk_size=chunk_size)
         # Mixed-precision contract: oracle computes in fp32 from the same
@@ -167,13 +194,39 @@ def verify_scan_op(
     ``resource_meta`` (from compile-stage extraction or the Triton kernel
     cache) activates RES-02's evidence-based check; None leaves it
     not-applicable.
+
+    PRC-02 is re-run with saturation-free auxiliaries: the saturated
+    delta entries probe softplus value-correctness (CMP-01's same-bits
+    domain) but their ~100x amplification drowns PRC-02's accumulator
+    signal in fp16 input-rounding noise (see ``_scan_aux``).
     """
     overrides: dict[str, dict[str, Any]] = {k: dict(v) for k, v in SCAN_GATE_OVERRIDES.items()}
     if resource_meta is not None:
         overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
-    return run_all_gates(
+    results = run_all_gates(
         scan_candidate_adapter(scan_fn, n_state=n_state, chunk_size=chunk_size),
         scan_reference_adapter(n_state=n_state, chunk_size=chunk_size),
         device=device,
         gate_overrides=overrides,
     )
+    prc02_kwargs: dict[str, Any] = {
+        "device": device,
+        **SCAN_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"],
+    }
+    try:
+        results["gate_prc_02_mixed_precision_accumulation"] = (
+            gate_prc_02_mixed_precision_accumulation(
+                scan_candidate_adapter(
+                    scan_fn, n_state=n_state, chunk_size=chunk_size, saturate=False
+                ),
+                scan_reference_adapter(n_state=n_state, chunk_size=chunk_size, saturate=False),
+                **prc02_kwargs,
+            )
+        )
+    except Exception as exc:  # mirror run_all_gates' crash containment
+        results["gate_prc_02_mixed_precision_accumulation"] = GateResult(
+            passed=False,
+            reason=f"gate crashed: {type(exc).__name__}: {exc}",
+            details={"exception_type": type(exc).__name__},
+        )
+    return results

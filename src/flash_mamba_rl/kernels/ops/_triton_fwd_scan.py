@@ -75,30 +75,39 @@ def _fwd_scan_kernel(  # type: ignore[no-untyped-def]
 
     h = tl.zeros((BLOCK_D, BLOCK_N), dtype=tl.float32)
 
-    # int64 batch bases: b * L * D overflows int32 for large batched runs.
-    uld_base = pid_b.to(tl.int64) * seq_len * d_model
-    bln_base = pid_b.to(tl.int64) * seq_len * n_state
+    # Running int64 offsets, advanced per timestep: b * L * D overflows
+    # int32 for large batched runs, and accumulating in int64 avoids the
+    # int32 t * d_model product entirely.
+    uld_off = pid_b.to(tl.int64) * seq_len * d_model + offs_d
+    bln_off = pid_b.to(tl.int64) * seq_len * n_state + offs_n
 
-    for t in range(seq_len):
-        uld_off = uld_base + t * d_model + offs_d
+    for _t in range(seq_len):
         u_t = tl.load(u_ptr + uld_off, mask=mask_d, other=0.0).to(tl.float32)
         dlt = tl.load(delta_ptr + uld_off, mask=mask_d, other=0.0).to(tl.float32)
 
-        bln_off = bln_base + t * n_state + offs_n
         b_t = tl.load(b_ptr + bln_off, mask=mask_n, other=0.0).to(tl.float32)
         c_t = tl.load(c_ptr + bln_off, mask=mask_n, other=0.0).to(tl.float32)
 
-        dbar = tl.where(dlt > _SOFTPLUS_THRESHOLD, dlt, libdevice.log1p(tl.exp(dlt)))
+        # libdevice.exp (full-precision expf), not tl.exp (ex2.approx):
+        # the approx path flushes subnormal outputs, and exp(dbar * a)
+        # reaches the subnormal range for saturated dbar — a flushed 0
+        # turns Inf*subnormal into Inf*0=NaN and splits the EXC-01
+        # NaN/Inf masks against the torch reference.
+        dbar = tl.where(dlt > _SOFTPLUS_THRESHOLD, dlt, libdevice.log1p(libdevice.exp(dlt)))
 
-        a_bar = tl.exp(dbar[:, None] * a)
+        a_bar = libdevice.exp(dbar[:, None] * a)
         bu = (dbar * u_t)[:, None] * b_t[None, :]
-        # Padding lanes must stay exactly zero: with non-finite u, Inf * 0
-        # in a padded lane would mint a NaN that poisons the N-reduction.
-        bu = tl.where(mask_dn, bu, 0.0)
-        h = a_bar * h + bu
+        # Padding lanes must stay exactly zero through the whole update:
+        # with non-finite u or delta, Inf * 0 in a padded lane (in bu, or
+        # in a_bar via exp(Inf * 0)) would mint a NaN that poisons the real
+        # lanes' N-reduction below.
+        h = tl.where(mask_dn, a_bar * h + bu, 0.0)
 
         y_t = tl.sum(h * c_t[None, :], axis=1) + d_skip * u_t
         tl.store(y_ptr + uld_off, y_t.to(y_ptr.dtype.element_ty), mask=mask_d)
+
+        uld_off += d_model
+        bln_off += n_state
 
 
 def launch_forward_scan(
@@ -142,13 +151,16 @@ def launch_forward_scan(
 
 
 def resource_meta() -> dict[str, int] | None:
-    """Best-effort resource metadata from the compiled kernel cache.
+    """Resource envelope across all compiled specialisations of the kernel.
 
-    Reads ``n_regs`` / ``n_spills`` / shared-memory bytes off the most
-    recently compiled specialisation of the scan kernel, in the shape
-    ``gate_res_02_resource_limits`` expects. Returns None when nothing
-    has been compiled yet or the (version-dependent) cache layout has
-    drifted — absence of evidence must not fabricate evidence.
+    Returns the *maximum* ``n_regs`` / ``spill_bytes`` / ``shared_bytes``
+    over every cached compilation (dtypes, block sizes), in the shape
+    ``gate_res_02_resource_limits`` expects — a conservative envelope, so
+    the gate checks the worst specialisation rather than whichever cache
+    entry happens to iterate last. Callers should warm the kernel at the
+    heaviest shapes they care about before reading. Returns None when
+    nothing has been compiled yet or the (version-dependent) cache layout
+    has drifted — absence of evidence must not fabricate evidence.
     """
     caches = getattr(_fwd_scan_kernel, "device_caches", None)
     compiled: list[Any] = []
@@ -165,17 +177,19 @@ def resource_meta() -> dict[str, int] | None:
             if isinstance(cache_dict, dict):
                 compiled.extend(cache_dict.values())
 
-    for kernel in reversed(compiled):
+    meta: dict[str, int] | None = None
+    for kernel in compiled:
         n_regs = getattr(kernel, "n_regs", None)
         if n_regs is None:
             continue
-        meta: dict[str, int] = {"n_regs": int(n_regs)}
+        if meta is None:
+            meta = {"n_regs": 0}
+        meta["n_regs"] = max(meta["n_regs"], int(n_regs))
         n_spills = getattr(kernel, "n_spills", None)
         if n_spills is not None:
             # ptxas reports spills in bytes; triton surfaces the raw figure.
-            meta["spill_bytes"] = int(n_spills)
+            meta["spill_bytes"] = max(meta.get("spill_bytes", 0), int(n_spills))
         shared = getattr(getattr(kernel, "metadata", None), "shared", None)
         if shared is not None:
-            meta["shared_bytes"] = int(shared)
-        return meta
-    return None
+            meta["shared_bytes"] = max(meta.get("shared_bytes", 0), int(shared))
+    return meta

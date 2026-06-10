@@ -116,7 +116,12 @@ def gate_cmp_03_shape_polymorphism(
     rtol: float = 1e-5,
     **kwargs: Any,
 ) -> GateResult:
-    """CMP-03: Shape polymorphism — vary batch, length, and model-dim independently."""
+    """CMP-03: Shape polymorphism — vary batch, length, and model-dim independently.
+
+    ``atol`` is interpreted at unit scale and multiplied by the reference
+    output's magnitude (see CMP-01): cancellation elements carry the ULP
+    noise of the large intermediates, not of their own small value.
+    """
     shapes = [
         (1, 16, 8),
         (2, 32, 16),
@@ -138,9 +143,12 @@ def gate_cmp_03_shape_polymorphism(
                 f"shape={shape}: output shape mismatch {out_cand.shape} vs {out_ref.shape}"
             )
             continue
-        if not torch.allclose(out_cand.float(), out_ref.float(), atol=atol, rtol=rtol):
-            max_err = (out_cand.float() - out_ref.float()).abs().max().item()
-            failures.append(f"shape={shape}: max_err={max_err:.3e}")
+        ref32 = out_ref.float()
+        finite = ref32[torch.isfinite(ref32)]
+        scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
+        if not torch.allclose(out_cand.float(), ref32, atol=atol * scale, rtol=rtol):
+            max_err = (out_cand.float() - ref32).abs().max().item()
+            failures.append(f"shape={shape}: max_err={max_err:.3e} > atol={atol * scale:.3e}")
 
     if failures:
         return GateResult(
@@ -272,7 +280,12 @@ def gate_prc_01_precision_regime(
     device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
-    """PRC-01: Precision regime — test FP32, FP16, BF16 with per-dtype tolerances."""
+    """PRC-01: Precision regime — test FP32, FP16, BF16 with per-dtype tolerances.
+
+    Per-dtype ``atol`` is interpreted at unit scale and multiplied by the
+    reference output's magnitude (see CMP-01): cancellation elements carry
+    the ULP noise of the large intermediates, not of their own small value.
+    """
     dtype_configs: list[tuple[torch.dtype, float, float]] = [
         (torch.float32, 1e-5, 1e-5),
         (torch.float16, 1e-3, 1e-3),
@@ -290,9 +303,12 @@ def gate_prc_01_precision_regime(
         if out_cand.shape != out_ref.shape:
             failures.append(f"{dtype}: shape mismatch")
             continue
-        if not torch.allclose(out_cand.float(), out_ref.float(), atol=atol, rtol=rtol):
-            max_err = (out_cand.float() - out_ref.float()).abs().max().item()
-            failures.append(f"{dtype}: max_err={max_err:.3e} > atol={atol}")
+        ref32 = out_ref.float()
+        finite = ref32[torch.isfinite(ref32)]
+        scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
+        if not torch.allclose(out_cand.float(), ref32, atol=atol * scale, rtol=rtol):
+            max_err = (out_cand.float() - ref32).abs().max().item()
+            failures.append(f"{dtype}: max_err={max_err:.3e} > atol={atol * scale:.3e}")
 
     if failures:
         return GateResult(
@@ -504,6 +520,7 @@ def gate_prc_02_mixed_precision_accumulation(
     shape: tuple[int, ...] = (2, 32, 1024),
     device: str | torch.device = "cpu",
     atol: float = 2e-2,
+    rtol: float = 0.0,
     **kwargs: Any,
 ) -> GateResult:
     """PRC-02: Mixed-precision accumulation — FP16 inputs must produce outputs
@@ -515,7 +532,12 @@ def gate_prc_02_mixed_precision_accumulation(
     accumulation and FP32-accumulating implementations visible.
 
     Comparing the FP16 candidate output (upcast to FP32) against the FP32
-    reference output exposes the missing FP32 accumulator.
+    reference output exposes the missing FP32 accumulator. The candidate's
+    irreducible error includes the fp16 *input* rounding (the reference
+    consumes unrounded operands by design), which is relative to local
+    output magnitude — ops whose outputs span magnitudes (amplifying
+    entries) need a small elementwise ``rtol`` so unit-scale ``atol``
+    keeps the accumulator discrimination where outputs are O(1).
     """
     t_fp32 = torch.randn(shape, dtype=torch.float32, device=device)
     t_fp16 = t_fp32.to(torch.float16)
@@ -536,18 +558,23 @@ def gate_prc_02_mixed_precision_accumulation(
             details={"atol": atol},
         )
 
-    diff = (out_cand.float() - out_ref.float()).abs()
+    ref32 = out_ref.float()
+    diff = (out_cand.float() - ref32).abs()
     max_err = diff.max().item()
-    if max_err > atol:
+    ok = bool((diff <= atol + rtol * ref32.abs()).all().item())
+    if not ok:
         return GateResult(
             passed=False,
-            reason=(f"max_err={max_err:.3e} > atol={atol} — likely missing FP32 accumulator"),
-            details={"max_err": max_err, "atol": atol},
+            reason=(
+                f"max_err={max_err:.3e} exceeds atol={atol} + rtol={rtol}*|ref| — "
+                "likely missing FP32 accumulator"
+            ),
+            details={"max_err": max_err, "atol": atol, "rtol": rtol},
         )
     return GateResult(
         passed=True,
         reason=f"max_err={max_err:.3e} within FP16 tolerance — FP32 accumulator inferred",
-        details={"max_err": max_err, "atol": atol},
+        details={"max_err": max_err, "atol": atol, "rtol": rtol},
     )
 
 
