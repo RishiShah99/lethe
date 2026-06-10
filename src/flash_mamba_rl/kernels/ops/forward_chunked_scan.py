@@ -65,12 +65,12 @@ def _scan_eager(u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Te
 
 
 class _ForwardScanCuda(torch.autograd.Function):
-    """Triton forward; backward recomputes through the eager path.
+    """Triton forward; backward is the hand-written Triton kernel (C2).
 
-    Provisional until C2 lands the Triton backward. First-order only:
-    ``backward`` calls ``torch.autograd.grad`` without ``create_graph``,
-    so double-backward (HVPs, gradient penalties) through the CUDA path
-    silently returns detached grads.
+    First-order only: the Triton backward returns plain tensors with no
+    graph, so double-backward (HVPs, gradient penalties) through the CUDA
+    path is unsupported — route through the eager path (CPU or fp64) when
+    higher-order gradients are needed.
     """
 
     @staticmethod
@@ -90,12 +90,10 @@ class _ForwardScanCuda(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor, ...]:
-        saved: tuple[Tensor, ...] = ctx.saved_tensors
-        with torch.enable_grad():
-            leaves = [t.detach().requires_grad_(True) for t in saved]
-            y = _scan_eager(*leaves)
-            grads = torch.autograd.grad(y, leaves, grad_y)
-        return grads
+        from flash_mamba_rl.kernels.ops import _triton_bwd_scan
+
+        u, delta, a, b, c, d_skip = ctx.saved_tensors
+        return _triton_bwd_scan.launch_backward_scan(u, delta, a, b, c, d_skip, grad_y)
 
 
 def forward_chunked_scan(
