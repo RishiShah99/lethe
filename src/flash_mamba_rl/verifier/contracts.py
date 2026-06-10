@@ -521,6 +521,7 @@ def gate_prc_02_mixed_precision_accumulation(
     device: str | torch.device = "cpu",
     atol: float = 2e-2,
     rtol: float = 0.0,
+    scale_atol_by_ref_inf: bool = False,
     **kwargs: Any,
 ) -> GateResult:
     """PRC-02: Mixed-precision accumulation — FP16 inputs must produce outputs
@@ -538,6 +539,17 @@ def gate_prc_02_mixed_precision_accumulation(
     output magnitude — ops whose outputs span magnitudes (amplifying
     entries) need a small elementwise ``rtol`` so unit-scale ``atol``
     keeps the accumulator discrimination where outputs are O(1).
+
+    ``scale_atol_by_ref_inf`` multiplies ``atol`` by ``max(1, |ref|_inf)``
+    (the CMP-01 convention) for outputs whose error carries the magnitude
+    of large *intermediates* even at elements that cancel to near zero —
+    elementwise rtol cannot express that. Measured on B200 for the
+    backward scan's grad_A view at (2, 1024, 32): honest fp32-accumulator
+    floors are 4.9e-4 (Triton) / 9.0e-4 (eager) of output scale, an fp16
+    carry sits at 1.25e-2 of scale, so a unit atol of 3e-3 keeps >3x
+    margin on both sides. Default off: at unit output scales the flat
+    interpretation is identical and stays bit-compatible with the C1
+    calibration.
     """
     t_fp32 = torch.randn(shape, dtype=torch.float32, device=device)
     t_fp16 = t_fp32.to(torch.float16)
@@ -559,22 +571,31 @@ def gate_prc_02_mixed_precision_accumulation(
         )
 
     ref32 = out_ref.float()
+    scale = 1.0
+    if scale_atol_by_ref_inf:
+        finite = ref32[torch.isfinite(ref32)]
+        scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
+    atol_eff = atol * scale
     diff = (out_cand.float() - ref32).abs()
     max_err = diff.max().item()
-    ok = bool((diff <= atol + rtol * ref32.abs()).all().item())
+    details: dict[str, Any] = {"max_err": max_err, "atol": atol, "rtol": rtol}
+    if scale_atol_by_ref_inf:
+        details["output_scale"] = scale
+        details["atol_effective"] = atol_eff
+    ok = bool((diff <= atol_eff + rtol * ref32.abs()).all().item())
     if not ok:
         return GateResult(
             passed=False,
             reason=(
-                f"max_err={max_err:.3e} exceeds atol={atol} + rtol={rtol}*|ref| — "
+                f"max_err={max_err:.3e} exceeds atol={atol_eff:.3e} + rtol={rtol}*|ref| — "
                 "likely missing FP32 accumulator"
             ),
-            details={"max_err": max_err, "atol": atol, "rtol": rtol},
+            details=details,
         )
     return GateResult(
         passed=True,
         reason=f"max_err={max_err:.3e} within FP16 tolerance — FP32 accumulator inferred",
-        details={"max_err": max_err, "atol": atol, "rtol": rtol},
+        details=details,
     )
 
 

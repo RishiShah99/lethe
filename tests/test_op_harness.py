@@ -433,6 +433,28 @@ class TestBackwardScanHarness:
         assert not failed, f"grad_u gates failed on CPU: {failed}"
         assert results["gate_res_02_resource_limits"].details.get("applicable") is True
 
+    def test_grad_a_prc02_scale_aware_separates_honest_from_cheat(self) -> None:
+        # grad_A's PRC-02 runs scale-aware (error carries the magnitude of
+        # large cancelling intermediates; B200-measured honest floors are
+        # 4.9e-4 Triton / 9.0e-4 eager of output scale vs 1.25e-2 for an
+        # fp16 carry). This pins both sides of the 3e-3 unit atol on the
+        # eager path.
+        kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_A"]["gate_prc_02_mixed_precision_accumulation"])
+        honest = gate_prc_02_mixed_precision_accumulation(
+            bwd_scan_candidate_adapter(backward_selective_scan, "grad_A", saturate=False),
+            bwd_scan_reference_adapter("grad_A", saturate=False),
+            **kwargs,
+        )
+        assert honest.passed, f"honest fp32-accumulator backward rejected: {honest.reason}"
+        cheat = gate_prc_02_mixed_precision_accumulation(
+            bwd_scan_candidate_adapter(
+                _bwd_via_autograd(_fp16_accumulator_scan), "grad_A", saturate=False
+            ),
+            bwd_scan_reference_adapter("grad_A", saturate=False),
+            **kwargs,
+        )
+        assert not cheat.passed, "scale-aware PRC-02 lost its discriminative power on grad_A"
+
     def test_fp16_accumulator_bwd_cheat_caught_by_prc02(self) -> None:
         # Autograd through an fp16-state forward keeps the backward carry in
         # fp16 too; PRC-02 on the grad_u view must reject it while the honest

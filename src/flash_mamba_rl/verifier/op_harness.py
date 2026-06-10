@@ -314,25 +314,28 @@ def _bwd_view_overrides(
     ord01_reduction_elements: int,
     ord03_atol: float,
     ord03_rtol: float,
+    prc02: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-view gate overrides sharing the backward op's fixed shapes.
 
     PRC-02 keeps the forward's L-axis stress shape and adds rtol=1e-3:
-    gradient magnitudes span decades across outputs (grad_A accumulates
-    batch*L near-integrator terms), so the fp16 *input-rounding* floor is
-    relative to local output scale exactly as the gate docstring
-    anticipates — while the fp16-accumulator signal sits ~30x above that
-    rtol at this shape's sqrt(L)*eps16 error.
+    gradient magnitudes span decades across outputs, so the fp16
+    *input-rounding* floor is relative to local output scale exactly as
+    the gate docstring anticipates — while the fp16-accumulator signal
+    sits ~30x above that rtol at this shape's sqrt(L)*eps16 error.
+    ``prc02`` replaces those kwargs for views where the flat model is
+    wrong (grad_A, below).
 
     ORD-01's ``reduction_elements`` is the view's honest accumulation
     extent under the eps*sqrt(chain)*scale random-walk model (C1's
     calibration approach). ORD-03 keeps the forward's L=8192 collapse
-    length. Tolerances are theory-seeded and provisional until the B200
-    calibration pass measures the real noise floors (C1 measured within
-    1.1x of the model; expect the same and tighten accordingly).
+    length. ORD tolerances are theory-seeded; the B200 suite passes them
+    as-is (C1 measured within 1.1x of the model).
     """
     return {
-        "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32), "rtol": 1e-3},
+        "gate_prc_02_mixed_precision_accumulation": (
+            prc02 if prc02 is not None else {"shape": (2, 1024, 32), "rtol": 1e-3}
+        ),
         "gate_ord_01_reduction_order_tolerance": {"reduction_elements": ord01_reduction_elements},
         "gate_ord_03_noncommutative_reduction": {
             "shape": (1, 8192, 16),
@@ -352,7 +355,22 @@ SCAN_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord01_reduction_elements=512, ord03_atol=1e-3, ord03_rtol=1e-3
     ),
     "grad_A": _bwd_view_overrides(
-        ord01_reduction_elements=4 * 512 * 512 // 2, ord03_atol=1e-2, ord03_rtol=1e-2
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        # grad_A sums batch*L large near-integrator terms: the fp16
+        # input-rounding error carries the magnitude of those intermediates
+        # even at elements that cancel — flat atol and elementwise rtol both
+        # misread it. B200-measured floors at this shape (scale-normalised):
+        # honest 4.9e-4 (Triton) / 9.0e-4 (eager), fp16-carry cheat 1.25e-2;
+        # unit atol 3e-3 holds >3x margin both ways (pinned by a
+        # discriminative test).
+        prc02={
+            "shape": (2, 1024, 32),
+            "atol": 3e-3,
+            "rtol": 0.0,
+            "scale_atol_by_ref_inf": True,
+        },
     ),
     "grad_B": _bwd_view_overrides(
         ord01_reduction_elements=32 * 512 // 2, ord03_atol=3e-3, ord03_rtol=3e-3
