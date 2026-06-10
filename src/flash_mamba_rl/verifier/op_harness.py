@@ -612,8 +612,11 @@ def _mimo_prc02(atol: float) -> dict[str, Any]:
     while the honest floor stays put — measured (CPU eager, 5 draws,
     scale-normalised): honest <= 2.1e-3..4.9e-3 per view vs cheat >=
     7.8e-3..1.4e-2; per-view unit atols sit between with the margin biased
-    to the honest side. Probe: scratch/c3_prc02_floor.py; re-measured on
-    B200 like the scan calibrations.
+    to the honest side. Probes: scratch/c3_prc02_floor.py (CPU calibration),
+    scratch/c3_b200_floor.py (B200 confirmation against the Triton kernel,
+    3 draws: kernel floor 1.2-2.6x under atol, cheat 1.3-2.7x over, every
+    view discriminates both ways; grad_dt is the thin view at 1.2x/1.3x —
+    recalibrate there first if it ever flakes).
     """
     return {
         "shape": (1, 4096, 32),

@@ -399,7 +399,12 @@ class TestC3TritonParity:
             (1, 8, 1, 2, 4, 8),  # tiny, R=1 degenerate
             (2, 64, 2, 3, 24, 16),  # non-pow2 H and P
             (3, 120, 4, 4, 100, 10),  # non-pow2 L (chunk_k=8), P, N
+            (2, 64, 3, 2, 8, 16),  # non-pow2 R (masked BLOCK_R rows)
+            (2, 64, 5, 2, 8, 16),  # R=5 (BLOCK_R=8 row-select)
             (2, 256, 4, 8, 64, 128),  # training-like state, N split across blocks
+            (2, 128, 2, 4, 16, 100),  # masked last n-block ON the split path
+            (1, 1, 2, 2, 4, 8),  # L=1 (single chunk of one step)
+            (1, 2, 2, 2, 4, 8),  # L=2 (one chunk, real h_tm1/ag_carry step)
         ],
     )
     def test_fp32_grads_match_reference(
@@ -437,6 +442,20 @@ class TestC3TritonParity:
             for field, a_, b_ in zip(MIMO_FIELDS, first, again, strict=True):
                 assert torch.equal(a_, b_), field
 
+    def test_noncontiguous_inputs_match_contiguous(self) -> None:
+        # Pins the launcher's .contiguous() normalisation: a strided view of
+        # the same values must produce byte-identical gradients.
+        args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)
+        base = mimo_backward(*args, dy)
+        x, b_p, c_p, dt, alpha, mimo_x, mimo_o = args
+        x_nc = x.transpose(1, 2).contiguous().transpose(1, 2)
+        b_nc = b_p.transpose(1, 2).contiguous().transpose(1, 2)
+        dy_nc = dy.transpose(2, 3).contiguous().transpose(2, 3)
+        assert not (x_nc.is_contiguous() or b_nc.is_contiguous() or dy_nc.is_contiguous())
+        again = mimo_backward(x_nc, b_nc, c_p, dt, alpha, mimo_x, mimo_o, dy_nc)
+        for field, a_, b_ in zip(MIMO_FIELDS, base, again, strict=True):
+            assert torch.equal(a_, b_), field
+
     def test_nonfinite_dy_masks_match_oracle(self) -> None:
         # EXC-01's contract on the real kernel: non-finites through dy mint
         # NaN/Inf exactly where the autograd oracle does.
@@ -453,12 +472,21 @@ class TestC3TritonParity:
 @pytest.mark.gpu
 @requires_gpu
 class TestC3NumWarpsCompile:
-    def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
+    @pytest.mark.parametrize(
+        ("b", "seq", "rank", "h", "p", "n"),
+        [
+            (2, 256, 4, 4, 32, 16),
+            (2, 128, 2, 4, 16, 128),  # nNb=2: warp layout x n-split reduction
+        ],
+    )
+    def test_compiles_and_matches_at_num_warps_4_and_8(
+        self, b: int, seq: int, rank: int, h: int, p: int, n: int
+    ) -> None:
         # Same #904 framing as C2: no tl.dot anywhere, so the TMEM-promotion
         # pass never engages and every warp config must compile on sm_100.
         from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
 
-        args, dy = _mimo_inputs(2, 256, 4, 4, 32, 16)
+        args, dy = _mimo_inputs(b, seq, rank, h, p, n)
         base = _triton_mimo_bwd.launch_mimo_backward(*args, dy, num_warps=2)
         for warps in (4, 8):
             got = _triton_mimo_bwd.launch_mimo_backward(*args, dy, num_warps=warps)

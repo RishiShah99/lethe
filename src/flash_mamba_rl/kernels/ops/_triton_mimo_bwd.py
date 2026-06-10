@@ -16,11 +16,15 @@ gradient is the same for every rank — one carry ``g[p, n]``, and the
 aggregated state itself obeys ``h_agg_t = alpha_t * h_agg_{t-1} +
 sum_r (dt_t * B_t^r) * x_r_t^r``. The kernel carries only ``h_agg``, never
 per-rank states. This deviates from autograd's per-rank dataflow
-algebraically-equally; gate non-finites flow only through ``dy`` (forward
-aux is finite), so NaN/Inf masks are unaffected, and gradient expressions
-otherwise mirror autograd's grouping (e.g. ``grad_B = (sum_p g*x_r) * dt``,
-never ``sum_p g*(dt*x_r)`` — Inf*0 mints NaN in whichever factoring you
-pick, EXC-01 compares the masks).
+algebraically-equally. NaN/Inf mask caveat: with an Inf in ``g``, the
+aggregated ``g * sum_r h^r`` and autograd's ``sum_r (g * h^r)`` can
+disagree (Inf vs NaN) when the per-rank Inf products mix signs but the
+aggregate's do not — that requires every kernel-side Inf product
+same-signed, vanishingly unlikely under the gates' random-sign aux; the
+EXC views passing on B200 pin the practical claim. Gradient expressions
+otherwise mirror autograd's grouping exactly (e.g.
+``grad_B = (sum_p g*x_r) * dt``, never ``sum_p g*(dt*x_r)`` — Inf*0 mints
+NaN in whichever factoring you pick, EXC-01 compares the masks).
 
 Parallelisation: one program per (batch, head, N-block) — the recurrence
 is independent per state column. Each program owns the full headdim P, so
@@ -236,6 +240,10 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
                     (gt1_r * dt_t).to(grad_b_ptr.dtype.element_ty),
                     mask=mask_n,
                 )
+                # Unmasked sums here and at galpha_t below are safe only
+                # because g, gt1_r and h_tm1 are zeroed at padded lanes
+                # upstream (g at its tl.where, h via the recompute mask) —
+                # re-check if any of those producers change.
                 gdt_t += tl.sum(gt1_r * b_r)
                 gxr_r = tl.sum(tl.where(mask_pn, g * tmp1_r[None, :], 0.0), axis=1)
                 gx_t += gxr_r * mx_r
@@ -276,8 +284,11 @@ def launch_mimo_backward(
     *,
     num_warps: int | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Launch the Triton MIMO backward. Inputs must be CUDA tensors of one dtype.
+    """Launch the Triton MIMO backward on CUDA tensors.
 
+    Dispatch keys on ``x`` (device, dtype); the kernel upcasts every load to
+    fp32 and each gradient stores in its own input's dtype — mixed-dtype
+    inputs are tolerated identically to the eager path, not validated.
     Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
     grad_mimo_o)`` in the corresponding input dtypes. ``num_warps`` overrides
     the launch config for the bench's compile-behaviour sweep.
@@ -323,10 +334,16 @@ def launch_mimo_backward(
         n_n_blocks, batch, nheads, rank, headdim, dtype=torch.float32, device=dev
     )
     n_programs = batch * nheads * n_n_blocks
+    # ckpt is HBM-resident O(B*H*nNb*(L/CHUNK_K)*BLOCK_P*BLOCK_N) fp32 — ~2 GB
+    # at (B8, L4096, H32, P64, N128); only hbuf's in-chunk slice is L2-hot.
     ckpt = torch.empty(n_programs * n_chunks * block_p * block_n, dtype=torch.float32, device=dev)
     hbuf = torch.empty(n_programs * chunk_k * block_p * block_n, dtype=torch.float32, device=dev)
 
     grid = (batch, nheads, n_n_blocks)
+    # B200 resource envelope sits at the 255-reg ceiling with <=194 B spill
+    # (results/c3_bench_b200.json resource_meta) — zero headroom: anything
+    # that adds register pressure (wider MAX_RANK unroll, larger BLOCK_P)
+    # must re-check RES-02 and the spill column in the bench sweep.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     _mimo_bwd_kernel[grid](
         x_c,
