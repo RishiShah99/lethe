@@ -72,9 +72,7 @@ def reference_backward_selective_scan(
     c_l = C.detach().requires_grad_(True)
     d_l = D.detach().requires_grad_(True)
 
-    y = reference_forward_chunked_scan(
-        u_l, delta_l, a_l, b_l, c_l, d_l, chunk_size=chunk_size
-    )
+    y = reference_forward_chunked_scan(u_l, delta_l, a_l, b_l, c_l, d_l, chunk_size=chunk_size)
 
     grads = torch.autograd.grad(
         outputs=y,

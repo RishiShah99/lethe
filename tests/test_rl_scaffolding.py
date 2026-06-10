@@ -170,9 +170,7 @@ class TestGRPOTrainerSkeleton:
         ref_policy = StubPolicy(completions=["pass\n"])
         config = GRPOConfig(n_per_prompt=n_per_prompt)
 
-        def candidate_factory(
-            source: str, target_op: str, gen_id: int, idx: int
-        ) -> Candidate:
+        def candidate_factory(source: str, target_op: str, gen_id: int, idx: int) -> Candidate:
             return Candidate(
                 source=source,
                 target_op=target_op,
@@ -198,9 +196,7 @@ class TestGRPOTrainerSkeleton:
 
     def test_rollout_produces_n_candidates(self) -> None:
         trainer = self._trainer(n_per_prompt=3)
-        rollout = trainer.rollout(
-            prompt="write a kernel", target_op="identity", prompt_id="p1"
-        )
+        rollout = trainer.rollout(prompt="write a kernel", target_op="identity", prompt_id="p1")
         assert len(rollout.candidates) == 3
         assert all(c.compiled for c in rollout.candidates)
         assert all(c.contracts_passed for c in rollout.candidates)

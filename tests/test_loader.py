@@ -21,7 +21,7 @@ def _write(path: Path, source: str) -> Path:
 
 class TestLoadCandidate:
     def test_basic_load(self, tmp_path: Path) -> None:
-        src = 'def my_kernel(x):\n    return x + 1\n'
+        src = "def my_kernel(x):\n    return x + 1\n"
         path = _write(tmp_path / "kernel_my_kernel.py", src)
         cand = load_candidate(path)
         assert isinstance(cand, KernelCandidate)
@@ -42,10 +42,7 @@ class TestLoadCandidate:
         assert cand.metadata == {"author": "rl_agent_v3", "iter": 42}
 
     def test_explicit_callable_override(self, tmp_path: Path) -> None:
-        src = (
-            '__candidate_callable__ = "real_entry"\n'
-            "def real_entry(x):\n    return x * 2\n"
-        )
+        src = '__candidate_callable__ = "real_entry"\ndef real_entry(x):\n    return x * 2\n'
         path = _write(tmp_path / "kernel_anything.py", src)
         cand = load_candidate(path)
         assert cand.callable_name == "real_entry"

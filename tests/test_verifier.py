@@ -435,9 +435,7 @@ class TestGateRes02ResourceLimits:
         assert len(result.details["checked"]) == 3
 
     def test_register_overflow_fails(self) -> None:
-        result = gate_res_02_resource_limits(
-            _identity, _identity, resource_meta={"n_regs": 300}
-        )
+        result = gate_res_02_resource_limits(_identity, _identity, resource_meta={"n_regs": 300})
         assert result.passed is False
         assert "n_regs: used 300 > limit 255" in result.details["violations"]
 

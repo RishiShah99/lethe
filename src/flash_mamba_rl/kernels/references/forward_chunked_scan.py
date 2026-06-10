@@ -58,9 +58,7 @@ def reference_forward_chunked_scan(
     n_state = A.shape[1]
 
     if seq_len % chunk_size != 0:
-        raise ValueError(
-            f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}"
-        )
+        raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
 
     # softplus discretisation of delta  [B, L, D]
     delta_bar = F.softplus(delta)

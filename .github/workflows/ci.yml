@@ -36,7 +36,6 @@ jobs:
 
       - name: Ruff format check
         run: uv run ruff format --check src tests
-        continue-on-error: true
 
       - name: Mypy type check
         run: uv run mypy src/flash_mamba_rl

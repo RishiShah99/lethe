@@ -20,9 +20,7 @@ from torch import Tensor
 def cheating_op(u: Tensor) -> Tensor:
     activated = F.silu(u)
     n = activated.shape[-1]
-    pooled = torch.zeros(
-        *activated.shape[:-1], 1, dtype=u.dtype, device=u.device
-    )
+    pooled = torch.zeros(*activated.shape[:-1], 1, dtype=u.dtype, device=u.device)
     # Reverse order accumulation — known to differ from torch.sum at the ULP.
     for i in range(n - 1, -1, -1):
         pooled = pooled + activated[..., i : i + 1]

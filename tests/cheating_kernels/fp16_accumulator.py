@@ -21,9 +21,7 @@ def cheating_op(u: Tensor) -> Tensor:
     activated = F.silu(u)
     n = activated.shape[-1]
     # Manual loop in u.dtype — no upcast.
-    pooled = torch.zeros(
-        *activated.shape[:-1], 1, dtype=u.dtype, device=u.device
-    )
+    pooled = torch.zeros(*activated.shape[:-1], 1, dtype=u.dtype, device=u.device)
     for i in range(n):
         pooled = pooled + activated[..., i : i + 1]
     return activated + pooled * 0.01
