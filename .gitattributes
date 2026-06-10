@@ -1,0 +1,2 @@
+# Keep POSIX-bound files LF even on Windows checkouts (they run on the GPU box).
+*.sh text eol=lf
