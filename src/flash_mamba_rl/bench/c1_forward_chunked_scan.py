@@ -97,7 +97,13 @@ def _time(fn: Callable[[], Tensor], *, warmup: int, trials: int) -> dict[str, fl
 
 
 def _official_layout(args: tuple[Tensor, ...]) -> tuple[Tensor, ...]:
-    """Pre-transpose to the official [B, D, L] / [B, 1, N, L] layout."""
+    """Pre-transpose to the official [B, D, L] / [B, 1, N, L] layout.
+
+    A and D upcast from the *rounded* low-precision values so both kernels
+    consume identical operand bits (the official kernel requires fp32
+    weights); parity numbers then measure implementation differences, not
+    operand-rounding differences.
+    """
     u, delta, a, b_proj, c_proj, d_skip = args
     return (
         u.transpose(1, 2).contiguous(),
