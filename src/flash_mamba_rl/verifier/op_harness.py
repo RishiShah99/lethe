@@ -33,6 +33,15 @@ grad_u sees one chain — so one tolerance table cannot serve all six.
 
 This is the same wiring the RL reward path needs to score generated
 kernels per op; Phase D consumes it via ``score_candidate(gate_kwargs=...)``.
+
+The verify drivers share one generic core (``_verify_op_views``): adapters
+plus override table plus an optional saturation-free PRC-02 re-run. The
+scan ops re-run PRC-02 because their aux plants softplus-saturation
+entries; the MIMO backward takes ``dt``/``alpha`` precomputed — no
+softplus exists inside the op, so its aux has no saturation analog and a
+single PRC-02 run already measures the accumulator. MIMO's 4D primary
+rides the gates' 3D [batch, seq, d_model] tensors by viewing d_model as
+(nheads, MIMO_HEADDIM) — every gate d_model is divisible by 4.
 """
 
 from __future__ import annotations
@@ -48,6 +57,7 @@ from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
+from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     GateResult,
     gate_prc_02_mixed_precision_accumulation,
@@ -104,6 +114,52 @@ SCAN_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
 # modules/mamba_simple.py): dt log-uniform in [dt_min, dt_max].
 _DT_MIN = 1e-3
 _DT_MAX = 1e-1
+
+
+def _verify_op_views(
+    candidate_factory: Callable[[bool], Callable[[Tensor], Tensor]],
+    reference_factory: Callable[[bool], Callable[[Tensor], Tensor]],
+    *,
+    base_overrides: dict[str, dict[str, Any]],
+    device: str | torch.device,
+    resource_meta: dict[str, int] | None,
+    saturation_rerun: bool,
+) -> dict[str, GateResult]:
+    """Generic gate run for one adapted view: overrides + optional PRC-02 re-run.
+
+    Factories take ``saturate`` and return the gates' single-tensor callable;
+    the re-run swaps in saturation-free aux (see ``verify_scan_op`` for why).
+    """
+    overrides: dict[str, dict[str, Any]] = {k: dict(v) for k, v in base_overrides.items()}
+    if resource_meta is not None:
+        overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
+    results = run_all_gates(
+        candidate_factory(True),
+        reference_factory(True),
+        device=device,
+        gate_overrides=overrides,
+    )
+    if not saturation_rerun:
+        return results
+    prc02_kwargs: dict[str, Any] = {
+        "device": device,
+        **base_overrides.get("gate_prc_02_mixed_precision_accumulation", {}),
+    }
+    try:
+        results["gate_prc_02_mixed_precision_accumulation"] = (
+            gate_prc_02_mixed_precision_accumulation(
+                candidate_factory(False),
+                reference_factory(False),
+                **prc02_kwargs,
+            )
+        )
+    except Exception as exc:  # mirror run_all_gates' crash containment
+        results["gate_prc_02_mixed_precision_accumulation"] = GateResult(
+            passed=False,
+            reason=f"gate crashed: {type(exc).__name__}: {exc}",
+            details={"exception_type": type(exc).__name__},
+        )
+    return results
 
 
 def _aux_from_gen(
@@ -272,36 +328,18 @@ def verify_scan_op(
     domain) but their ~100x amplification drowns PRC-02's accumulator
     signal in fp16 input-rounding noise (see ``_scan_aux``).
     """
-    overrides: dict[str, dict[str, Any]] = {k: dict(v) for k, v in SCAN_GATE_OVERRIDES.items()}
-    if resource_meta is not None:
-        overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
-    results = run_all_gates(
-        scan_candidate_adapter(scan_fn, n_state=n_state, chunk_size=chunk_size),
-        scan_reference_adapter(n_state=n_state, chunk_size=chunk_size),
+    return _verify_op_views(
+        lambda saturate: scan_candidate_adapter(
+            scan_fn, n_state=n_state, chunk_size=chunk_size, saturate=saturate
+        ),
+        lambda saturate: scan_reference_adapter(
+            n_state=n_state, chunk_size=chunk_size, saturate=saturate
+        ),
+        base_overrides=SCAN_GATE_OVERRIDES,
         device=device,
-        gate_overrides=overrides,
+        resource_meta=resource_meta,
+        saturation_rerun=True,
     )
-    prc02_kwargs: dict[str, Any] = {
-        "device": device,
-        **SCAN_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"],
-    }
-    try:
-        results["gate_prc_02_mixed_precision_accumulation"] = (
-            gate_prc_02_mixed_precision_accumulation(
-                scan_candidate_adapter(
-                    scan_fn, n_state=n_state, chunk_size=chunk_size, saturate=False
-                ),
-                scan_reference_adapter(n_state=n_state, chunk_size=chunk_size, saturate=False),
-                **prc02_kwargs,
-            )
-        )
-    except Exception as exc:  # mirror run_all_gates' crash containment
-        results["gate_prc_02_mixed_precision_accumulation"] = GateResult(
-            passed=False,
-            reason=f"gate crashed: {type(exc).__name__}: {exc}",
-            details={"exception_type": type(exc).__name__},
-        )
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -451,39 +489,18 @@ def verify_bwd_scan_op(
     amplification drowns the accumulator signal in fp16 input-rounding
     noise; saturation value-correctness is CMP-01's job on this view).
     """
-    view_overrides = SCAN_BWD_GATE_OVERRIDES.get(grad_field, {})
-    overrides: dict[str, dict[str, Any]] = {k: dict(v) for k, v in view_overrides.items()}
-    if resource_meta is not None:
-        overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
-    results = run_all_gates(
-        bwd_scan_candidate_adapter(bwd_fn, grad_field, n_state=n_state, chunk_size=chunk_size),
-        bwd_scan_reference_adapter(grad_field, n_state=n_state, chunk_size=chunk_size),
+    return _verify_op_views(
+        lambda saturate: bwd_scan_candidate_adapter(
+            bwd_fn, grad_field, n_state=n_state, chunk_size=chunk_size, saturate=saturate
+        ),
+        lambda saturate: bwd_scan_reference_adapter(
+            grad_field, n_state=n_state, chunk_size=chunk_size, saturate=saturate
+        ),
+        base_overrides=SCAN_BWD_GATE_OVERRIDES.get(grad_field, {}),
         device=device,
-        gate_overrides=overrides,
+        resource_meta=resource_meta,
+        saturation_rerun=True,
     )
-    prc02_kwargs: dict[str, Any] = {
-        "device": device,
-        **view_overrides.get("gate_prc_02_mixed_precision_accumulation", {}),
-    }
-    try:
-        results["gate_prc_02_mixed_precision_accumulation"] = (
-            gate_prc_02_mixed_precision_accumulation(
-                bwd_scan_candidate_adapter(
-                    bwd_fn, grad_field, n_state=n_state, chunk_size=chunk_size, saturate=False
-                ),
-                bwd_scan_reference_adapter(
-                    grad_field, n_state=n_state, chunk_size=chunk_size, saturate=False
-                ),
-                **prc02_kwargs,
-            )
-        )
-    except Exception as exc:  # mirror run_all_gates' crash containment
-        results["gate_prc_02_mixed_precision_accumulation"] = GateResult(
-            passed=False,
-            reason=f"gate crashed: {type(exc).__name__}: {exc}",
-            details={"exception_type": type(exc).__name__},
-        )
-    return results
 
 
 def verify_bwd_scan_op_all_grads(
@@ -505,4 +522,260 @@ def verify_bwd_scan_op_all_grads(
             chunk_size=chunk_size,
         )
         for grad_field in BWD_GRAD_FIELDS
+    }
+
+
+# ---------------------------------------------------------------------------
+# MIMO backward (C3): one gate view per gradient output
+# ---------------------------------------------------------------------------
+
+# MIMO-backward signature: (x, B, C, dt, alpha, mimo_x, mimo_o, dy) -> the
+# seven gradients as an indexable sequence (MimoGrads or plain tuple).
+MimoBwdCallable = Callable[..., Any]
+
+# The gates drive 3D [batch, seq, d_model] primaries; the MIMO dy views
+# d_model as (nheads, MIMO_HEADDIM). 4 divides every gate d_model.
+MIMO_HEADDIM = 4
+MIMO_RANK = 4
+MIMO_N_STATE = 16
+_MIMO_BWD_AUX_SEED = 15331
+
+# Gradient outputs of the MIMO backward, in MimoGrads field order.
+MIMO_BWD_GRAD_FIELDS: tuple[str, ...] = (
+    "grad_x",
+    "grad_B",
+    "grad_C",
+    "grad_dt",
+    "grad_alpha",
+    "grad_mimo_x",
+    "grad_mimo_o",
+)
+
+
+def _mimo_nheads(d_model: int, headdim: int) -> int:
+    if d_model % headdim != 0:
+        raise ValueError(f"d_model={d_model} not divisible by MIMO headdim {headdim}")
+    return d_model // headdim
+
+
+def _mimo_bwd_aux(
+    batch: int,
+    seq_len: int,
+    nheads: int,
+    headdim: int,
+    rank: int,
+    n_state: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Deterministic (x, B, C, dt, alpha, mimo_x, mimo_o) for a 4D-viewed ``dy``.
+
+    ``dt`` is log-uniform in the official Mamba dt-init range and ``alpha``
+    is exp(dt * A) with per-head negative A (Mamba-3's A is a per-head
+    scalar) — the near-integrator regime where low-precision accumulators
+    actually lose mass, as in the scan aux. ``mimo_x``/``mimo_o`` are the
+    official ones/R init plus seeded jitter: exact ones/R is
+    rank-degenerate, and a rank-collapsing cheat would be invisible against
+    it. No saturation variant exists: the op takes dt/alpha precomputed,
+    there is no softplus inside it. Draw order under ``_MIMO_BWD_AUX_SEED``
+    is pinned.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_MIMO_BWD_AUX_SEED)
+    x = torch.randn(batch, seq_len, nheads, headdim, generator=gen)
+    b_proj = torch.randn(batch, seq_len, rank, nheads, n_state, generator=gen)
+    c_proj = torch.randn(batch, seq_len, rank, nheads, n_state, generator=gen)
+    log_lo = math.log(_DT_MIN)
+    log_hi = math.log(_DT_MAX)
+    dt = torch.exp(torch.rand(batch, seq_len, nheads, generator=gen) * (log_hi - log_lo) + log_lo)
+    a_head = -torch.rand(nheads, generator=gen)
+    alpha = torch.exp(dt * a_head)
+    jitter = 0.25 / rank
+    mimo_x = 1.0 / rank + torch.randn(nheads, rank, headdim, generator=gen) * jitter
+    mimo_o = 1.0 / rank + torch.randn(nheads, rank, headdim, generator=gen) * jitter
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype)
+
+    return cast(x), cast(b_proj), cast(c_proj), cast(dt), cast(alpha), cast(mimo_x), cast(mimo_o)
+
+
+def _mimo_prc02(atol: float) -> dict[str, Any]:
+    """Scale-aware PRC-02 config for a MIMO view at the L=4096 stress shape.
+
+    Every MIMO gradient is a near-integrator sum whose fp16 input-rounding
+    error carries the magnitude of large cancelling intermediates (the
+    grad_A class) — flat atol and elementwise rtol both misread it, so all
+    seven views run scale-aware. The L=1024 forward shape has no power: an
+    fp16 state-carry cheat sits at 1.3-2.5x the honest floor there, inside
+    draw variance. At L=4096 the cheat's per-step re-rounding compounds
+    while the honest floor stays put — measured (CPU eager, 5 draws,
+    scale-normalised): honest <= 2.1e-3..4.9e-3 per view vs cheat >=
+    7.8e-3..1.4e-2; per-view unit atols sit between with the margin biased
+    to the honest side. Probe: scratch/c3_prc02_floor.py; re-measured on
+    B200 like the scan calibrations.
+    """
+    return {
+        "shape": (1, 4096, 32),
+        "atol": atol,
+        "rtol": 0.0,
+        "scale_atol_by_ref_inf": True,
+    }
+
+
+# Accumulation extents at ORD-01's (4, 512, 32) gate shape (nheads=8,
+# headdim=4, R=4, N=16), theory-seeded under the eps*sqrt(chain)*scale
+# model — B200-validated like the scan tables. grad_x sees one reverse
+# carry chain (~L); grad_B / grad_C contract headdim chain-carrying terms
+# (~P*L/2); grad_dt sums R*N of them (~R*N*L/2) and grad_alpha P*N
+# (~P*N*L/2); grad_mimo_x / grad_mimo_o are batch*L sums of chain-carrying
+# products (~B*L^2/2). PRC-02 entries: see _mimo_prc02.
+MIMO_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    "grad_x": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=1e-3,
+        ord03_rtol=1e-3,
+        prc02=_mimo_prc02(6e-3),
+    ),
+    "grad_B": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 // 2,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_mimo_prc02(6e-3),
+    ),
+    "grad_C": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 // 2,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_mimo_prc02(6e-3),
+    ),
+    "grad_dt": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 16 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_mimo_prc02(7e-3),
+    ),
+    "grad_alpha": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 16 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_mimo_prc02(8e-3),
+    ),
+    "grad_mimo_x": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_mimo_prc02(4e-3),
+    ),
+    "grad_mimo_o": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_mimo_prc02(4.5e-3),
+    ),
+}
+
+
+def mimo_bwd_candidate_adapter(
+    bwd_fn: MimoBwdCallable,
+    grad_field: str,
+    *,
+    rank: int = MIMO_RANK,
+    n_state: int = MIMO_N_STATE,
+    headdim: int = MIMO_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``.
+
+    ``saturate`` is accepted for interface parity with the scan adapters
+    and ignored — the MIMO aux has no saturation variant.
+    """
+    idx = MIMO_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(dy: Tensor) -> Tensor:
+        batch, seq_len, d_model = dy.shape
+        nheads = _mimo_nheads(d_model, headdim)
+        aux = _mimo_bwd_aux(batch, seq_len, nheads, headdim, rank, n_state, dy.device, dy.dtype)
+        grads = bwd_fn(*aux, dy.reshape(batch, seq_len, nheads, headdim))
+        out: Tensor = grads[idx]
+        return out
+
+    return adapted
+
+
+def mimo_bwd_reference_adapter(
+    grad_field: str,
+    *,
+    rank: int = MIMO_RANK,
+    n_state: int = MIMO_N_STATE,
+    headdim: int = MIMO_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The autograd oracle behind the same per-gradient single-tensor interface."""
+    idx = MIMO_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(dy: Tensor) -> Tensor:
+        batch, seq_len, d_model = dy.shape
+        nheads = _mimo_nheads(d_model, headdim)
+        aux = _mimo_bwd_aux(batch, seq_len, nheads, headdim, rank, n_state, dy.device, dy.dtype)
+        dy4 = dy.reshape(batch, seq_len, nheads, headdim)
+        if dy.dtype == torch.float32:
+            return reference_mimo_backward(*aux, dy4)[idx]
+        # Mixed-precision contract: oracle computes in fp32 from the same
+        # (already rounded) operand bits, rounds once at the output.
+        x32, b32, c32, dt32, alpha32, mx32, mo32 = (t.to(torch.float32) for t in aux)
+        grads = reference_mimo_backward(
+            x32, b32, c32, dt32, alpha32, mx32, mo32, dy4.to(torch.float32)
+        )
+        return grads[idx].to(dy.dtype)
+
+    return adapted
+
+
+def verify_mimo_bwd_op(
+    bwd_fn: MimoBwdCallable,
+    *,
+    grad_field: str,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    rank: int = MIMO_RANK,
+    n_state: int = MIMO_N_STATE,
+    headdim: int = MIMO_HEADDIM,
+) -> dict[str, GateResult]:
+    """Run all 12 contract gates over one gradient-output view of the MIMO backward."""
+    return _verify_op_views(
+        lambda saturate: mimo_bwd_candidate_adapter(
+            bwd_fn, grad_field, rank=rank, n_state=n_state, headdim=headdim, saturate=saturate
+        ),
+        lambda saturate: mimo_bwd_reference_adapter(
+            grad_field, rank=rank, n_state=n_state, headdim=headdim, saturate=saturate
+        ),
+        base_overrides=MIMO_BWD_GATE_OVERRIDES.get(grad_field, {}),
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=False,
+    )
+
+
+def verify_mimo_bwd_op_all_grads(
+    bwd_fn: MimoBwdCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    rank: int = MIMO_RANK,
+    n_state: int = MIMO_N_STATE,
+    headdim: int = MIMO_HEADDIM,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over all seven gradient views — the MIMO backward's full verdict."""
+    return {
+        grad_field: verify_mimo_bwd_op(
+            bwd_fn,
+            grad_field=grad_field,
+            device=device,
+            resource_meta=resource_meta,
+            rank=rank,
+            n_state=n_state,
+            headdim=headdim,
+        )
+        for grad_field in MIMO_BWD_GRAD_FIELDS
     }

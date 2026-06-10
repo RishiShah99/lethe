@@ -16,16 +16,20 @@ import torch
 from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
     forward_chunked_scan,
+    mimo_backward,
     triton_bwd_scan_resource_meta,
+    triton_mimo_bwd_resource_meta,
     triton_scan_resource_meta,
 )
 from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
+from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads, reference_mimo_backward
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
     verify_bwd_scan_op_all_grads,
+    verify_mimo_bwd_op_all_grads,
     verify_scan_op,
 )
 from flash_mamba_rl.verifier.timing import benchmark
@@ -358,3 +362,135 @@ class TestC2BenchSmoke:
         assert t_triton.median_ms < t_ref.median_ms, (
             f"triton {t_triton.median_ms:.3f} ms not faster than eager {t_ref.median_ms:.3f} ms"
         )
+
+
+MIMO_FIELDS = MimoGrads._fields
+
+
+def _mimo_inputs(
+    b: int,
+    seq: int,
+    rank: int,
+    h: int,
+    p: int,
+    n: int,
+    dtype: torch.dtype = torch.float32,
+    seed: int = 0,
+) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    torch.manual_seed(seed)
+    dev = torch.device("cuda")
+    x = torch.randn(b, seq, h, p, device=dev).to(dtype)
+    bb = torch.randn(b, seq, rank, h, n, device=dev).to(dtype)
+    cc = torch.randn(b, seq, rank, h, n, device=dev).to(dtype)
+    dt = (torch.rand(b, seq, h, device=dev) * 0.1 + 1e-3).to(dtype)
+    alpha = torch.exp(-dt.float() * torch.rand(h, device=dev)).to(dtype)
+    mimo_x = (1.0 / rank + torch.randn(h, rank, p, device=dev) * 0.1).to(dtype)
+    mimo_o = (1.0 / rank + torch.randn(h, rank, p, device=dev) * 0.1).to(dtype)
+    dy = torch.randn(b, seq, h, p, device=dev).to(dtype)
+    return (x, bb, cc, dt, alpha, mimo_x, mimo_o), dy
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC3TritonParity:
+    @pytest.mark.parametrize(
+        ("b", "seq", "rank", "h", "p", "n"),
+        [
+            (1, 8, 1, 2, 4, 8),  # tiny, R=1 degenerate
+            (2, 64, 2, 3, 24, 16),  # non-pow2 H and P
+            (3, 120, 4, 4, 100, 10),  # non-pow2 L (chunk_k=8), P, N
+            (2, 256, 4, 8, 64, 128),  # training-like state, N split across blocks
+        ],
+    )
+    def test_fp32_grads_match_reference(
+        self, b: int, seq: int, rank: int, h: int, p: int, n: int
+    ) -> None:
+        args, dy = _mimo_inputs(b, seq, rank, h, p, n)
+        ours = mimo_backward(*args, dy)
+        ref = reference_mimo_backward(*args, dy)
+        for field, got, want in zip(MIMO_FIELDS, ours, ref, strict=True):
+            max_err = (got.float() - want.float()).abs().max().item()
+            scale = want.float().abs().max().clamp(min=1.0).item()
+            # scale_rel is the C2-honest metric: bare absolute parity
+            # misleads at near-integrator scales. Provisional bounds,
+            # tightened from B200 measurement like C1/C2's.
+            assert torch.allclose(got, want, atol=1e-3 * scale, rtol=1e-3), (
+                f"{field}: max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
+            )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_grads_match_fp32_oracle(self, dtype: torch.dtype) -> None:
+        args, dy = _mimo_inputs(2, 128, 2, 4, 16, 16, dtype=dtype)
+        ours = mimo_backward(*args, dy)
+        ref = reference_mimo_backward(*(t.to(torch.float32) for t in args), dy.to(torch.float32))
+        atol = 1e-2 if dtype == torch.float16 else 5e-2
+        for field, got, want in zip(MIMO_FIELDS, ours, ref, strict=True):
+            assert got.dtype == dtype, field
+            scale = want.float().abs().max().clamp(min=1.0).item()
+            assert torch.allclose(got.float(), want, atol=atol * scale, rtol=atol), field
+
+    def test_deterministic_across_runs(self) -> None:
+        args, dy = _mimo_inputs(2, 128, 2, 4, 16, 16)
+        first = mimo_backward(*args, dy)
+        for _ in range(4):
+            again = mimo_backward(*args, dy)
+            for field, a_, b_ in zip(MIMO_FIELDS, first, again, strict=True):
+                assert torch.equal(a_, b_), field
+
+    def test_nonfinite_dy_masks_match_oracle(self) -> None:
+        # EXC-01's contract on the real kernel: non-finites through dy mint
+        # NaN/Inf exactly where the autograd oracle does.
+        args, dy = _mimo_inputs(2, 64, 2, 2, 8, 16, seed=5)
+        dy[0, 9, 0, 1] = float("inf")
+        dy[1, 33, 1, 2] = float("nan")
+        ours = mimo_backward(*args, dy)
+        ref = reference_mimo_backward(*args, dy)
+        for field, got, want in zip(MIMO_FIELDS, ours, ref, strict=True):
+            assert torch.equal(torch.isnan(got), torch.isnan(want)), field
+            assert torch.equal(torch.isinf(got), torch.isinf(want)), field
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC3NumWarpsCompile:
+    def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
+        # Same #904 framing as C2: no tl.dot anywhere, so the TMEM-promotion
+        # pass never engages and every warp config must compile on sm_100.
+        from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
+
+        args, dy = _mimo_inputs(2, 256, 4, 4, 32, 16)
+        base = _triton_mimo_bwd.launch_mimo_backward(*args, dy, num_warps=2)
+        for warps in (4, 8):
+            got = _triton_mimo_bwd.launch_mimo_backward(*args, dy, num_warps=warps)
+            for field, g, want in zip(MIMO_FIELDS, got, base, strict=True):
+                assert torch.allclose(g, want, atol=1e-4, rtol=1e-4), (warps, field)
+        meta = triton_mimo_bwd_resource_meta()
+        assert meta is not None
+        assert 0 < meta["n_regs"] <= 255
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC3ContractGates:
+    def test_all_gates_all_grads_pass_on_cuda(self) -> None:
+        # C3's exit criterion: 12/12 gates on every gradient view, with the
+        # compiled kernel's resource envelope feeding RES-02.
+        args, dy = _mimo_inputs(1, 8, 4, 1, 4, 16)
+        mimo_backward(*args, dy)  # warm the cache
+        meta = triton_mimo_bwd_resource_meta()
+
+        all_results = verify_mimo_bwd_op_all_grads(mimo_backward, device="cuda", resource_meta=meta)
+        failed = {
+            f"{view}.{name}": (result.reason, result.details)
+            for view, results in all_results.items()
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"gates failed on CUDA (resource_meta={meta}): {failed}"
+
+    def test_resource_meta_extracted(self) -> None:
+        args, dy = _mimo_inputs(1, 8, 2, 1, 4, 16)
+        mimo_backward(*args, dy)
+        meta = triton_mimo_bwd_resource_meta()
+        assert meta is not None, "no resource metadata from the compiled kernel cache"
+        assert 0 < meta["n_regs"] <= 255

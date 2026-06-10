@@ -12,11 +12,12 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import backward_selective_scan, forward_chunked_scan
+from flash_mamba_rl.kernels.ops import backward_selective_scan, forward_chunked_scan, mimo_backward
 from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
+from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     gate_cmp_01_input_variation,
     gate_ord_03_noncommutative_reduction,
@@ -25,13 +26,21 @@ from flash_mamba_rl.verifier.contracts import (
 )
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
+    MIMO_BWD_GATE_OVERRIDES,
+    MIMO_BWD_GRAD_FIELDS,
+    MIMO_HEADDIM,
+    MIMO_N_STATE,
+    MIMO_RANK,
     SCAN_BWD_GATE_OVERRIDES,
     SCAN_CHUNK_SIZE,
     bwd_scan_candidate_adapter,
     bwd_scan_reference_adapter,
+    mimo_bwd_candidate_adapter,
+    mimo_bwd_reference_adapter,
     scan_candidate_adapter,
     scan_reference_adapter,
     verify_bwd_scan_op,
+    verify_mimo_bwd_op,
     verify_scan_op,
 )
 
@@ -490,3 +499,133 @@ class TestBackwardScanHarness:
             **kwargs,
         )
         assert not result.passed, "ORD-03 lost its discriminative power for the backward op"
+
+
+class TestMimoBackwardHarness:
+    def test_factoring_covers_every_gate_d_model(self) -> None:
+        # CMP-03's five shapes plus CMP-02's (2, 8, 4): every d_model the
+        # gates drive must factor as (nheads, MIMO_HEADDIM).
+        for d_model in (4, 8, 16, 32, 64, 1024):
+            assert d_model % MIMO_HEADDIM == 0
+            adapted = mimo_bwd_candidate_adapter(reference_mimo_backward, "grad_x")
+            out = adapted(torch.randn(1, 8, d_model)) if d_model <= 64 else None
+            if out is not None:
+                assert out.shape == (1, 8, d_model // MIMO_HEADDIM, MIMO_HEADDIM)
+
+    def test_indivisible_d_model_rejected(self) -> None:
+        adapted = mimo_bwd_candidate_adapter(reference_mimo_backward, "grad_x")
+        with pytest.raises(ValueError, match="not divisible"):
+            adapted(torch.randn(1, 8, 6))
+
+    def test_adapters_deterministic_per_view(self) -> None:
+        dy = torch.randn(2, 16, 8)
+        for field in MIMO_BWD_GRAD_FIELDS:
+            adapted = mimo_bwd_candidate_adapter(mimo_backward, field)
+            assert torch.equal(adapted(dy), adapted(dy.clone())), field
+
+    def test_reference_adapter_matches_direct_reference(self) -> None:
+        dy = torch.randn(2, 16, 8)
+        for field in MIMO_BWD_GRAD_FIELDS:
+            ref_adapted = mimo_bwd_reference_adapter(field)
+            cand_adapted = mimo_bwd_candidate_adapter(reference_mimo_backward, field)
+            assert torch.equal(ref_adapted(dy), cand_adapted(dy)), field
+
+    def test_view_outputs_have_expected_shapes(self) -> None:
+        b, seq, d_model = 2, 16, 8
+        h = d_model // MIMO_HEADDIM
+        dy = torch.randn(b, seq, d_model)
+        expected = {
+            "grad_x": (b, seq, h, MIMO_HEADDIM),
+            "grad_B": (b, seq, MIMO_RANK, h, MIMO_N_STATE),
+            "grad_C": (b, seq, MIMO_RANK, h, MIMO_N_STATE),
+            "grad_dt": (b, seq, h),
+            "grad_alpha": (b, seq, h),
+            "grad_mimo_x": (h, MIMO_RANK, MIMO_HEADDIM),
+            "grad_mimo_o": (h, MIMO_RANK, MIMO_HEADDIM),
+        }
+        for field, shape in expected.items():
+            out = mimo_bwd_candidate_adapter(mimo_backward, field)(dy)
+            assert out.shape == shape, field
+
+    def test_adapter_follows_input_dtype(self) -> None:
+        for dtype in (torch.float16, torch.bfloat16, torch.float64):
+            out = mimo_bwd_candidate_adapter(mimo_backward, "grad_x")(
+                torch.randn(1, 8, 4, dtype=dtype)
+            )
+            assert out.dtype == dtype
+
+    def test_all_gates_pass_on_cpu_grad_x_view(self) -> None:
+        # One full-suite view on CPU, like the scan's grad_u choice: the
+        # remaining six views run on the GPU box where the Triton kernel —
+        # the actual target — is live. resource_meta rides along to pin the
+        # RES-02 forwarding.
+        results = verify_mimo_bwd_op(
+            mimo_backward,
+            grad_field="grad_x",
+            resource_meta={"n_regs": 64, "shared_bytes": 1024},
+        )
+        assert len(results) == _ALL_GATES_COUNT
+        failed = {name: result.reason for name, result in results.items() if not result.passed}
+        assert not failed, f"grad_x gates failed on CPU: {failed}"
+        assert results["gate_res_02_resource_limits"].details.get("applicable") is True
+
+
+def _fp16_state_mimo_bwd(
+    x: torch.Tensor,
+    b_in: torch.Tensor,
+    c_in: torch.Tensor,
+    dt: torch.Tensor,
+    alpha: torch.Tensor,
+    mimo_x: torch.Tensor,
+    mimo_o: torch.Tensor,
+    dy: torch.Tensor,
+) -> tuple[torch.Tensor, ...]:
+    """Cheating MIMO backward: discretisation in fp32, running state in fp16.
+
+    Autograd through the fp16-state forward keeps the backward carry in
+    fp16 too — the canonical missing-fp32-accumulator failure PRC-02
+    exists to reject.
+    """
+    inputs = (x, b_in, c_in, dt, alpha, mimo_x, mimo_o)
+    with torch.enable_grad():
+        leaves = [t.detach().float().requires_grad_(True) for t in inputs]
+        xf, bf, cf, dtf, alphaf, mxf, mof = leaves
+        batch, seqlen = xf.shape[0], xf.shape[1]
+        rank = bf.shape[2]
+        x_r = xf.unsqueeze(2) * mxf.permute(1, 0, 2).unsqueeze(0).unsqueeze(0)
+        h = torch.zeros(batch, rank, xf.shape[2], xf.shape[3], bf.shape[4], dtype=torch.float16)
+        mimo_o_bc = mof.permute(1, 0, 2).unsqueeze(0)
+        ys: list[torch.Tensor] = []
+        for t in range(seqlen):
+            alpha_t = alphaf[:, t].unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+            dt_t = dtf[:, t].unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+            b_t = bf[:, t].unsqueeze(3)
+            x_r_t = x_r[:, t].unsqueeze(-1)
+            h = (alpha_t.half() * h + (dt_t * b_t * x_r_t).half()).half()
+            h_agg = h.float().sum(1)
+            y_raw = (h_agg.unsqueeze(1) * cf[:, t].unsqueeze(3)).sum(-1)
+            ys.append((y_raw * mimo_o_bc).sum(1))
+        y = torch.stack(ys, dim=1)
+        grads = torch.autograd.grad(y, leaves, dy.float())
+    return tuple(g.to(x.dtype) for g in grads)
+
+
+class TestMimoPrc02Discrimination:
+    def test_scale_aware_prc02_separates_honest_from_cheat(self) -> None:
+        # All seven MIMO views run PRC-02 scale-aware at L=4096 (see
+        # _mimo_prc02): measured honest floor 2.2e-3..3.7e-3 of output scale
+        # on grad_x vs the fp16-state cheat at >= 1.0e-2. This pins both
+        # sides of the 6e-3 unit atol on the eager path.
+        kwargs = dict(MIMO_BWD_GATE_OVERRIDES["grad_x"]["gate_prc_02_mixed_precision_accumulation"])
+        honest = gate_prc_02_mixed_precision_accumulation(
+            mimo_bwd_candidate_adapter(mimo_backward, "grad_x"),
+            mimo_bwd_reference_adapter("grad_x"),
+            **kwargs,
+        )
+        assert honest.passed, f"honest fp32-accumulator backward rejected: {honest.reason}"
+        cheat = gate_prc_02_mixed_precision_accumulation(
+            mimo_bwd_candidate_adapter(_fp16_state_mimo_bwd, "grad_x"),
+            mimo_bwd_reference_adapter("grad_x"),
+            **kwargs,
+        )
+        assert not cheat.passed, "PRC-02 lost its discriminative power on the MIMO backward"
