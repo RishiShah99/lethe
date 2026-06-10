@@ -50,23 +50,25 @@ Following Eqs 12-14 and the placement rules from Q1b:
 BACKWARD ALGORITHMIC SPEC (for future Triton kernel)
 -----------------------------------------------------
 The oracle uses torch.autograd.grad (no hand-coded gradient formulae).
-The analytic backward structure, documented here for the Triton implementor:
+The analytic backward structure, documented here for the Triton implementor
+(index legend: b=batch, l=seq, r/i/j=rank, h=head, p=headdim, s=d_state):
 
-  # Two-stage einsum backward structure:
-  # Stage 1: dout -> dstate (sum over R output ranks):
-  #   dstate[b,n,h,s] = sum_{r_out} dout[b,l,r_out,h,p] * C[b,l,r_out,h,s]
-  #   einsum: "blrhp,blrhs->bnhs"  (sum over r_out and l jointly for full backward)
-
-  # Stage 2: dstate -> dB^(j) (per input rank, no sum over r_out):
-  #   dB[b,l,j,h,s] += einsum over time(dstate[b,n,h,s], x_r[b,l,j,h,p])
-  #   inner: "bnhp,bnhs->bnhs"  -- (sum over headdim p; no sum over r_out here,
-  #   that was already accumulated in Stage 1)
-
-  # Stage 3: dC^(i) (per output rank):
-  #   dC[b,l,i,h,s] += einsum("blhp,blhs->blhs", dout[:,i,...], state)
-
-  # Stage 4: dmimo_x: from x_r = x * mimo_x -> sum over batch/seqlen
-  # Stage 5: dmimo_o: from y = sum_i y_raw^(i) * mimo_o -> sum over batch/seqlen
+  # Stage 0: through the output mix — dy_raw[i] from y = sum_i y_raw^(i)*phi_i:
+  #   dy_raw[b,l,i,h,p] = dy[b,l,h,p] * mimo_o[h,i,p]
+  # Stage 1: per-token readout gradient (sum over output ranks; no time mixing
+  # here — each token reads its own aggregated state):
+  #   dh_agg[b,l,h,p,s] = einsum("blrhp,blrhs->blhps", dy_raw, C)
+  # Stage 2: reverse-time scan accumulation (the recurrence h_t = a_t h_{t-1} + ...
+  # makes the total state gradient flow backward through time):
+  #   dh_total[b,l,h,p,s] = dh_agg[b,l,h,p,s] + alpha[b,l+1,h] * dh_total[b,l+1,h,p,s]
+  # Stage 3: input-side grads, per input rank j (contract over headdim p):
+  #   dB[b,l,j,h,s]   = dt[b,l,h] * einsum("bhps,bhp->bhs", dh_total[b,l], x_r[b,l,j])
+  #   dx_r[b,l,j,h,p] = dt[b,l,h] * einsum("bhps,bjhs->bjhp", dh_total[b,l], B[b,l])
+  # Stage 4: per-output-rank C gradient (per token, against the aggregated state):
+  #   dC[b,l,i,h,s] = einsum("bhp,bhps->bhs", dy_raw[b,l,i], h_agg[b,l])
+  # Stage 5: parameter grads, summed over batch/seq:
+  #   dmimo_x[h,j,p] = sum_{b,l} dx_r[b,l,j,h,p] * x[b,l,h,p]
+  #   dmimo_o[h,i,p] = sum_{b,l} dy[b,l,h,p] * y_raw[b,l,i,h,p]
 
 UNRESOLVED / OUT OF SCOPE
 --------------------------
