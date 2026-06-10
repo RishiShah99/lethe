@@ -20,15 +20,16 @@ from flash_mamba_rl.kernels.references import (
     reference_fused_block_backward,
     reference_fused_block_forward,
     reference_mimo_backward,
+    reference_mimo_forward,
 )
 
 # ---------------------------------------------------------------------------
 # Shared test dimensions
 # ---------------------------------------------------------------------------
-B = 2   # batch
-L = 8   # sequence length
-D = 4   # model dim
-N = 8   # state dim
+B = 2  # batch
+L = 8  # sequence length
+D = 4  # model dim
+N = 8  # state dim
 CHUNK = 4
 
 
@@ -46,7 +47,7 @@ def _make_scan_inputs(
     torch.manual_seed(0)
     u = torch.randn(b, seq, d)
     delta = torch.randn(b, seq, d)
-    A = -torch.rand(d, n)          # negative for stability
+    A = -torch.rand(d, n)  # negative for stability
     B_proj = torch.randn(b, seq, n)
     C_proj = torch.randn(b, seq, n)
     D_skip = torch.randn(d)
@@ -108,17 +109,13 @@ class TestBackwardSelectiveScan:
     def test_returns_named_tuple(self) -> None:
         u, delta, A, B_p, C_p, D_s = _make_scan_inputs()
         dy = torch.ones(B, L, D)
-        result = reference_backward_selective_scan(
-            u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK
-        )
+        result = reference_backward_selective_scan(u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK)
         assert isinstance(result, SelectiveScanGrads)
 
     def test_grad_shapes(self) -> None:
         u, delta, A, B_p, C_p, D_s = _make_scan_inputs()
         dy = torch.ones(B, L, D)
-        g = reference_backward_selective_scan(
-            u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK
-        )
+        g = reference_backward_selective_scan(u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK)
         assert g.grad_u.shape == u.shape
         assert g.grad_delta.shape == delta.shape
         assert g.grad_A.shape == A.shape
@@ -129,9 +126,7 @@ class TestBackwardSelectiveScan:
     def test_no_nan_inf_in_grads(self) -> None:
         u, delta, A, B_p, C_p, D_s = _make_scan_inputs()
         dy = torch.ones(B, L, D)
-        g = reference_backward_selective_scan(
-            u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK
-        )
+        g = reference_backward_selective_scan(u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK)
         for field in g._fields:
             tensor = getattr(g, field)
             assert torch.isfinite(tensor).all(), f"NaN/Inf in {field}"
@@ -139,63 +134,62 @@ class TestBackwardSelectiveScan:
     def test_grads_nonzero(self) -> None:
         u, delta, A, B_p, C_p, D_s = _make_scan_inputs()
         dy = torch.ones(B, L, D)
-        g = reference_backward_selective_scan(
-            u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK
-        )
+        g = reference_backward_selective_scan(u, delta, A, B_p, C_p, D_s, dy, chunk_size=CHUNK)
         for field in g._fields:
             tensor = getattr(g, field)
             assert tensor.abs().sum() > 0, f"All-zero gradient for {field}"
 
 
 # ---------------------------------------------------------------------------
-# 3. reference_mimo_backward  (stub)
+# 3. reference_mimo_backward  (implemented — smoke tests only; full suite in
+#    tests/test_references_mimo_complex.py)
 # ---------------------------------------------------------------------------
 
 
-class TestMimoBackwardStub:
+class TestMimoBackwardSmoke:
     def test_import(self) -> None:
         assert callable(reference_mimo_backward)
 
-    def test_raises_not_implemented(self) -> None:
+    def test_forward_import(self) -> None:
+        assert callable(reference_mimo_forward)
+
+    def test_forward_output_shape(self) -> None:
+        """Quick smoke: forward produces the right output shape."""
         torch.manual_seed(0)
-        with pytest.raises(NotImplementedError):
-            reference_mimo_backward(
-                u=torch.randn(B, L, D),
-                delta=torch.randn(B, L, D),
-                A=torch.randn(2, N),
-                B=torch.randn(B, L, 2, N),
-                C=torch.randn(B, L, 2, N),
-                D=torch.randn(D),
-                mix_weight=torch.randn(2, 2),
-                dy=torch.ones(B, L, D),
-                n_heads_in=2,
-                n_heads_out=2,
-            )
+        R = 2
+        x = torch.randn(B, L, D, N)
+        _B = torch.randn(B, L, R, D, N)
+        _C = torch.randn(B, L, R, D, N)
+        dt = torch.rand(B, L, D) * 0.5 + 0.1
+        alpha = torch.rand(B, L, D) * 0.5 + 0.4
+        mimo_x = torch.ones(D, R, N)
+        mimo_o = torch.ones(D, R, N)
+        y = reference_mimo_forward(x, _B, _C, dt, alpha, mimo_x, mimo_o)
+        assert y.shape == (B, L, D, N)
 
 
 # ---------------------------------------------------------------------------
-# 4. reference_complex_scan_rope  (stub)
+# 4. reference_complex_scan_rope  (implemented — smoke tests only; full suite
+#    in tests/test_references_mimo_complex.py)
 # ---------------------------------------------------------------------------
 
 
-class TestComplexScanRopeStub:
+class TestComplexScanRopeSmoke:
     def test_import(self) -> None:
         assert callable(reference_complex_scan_rope)
 
-    def test_raises_not_implemented(self) -> None:
+    def test_output_shape(self) -> None:
+        """Quick smoke: forward produces the right output shape."""
         torch.manual_seed(0)
-        n_half = N // 2
-        with pytest.raises(NotImplementedError):
-            reference_complex_scan_rope(
-                u=torch.randn(B, L, D),
-                real=torch.randn(B, L, D, n_half),
-                imag=torch.randn(B, L, D, n_half),
-                theta=torch.randn(D, n_half),
-                decay=torch.rand(D, n_half),
-                B_proj=torch.randn(B, L, D, n_half),
-                C_proj=torch.randn(B, L, D, n_half),
-                D=torch.randn(D),
-            )
+        num_rope = N // 4  # d_state=8; num_rope=2; rotary_dim=4 <= 8
+        x = torch.randn(B, L, D, N)
+        _B = torch.randn(B, L, D, N * 2)
+        _C = torch.randn(B, L, D, N * 2)
+        dt = torch.rand(B, L, D) * 0.5 + 0.1
+        A = -torch.rand(D) - 0.1
+        angle_proj = torch.randn(B, L, D, num_rope)
+        y = reference_complex_scan_rope(x, _B, _C, dt, A, angle_proj)
+        assert y.shape == (B, L, D, N)
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +282,7 @@ class TestFusedBlockBackward:
         args = _make_fused_inputs()
         x, conv_w, conv_b, delta, A, B_p, C_p, D_s, nw = args
         dy = torch.ones(B, L_OUT, D)
-        g = reference_fused_block_backward(
-            *args, dy, conv_kernel_size=CONV_K, chunk_size=CHUNK
-        )
+        g = reference_fused_block_backward(*args, dy, conv_kernel_size=CONV_K, chunk_size=CHUNK)
         assert g.grad_x.shape == x.shape
         assert g.grad_conv_weight.shape == conv_w.shape
         assert g.grad_conv_bias.shape == conv_b.shape
@@ -304,9 +296,7 @@ class TestFusedBlockBackward:
     def test_no_nan_inf_in_grads(self) -> None:
         args = _make_fused_inputs()
         dy = torch.ones(B, L_OUT, D)
-        g = reference_fused_block_backward(
-            *args, dy, conv_kernel_size=CONV_K, chunk_size=CHUNK
-        )
+        g = reference_fused_block_backward(*args, dy, conv_kernel_size=CONV_K, chunk_size=CHUNK)
         for field in g._fields:
             tensor = getattr(g, field)
             assert torch.isfinite(tensor).all(), f"NaN/Inf in {field}"
@@ -314,9 +304,7 @@ class TestFusedBlockBackward:
     def test_grads_nonzero(self) -> None:
         args = _make_fused_inputs()
         dy = torch.ones(B, L_OUT, D)
-        g = reference_fused_block_backward(
-            *args, dy, conv_kernel_size=CONV_K, chunk_size=CHUNK
-        )
+        g = reference_fused_block_backward(*args, dy, conv_kernel_size=CONV_K, chunk_size=CHUNK)
         for field in g._fields:
             tensor = getattr(g, field)
             assert tensor.abs().sum() > 0, f"All-zero gradient for {field}"

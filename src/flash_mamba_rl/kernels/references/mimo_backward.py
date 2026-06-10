@@ -1,89 +1,263 @@
-"""Mamba-3 MIMO selective scan backward pass (stub).
+"""Mamba-3 MIMO selective scan: forward reference and autograd-based backward.
 
-Mamba-3 (Tri Dao + Albert Gu, ICLR 2026) generalises the SISO scan to a
-multi-input/multi-output (MIMO) setting via an R²-parallel decomposition:
-the full D_in x D_out state-space is factored into ``n_heads_in x n_heads_out``
-independent SISO scans that run in parallel, then their outputs are mixed with
-a learned head-combination matrix.  The backward pass through this structure
-requires accumulating gradients across both the parallel SISO backward sweeps
-and the head-mixing linear layer.
+Implements the MIMO SSM from:
+  "Mamba-3" (Tri Dao + Albert Gu, ICLR 2026, arXiv:2603.15569)
+  Section 3.3, Equations 12-14 and surrounding prose.
 
-This stub documents the intended signature and math.  The full implementation
-requires Section 3.2 ("MIMO decomposition") of the Mamba-3 paper and access to
-the parallel-scan primitive's analytical backward — to be filled in once the
-paper is available.
+SIGNATURE CHANGES FROM OLD STUB
+---------------------------------
+The old stub accepted (u, delta, A, B, C, D, mix_weight, dy, *, n_heads_in,
+n_heads_out, chunk_size) and raised NotImplementedError.  That signature
+predated the math resolution and had several incorrect abstractions:
+
+  * "mix_weight" (a single [n_heads_out, n_heads_in] matrix) does not exist
+    in Mamba-3.  The resolved math has TWO separate learnable parameter tensors:
+      - mimo_x  (shape: nheads, R, headdim)  — psi_j, applied to x BEFORE the
+        B-weighted state update
+      - mimo_o  (shape: nheads, R, headdim)  — phi_i, applied to output AFTER
+        the C readout
+    These are data-independent per-head weight vectors, not a head-mixing matrix.
+  * "D" (skip connection) is handled by the outer Mamba block, not the SSM scan.
+    Removed from both forward and backward.
+  * "n_heads_in / n_heads_out" were conflated.  In Mamba-3 there is a single
+    rank R for both input and output.
+  * alpha (exp(dt*A)) is now passed pre-computed rather than split into (delta, A),
+    matching the paper's Eq. 12 notation.  dt is kept as a separate argument
+    because it multiplies B in the input term.
+  * B and C carry an explicit rank dimension (R), matching the in_proj split
+    structure documented in C1 mamba3.py.
+
+FORWARD MATH REFERENCE
+-----------------------
+Following Eqs 12-14 and the placement rules from Q1b:
+
+  # Step 1: expand x to rank dimension BEFORE SSM (mimo_x applied here)
+  x_r[j] = x * mimo_x[h, j, :]           shape: (batch, seqlen, nheads, headdim)
+
+  # Step 2: per-rank scan (Eq. 12)
+  h_t^(j) = alpha_t * h_{t-1}^(j) + dt_t * B_t^(j) * x_r_t^(j)
+  where h^(j) shape: (batch, nheads, headdim, d_state)
+
+  # Step 3: aggregate state (Eq. 13)
+  h_t = sum_{j=0}^{R-1} h_t^(j)
+
+  # Step 4: per-output-rank readout (Eq. 14)
+  y_raw_t^(i) = (C_t^(i))^T @ h_t        shape: (batch, seqlen, nheads, headdim)
+
+  # Step 5: down-project with mimo_o AFTER readout (code-only, not in main text)
+  y_t = sum_{i=0}^{R-1} y_raw_t^(i) * mimo_o[h, i, :]
+
+BACKWARD ALGORITHMIC SPEC (for future Triton kernel)
+-----------------------------------------------------
+The oracle uses torch.autograd.grad (no hand-coded gradient formulae).
+The analytic backward structure, documented here for the Triton implementor:
+
+  # Two-stage einsum backward structure:
+  # Stage 1: dout -> dstate (sum over R output ranks):
+  #   dstate[b,n,h,s] = sum_{r_out} dout[b,l,r_out,h,p] * C[b,l,r_out,h,s]
+  #   einsum: "blrhp,blrhs->bnhs"  (sum over r_out and l jointly for full backward)
+
+  # Stage 2: dstate -> dB^(j) (per input rank, no sum over r_out):
+  #   dB[b,l,j,h,s] += einsum over time(dstate[b,n,h,s], x_r[b,l,j,h,p])
+  #   inner: "bnhp,bnhs->bnhs"  -- (sum over headdim p; no sum over r_out here,
+  #   that was already accumulated in Stage 1)
+
+  # Stage 3: dC^(i) (per output rank):
+  #   dC[b,l,i,h,s] += einsum("blhp,blhs->blhs", dout[:,i,...], state)
+
+  # Stage 4: dmimo_x: from x_r = x * mimo_x -> sum over batch/seqlen
+  # Stage 5: dmimo_o: from y = sum_i y_raw^(i) * mimo_o -> sum over batch/seqlen
+
+UNRESOLVED / OUT OF SCOPE
+--------------------------
+  * B_bias / C_bias (observed in C1 but role not stated in main paper text).
+  * RoPE rotation on B and C: belongs to the complex_scan_rope oracle, not here.
+    This oracle takes pre-rotated B and C as inputs.
+  * D skip connection: outer block, not the scan.
+  * Trapezoidal lambda term: oracle implements Eq. 12 base form (alpha only).
 """
 
+from typing import NamedTuple
+
+import torch
 from torch import Tensor
+
+# ---------------------------------------------------------------------------
+# Forward
+# ---------------------------------------------------------------------------
+
+
+def reference_mimo_forward(
+    x: Tensor,
+    B: Tensor,
+    C: Tensor,
+    dt: Tensor,
+    alpha: Tensor,
+    mimo_x: Tensor,
+    mimo_o: Tensor,
+) -> Tensor:
+    """Mamba-3 MIMO SSM forward pass (Eqs 12-14).
+
+    Shape contracts
+    ---------------
+    x      : (batch, seqlen, nheads, headdim)          float32
+    B      : (batch, seqlen, R, nheads, d_state)       float32  [pre-rotated]
+    C      : (batch, seqlen, R, nheads, d_state)       float32  [pre-rotated]
+    dt     : (batch, seqlen, nheads)                   float32, positive
+    alpha  : (batch, seqlen, nheads)                   float32, in (0, 1)
+             alpha_t = exp(dt_t * A_t), passed pre-computed
+    mimo_x : (nheads, R, headdim)                      float32  psi_j
+    mimo_o : (nheads, R, headdim)                      float32  phi_i
+
+    Returns
+    -------
+    y : (batch, seqlen, nheads, headdim)  float32
+
+    Notes
+    -----
+    * Explicit Python scan loop over t (oracle, not kernel).
+    * B and C are taken as already RoPE-rotated; rotation is handled by
+      the complex_scan_rope oracle separately.
+    * No D skip, no B/C bias, no trapezoidal lambda.
+    * float64 is accepted alongside float32 so torch.autograd.gradcheck can
+      validate this exact function (half precision stays rejected).
+    """
+    if x.dtype not in (torch.float32, torch.float64):
+        raise ValueError(f"Expected float32/float64 input, got {x.dtype}")
+
+    batch, seqlen, nheads, headdim = x.shape
+    R = B.shape[2]
+    d_state = B.shape[4]
+
+    # Step 1: Expand x to rank dimension (mimo_x applied BEFORE B projection).
+    # x: (B, L, H, P) -> x_r: (B, L, R, H, P)
+    # mimo_x: (H, R, P) -> rearrange to (1, 1, R, H, P) for broadcast
+    mimo_x_bc = mimo_x.permute(1, 0, 2).unsqueeze(0).unsqueeze(0)  # (1, 1, R, H, P)
+    x_r = x.unsqueeze(2) * mimo_x_bc  # (B, L, R, H, P)
+
+    # Per-rank hidden state: shape (batch, R, nheads, headdim, d_state)
+    h = torch.zeros(batch, R, nheads, headdim, d_state, dtype=x.dtype, device=x.device)
+    y = torch.empty_like(x)
+
+    for t in range(seqlen):
+        # alpha_t: (batch, nheads) -> (batch, 1, nheads, 1, 1)
+        alpha_t = alpha[:, t, :].unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+
+        # dt_t: (batch, nheads) -> (batch, 1, nheads, 1, 1)
+        dt_t = dt[:, t, :].unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+
+        # B_t: (batch, R, nheads, d_state) -> (batch, R, nheads, 1, d_state)
+        B_t = B[:, t, :, :, :].unsqueeze(3)  # (B, R, H, 1, N)
+
+        # x_r_t: (batch, R, nheads, headdim) -> (batch, R, nheads, headdim, 1)
+        x_r_t = x_r[:, t, :, :, :].unsqueeze(-1)  # (B, R, H, P, 1)
+
+        # Eq. 12: h_t^(j) = alpha_t * h_{t-1}^(j) + dt_t * B_t^(j) * x_r_t^(j)
+        # shapes: (B,1,H,1,1)*(B,R,H,P,N) + (B,1,H,1,1)*(B,R,H,1,N)*(B,R,H,P,1)
+        h = alpha_t * h + dt_t * B_t * x_r_t  # (B, R, H, P, N)
+
+        # Eq. 13: h_agg = sum_{j} h^(j)
+        h_agg = h.sum(dim=1)  # (B, H, P, N)
+
+        # Eq. 14: y_raw^(i) = C^(i)^T @ h_agg
+        # C_t: (batch, R, nheads, d_state) -> (batch, R, nheads, 1, d_state)
+        C_t = C[:, t, :, :, :].unsqueeze(3)  # (B, R, H, 1, N)
+        # h_agg broadcast: (B, H, P, N) -> (B, 1, H, P, N)
+        h_agg_bc = h_agg.unsqueeze(1)  # (B, 1, H, P, N)
+        # dot over d_state: (B, R, H, P)
+        y_raw = (h_agg_bc * C_t).sum(-1)  # (B, R, H, P)
+
+        # Step 5: y_t = sum_i y_raw^(i) * mimo_o[h, i, :]
+        # mimo_o: (H, R, P) -> (1, R, H, P)
+        mimo_o_bc = mimo_o.permute(1, 0, 2).unsqueeze(0)  # (1, R, H, P)
+        # sum over R: (B, H, P)
+        y_t = (y_raw * mimo_o_bc).sum(1)  # (B, H, P)
+        y[:, t, :, :] = y_t  # (B, H, P)
+
+    return y
+
+
+# ---------------------------------------------------------------------------
+# Backward
+# ---------------------------------------------------------------------------
+
+
+class MimoGrads(NamedTuple):
+    """Gradient bundle returned by the MIMO backward reference."""
+
+    grad_x: Tensor
+    grad_B: Tensor
+    grad_C: Tensor
+    grad_dt: Tensor
+    grad_alpha: Tensor
+    grad_mimo_x: Tensor
+    grad_mimo_o: Tensor
 
 
 def reference_mimo_backward(
-    u: Tensor,
-    delta: Tensor,
-    A: Tensor,
+    x: Tensor,
     B: Tensor,
     C: Tensor,
-    D: Tensor,
-    mix_weight: Tensor,
+    dt: Tensor,
+    alpha: Tensor,
+    mimo_x: Tensor,
+    mimo_o: Tensor,
     dy: Tensor,
-    *,
-    n_heads_in: int,
-    n_heads_out: int,
-    chunk_size: int = 64,
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """MIMO selective scan backward pass — NOT YET IMPLEMENTED.
+) -> MimoGrads:
+    """Mamba-3 MIMO SSM backward pass delegated entirely to torch.autograd.
 
-    In Mamba-3 the MIMO SSM is parameterised as ``n_heads_in x n_heads_out``
-    parallel SISO channels.  Each channel has its own (A_i, B_i, C_i) triple,
-    and the outputs are recombined via ``mix_weight`` (shape
-    [n_heads_out, n_heads_in]) before being projected back to model dimension.
+    Wraps ``reference_mimo_forward`` with ``requires_grad=True`` leaves,
+    calls ``torch.autograd.grad`` with the upstream gradient ``dy``, and
+    returns gradients as a MimoGrads named tuple.
 
-    Expected tensor shapes
-    ----------------------
-    u           : [B, L, D_in]          — multi-dim input
-    delta       : [B, L, D_in]          — input-dependent timescales
-    A           : [n_heads_in, N]       — per-head log-neg SSM eigenvalues
-    B           : [B, L, n_heads_in, N] — per-head input projections
-    C           : [B, L, n_heads_out, N]— per-head output projections
-    D           : [D_out]               — skip connection weight
-    mix_weight  : [n_heads_out, n_heads_in] — MIMO head-mixing matrix
-    dy          : [B, L, D_out]         — upstream gradient
+    The analytic backward structure (two-stage einsum) is documented in the
+    module docstring for use when implementing the Triton kernel.  This oracle
+    uses autograd — correctness by construction, not by hand-derived formulae.
 
-    Returns (grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D, grad_mix).
+    Shape contracts  (same as reference_mimo_forward)
+    ---------------
+    x      : (batch, seqlen, nheads, headdim)          float32
+    B      : (batch, seqlen, R, nheads, d_state)       float32
+    C      : (batch, seqlen, R, nheads, d_state)       float32
+    dt     : (batch, seqlen, nheads)                   float32
+    alpha  : (batch, seqlen, nheads)                   float32
+    mimo_x : (nheads, R, headdim)                      float32
+    mimo_o : (nheads, R, headdim)                      float32
+    dy     : (batch, seqlen, nheads, headdim)          float32  upstream gradient
 
-    Open math questions
-    -------------------
-    1. The exact form of the R²-decomposition cross-terms between heads is not
-       fully specified without the paper; gradient accumulation order across
-       heads may matter for numerical accuracy.
-    2. It is unclear whether ``mix_weight`` is applied before or after the
-       per-head output projections C — this changes the backward graph.
-    3. Chunked-parallel scan gradients for multi-head layouts may require a
-       dedicated parallel prefix-sum backward, not just the SISO autograd
-       wrapper used in ``reference_backward_selective_scan``.
-
-    Args:
-        u:           Multi-dim input, shape [B, L, D_in], float32.
-        delta:       Timescale input, shape [B, L, D_in], float32.
-        A:           Per-head log-magnitude matrix, shape [n_heads_in, N].
-        B:           Per-head input proj, shape [B, L, n_heads_in, N].
-        C:           Per-head output proj, shape [B, L, n_heads_out, N].
-        D:           Skip weight, shape [D_out], float32.
-        mix_weight:  Head-combination matrix, shape [n_heads_out, n_heads_in].
-        dy:          Upstream gradient, shape [B, L, D_out], float32.
-        n_heads_in:  Number of input heads (R in R²).
-        n_heads_out: Number of output heads (R in R²).
-        chunk_size:  Chunk size for the underlying scan.
-
-    Returns:
-        Tuple of gradients in order:
-        (grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D, grad_mix_weight).
-
-    Raises:
-        NotImplementedError: Always — pending Mamba-3 paper (Section 3.2).
+    Returns
+    -------
+    MimoGrads named tuple with fields:
+    ``grad_x``, ``grad_B``, ``grad_C``, ``grad_dt``, ``grad_alpha``,
+    ``grad_mimo_x``, ``grad_mimo_o`` — each matching the shape of the
+    corresponding input.
     """
-    raise NotImplementedError(
-        "reference_mimo_backward is not yet implemented. "
-        "Requires Mamba-3 (Dao & Gu, ICLR 2026) Section 3.2 — "
-        "R² parallel SISO decomposition and MIMO head-mixing backward."
+    if x.dtype not in (torch.float32, torch.float64):
+        raise ValueError(f"Expected float32/float64 input, got {x.dtype}")
+
+    # Detach from any existing graph and create fresh leaf tensors.
+    x_l = x.detach().requires_grad_(True)
+    B_l = B.detach().requires_grad_(True)
+    C_l = C.detach().requires_grad_(True)
+    dt_l = dt.detach().requires_grad_(True)
+    alpha_l = alpha.detach().requires_grad_(True)
+    mimo_x_l = mimo_x.detach().requires_grad_(True)
+    mimo_o_l = mimo_o.detach().requires_grad_(True)
+
+    y = reference_mimo_forward(x_l, B_l, C_l, dt_l, alpha_l, mimo_x_l, mimo_o_l)
+
+    grads = torch.autograd.grad(
+        outputs=y,
+        inputs=(x_l, B_l, C_l, dt_l, alpha_l, mimo_x_l, mimo_o_l),
+        grad_outputs=dy,
+    )
+
+    return MimoGrads(
+        grad_x=grads[0],
+        grad_B=grads[1],
+        grad_C=grads[2],
+        grad_dt=grads[3],
+        grad_alpha=grads[4],
+        grad_mimo_x=grads[5],
+        grad_mimo_o=grads[6],
     )
