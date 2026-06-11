@@ -359,6 +359,7 @@ def _bwd_view_overrides(
     ord03_rtol: float,
     prc02: dict[str, Any] | None = None,
     cmp03_atol: float | None = None,
+    cmp01_atol: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-view gate overrides sharing the backward op's fixed shapes.
 
@@ -379,6 +380,8 @@ def _bwd_view_overrides(
     ``cmp03_atol`` widens CMP-03's unit atol for views whose cross-impl
     reorder noise compounds past the 1e-5 default (B200-calibrated, the
     C1 lesson applied per view — see FUSED_BWD_GATE_OVERRIDES).
+    ``cmp01_atol`` is the same lesson at CMP-01's shapes — its long_seq
+    variation carries a longer worst chain than any CMP-03 shape.
     """
     overrides: dict[str, dict[str, Any]] = {
         "gate_prc_02_mixed_precision_accumulation": (
@@ -393,6 +396,8 @@ def _bwd_view_overrides(
     }
     if cmp03_atol is not None:
         overrides["gate_cmp_03_shape_polymorphism"] = {"atol": cmp03_atol}
+    if cmp01_atol is not None:
+        overrides["gate_cmp_01_input_variation"] = {"atol": cmp01_atol}
     return overrides
 
 
@@ -1267,10 +1272,23 @@ def _fused_bwd_prc02(atol: float) -> dict[str, Any]:
 # chunked scan, both fp32 — divergence compounds over L), and the views
 # that contract against h or the reverse carry g measure up to 1.4e-5 of
 # output scale (grad_A/B/C; 1.9e-5 observed in a live gate draw) — past
-# the 1e-5 default. grad_A/B/C take 1e-4 (~5-7x over measured), the
-# dconv-path views 5e-5 (measured <= 8.4e-6); grad_norm_weight keeps the
-# default (measured 1.5e-6 — h-free, the norm backward is local in t).
-# All remain >= 50x under the honest-vs-cheat PRC-02 corridors.
+# the 1e-5 default. grad_A/B/C take 1e-4 (~5-7x over measured); the five
+# other overridden views take 5e-5 (measured <= 8.4e-6);
+# grad_norm_weight keeps the default (measured 1.5e-6 — the rms division
+# cancels h's compounding and the norm backward is local in t). The
+# atols stay >= 50x under the PRC-02 cheat floors (floors measured at
+# L=4096, a conservative basis for CMP-03's L<=256 shapes).
+#
+# CMP-01 runs the same kernel-vs-oracle comparison and its long_seq
+# variation (4, 256, 32) carries a longer worst chain (B*L^2/2 = 131072)
+# than any CMP-03 shape, so the same default cannot be assumed safe.
+# B200-measured at CMP-01's base + long_seq shapes, 8 draws (the gate's
+# n_random; same probe): the h-contracting views reach 6.1e-6 of scale
+# (grad_C; grad_delta 5.7e-6, grad_B 4.3e-6, grad_A 2.7e-6) — under the
+# 1e-5 default but a 1.6x margin on an unseeded reward gate, and CMP-03's
+# live draw exceeded its probe envelope by 1.36x. Those four views take
+# cmp01_atol 5e-5 (~8x over measured, above the eps32*sqrt(chain) model
+# bound of 4.3e-5); the rest measure <= 1.8e-6 and keep the default.
 FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_x": _bwd_view_overrides(
         ord01_reduction_elements=512,
@@ -1299,6 +1317,7 @@ FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
         cmp03_atol=5e-5,
+        cmp01_atol=5e-5,
     ),
     "grad_A": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512 * 512 // 2,
@@ -1306,6 +1325,7 @@ FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord03_rtol=1e-2,
         prc02=_fused_bwd_prc02(5e-3),
         cmp03_atol=1e-4,
+        cmp01_atol=5e-5,
     ),
     "grad_B": _bwd_view_overrides(
         ord01_reduction_elements=32 * 512 // 2,
@@ -1313,6 +1333,7 @@ FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
         cmp03_atol=1e-4,
+        cmp01_atol=5e-5,
     ),
     "grad_C": _bwd_view_overrides(
         ord01_reduction_elements=32 * 512 // 2,
@@ -1320,6 +1341,7 @@ FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
         cmp03_atol=1e-4,
+        cmp01_atol=5e-5,
     ),
     "grad_D": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512,

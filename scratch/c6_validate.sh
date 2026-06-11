@@ -9,6 +9,8 @@ echo "=== C6 validate: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 uv run pytest tests/test_kernels_gpu.py -m gpu -q -k C6 -rA
 status=$?
 echo "=== C6 gate rerun exit: $status ==="
+echo "=== c6_cmp03_probe ==="
+uv run python scratch/c6_cmp03_probe.py
 echo "=== c6_b200_floor ==="
 uv run python scratch/c6_b200_floor.py
 echo "=== c6_parity_measure ==="
