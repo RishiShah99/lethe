@@ -60,6 +60,7 @@ from flash_mamba_rl.kernels.references import (
     reference_forward_chunked_scan,
 )
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from flash_mamba_rl.kernels.references.fused_block_backward import reference_fused_block_backward
 from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
@@ -1139,3 +1140,298 @@ def verify_fused_block_op(
         resource_meta=resource_meta,
         saturation_rerun=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fused block backward (C6): one gate view per gradient output
+# ---------------------------------------------------------------------------
+
+# Fused-backward signature: (x, conv_weight, conv_bias, delta, A, B, C, D,
+# norm_weight, dy, *, conv_kernel_size, eps, chunk_size) -> the nine
+# gradients as an indexable sequence (FusedBlockGrads or plain tuple).
+FusedBwdCallable = Callable[..., Any]
+
+_FUSED_BWD_AUX_SEED = 52361
+
+# Gradient outputs of the fused-block backward, in FusedBlockGrads order.
+FUSED_BWD_GRAD_FIELDS: tuple[str, ...] = (
+    "grad_x",
+    "grad_conv_weight",
+    "grad_conv_bias",
+    "grad_delta",
+    "grad_A",
+    "grad_B",
+    "grad_C",
+    "grad_D",
+    "grad_norm_weight",
+)
+
+
+def _fused_bwd_aux(
+    batch: int,
+    seq_len: int,
+    d_model: int,
+    n_state: int,
+    conv_k: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    saturate: bool = True,
+) -> tuple[Tensor, ...]:
+    """Deterministic (x, conv_w, conv_b, delta, A, B, C, D_skip, norm_w) for a [B, L, D] ``dy``.
+
+    The backward op's primary is the upstream gradient ``dy``, so the
+    forward input ``x`` joins the auxiliaries — unit-normal and *unpadded*
+    (the adapters apply the causal K-1 left-padding, mirroring the forward
+    harness). Remaining draws follow ``_fused_aux``'s distribution
+    rationale; a distinct seed keeps the backward aux decorrelated from
+    the forward harness's primaries.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_FUSED_BWD_AUX_SEED)
+    x = torch.randn(batch, seq_len, d_model, generator=gen)
+    delta, a, b_proj, c_proj, d_skip = _aux_from_gen(
+        gen, batch, seq_len, d_model, n_state, saturate
+    )
+    conv_w = torch.randn(d_model, 1, conv_k, generator=gen) / math.sqrt(conv_k)
+    conv_b = 0.5 * torch.randn(d_model, generator=gen)
+    norm_w = 1.0 + 0.25 * torch.randn(d_model, generator=gen)
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype)
+
+    return (
+        cast(x),
+        cast(conv_w),
+        cast(conv_b),
+        cast(delta),
+        cast(a),
+        cast(b_proj),
+        cast(c_proj),
+        cast(d_skip),
+        cast(norm_w),
+    )
+
+
+def _fused_bwd_prc02(atol: float) -> dict[str, Any]:
+    """Scale-aware PRC-02 config for a fused-backward view at (1, 4096, 32).
+
+    Same axes as the forward view (L=4096 needed for cheat compounding;
+    scale-aware because gradient errors carry the magnitude of large
+    cancelling intermediates — the C2 grad_A / C3 convention). Floors
+    CPU-measured per view over 3 draws (scratch/c6_prc02_floor.py),
+    honest eager vs autograd through the fp16-scan-state forward cheat,
+    scale-normalised: honest <= 7.0e-4..1.6e-3 per view; cheat corridors
+    range 44x (grad_A, 4.2e-2) down to 3.4x (grad_conv_bias, 5.3e-3) and
+    5.0x (grad_D, 6.4e-3) — the conv-bias and D-skip paths touch the
+    fp16 state only through dconv/dys, so the cheat's compounding is
+    diluted there; those two views carry the thinnest margins (the C3
+    grad_dt situation — re-measure first on B200 if either flakes).
+    Per-view unit atols sit between the floors, margin biased honest-side.
+    """
+    return {
+        "shape": (1, 4096, 32),
+        "atol": atol,
+        "rtol": 0.0,
+        "scale_atol_by_ref_inf": True,
+    }
+
+
+# Accumulation extents at ORD-01's (4, 512, 32) gate shape, theory-seeded
+# under the eps*sqrt(chain)*scale model (the scan-table convention; B200
+# confirms). grad_x / grad_delta see one reverse carry chain (~L);
+# grad_B / grad_C contract D=32 chain-carrying terms (~D*L/2); grad_A,
+# grad_conv_weight, grad_conv_bias and grad_norm_weight sum batch*L terms
+# that each carry an ~L/2 chain (~B*L^2/2); grad_D is a batch*L sum of
+# chain-carrying dys*z products (~B*L). ORD-03 keeps the scan's L=8192
+# collapse length with the fused forward's 3x headroom for the conv
+# window and cross-D norm reduction; the long-chain-sum views (grad_A
+# class) take 1e-2, the C2 grad_A precedent.
+FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    "grad_x": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_fused_bwd_prc02(4e-3),
+    ),
+    "grad_conv_weight": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_fused_bwd_prc02(5e-3),
+    ),
+    "grad_conv_bias": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_fused_bwd_prc02(3e-3),
+    ),
+    "grad_delta": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_fused_bwd_prc02(4e-3),
+    ),
+    "grad_A": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_fused_bwd_prc02(5e-3),
+    ),
+    "grad_B": _bwd_view_overrides(
+        ord01_reduction_elements=32 * 512 // 2,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_fused_bwd_prc02(4e-3),
+    ),
+    "grad_C": _bwd_view_overrides(
+        ord01_reduction_elements=32 * 512 // 2,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_fused_bwd_prc02(4e-3),
+    ),
+    "grad_D": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_fused_bwd_prc02(3e-3),
+    ),
+    "grad_norm_weight": _bwd_view_overrides(
+        ord01_reduction_elements=4 * 512 * 512 // 2,
+        ord03_atol=1e-2,
+        ord03_rtol=1e-2,
+        prc02=_fused_bwd_prc02(3e-3),
+    ),
+}
+
+
+def fused_bwd_candidate_adapter(
+    bwd_fn: FusedBwdCallable,
+    grad_field: str,
+    *,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``.
+
+    The primary is the upstream gradient ``dy``; the aux ``x`` is padded
+    here so non-finite injections through ``dy`` hit output rows whose
+    indices match the gate primary's, identically for candidate and
+    reference.
+    """
+    idx = FUSED_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(dy: Tensor) -> Tensor:
+        batch, seq_len, d_model = dy.shape
+        x, *aux = _fused_bwd_aux(
+            batch, seq_len, d_model, n_state, conv_k, dy.device, dy.dtype, saturate=saturate
+        )
+        x_pad = torch.nn.functional.pad(x, (0, 0, conv_k - 1, 0))
+        grads = bwd_fn(x_pad, *aux, dy, conv_kernel_size=conv_k, chunk_size=chunk_size)
+        out: Tensor = grads[idx]
+        return out
+
+    return adapted
+
+
+def fused_bwd_reference_adapter(
+    grad_field: str,
+    *,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The autograd oracle behind the same per-gradient single-tensor interface."""
+    idx = FUSED_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(dy: Tensor) -> Tensor:
+        batch, seq_len, d_model = dy.shape
+        x, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w = _fused_bwd_aux(
+            batch, seq_len, d_model, n_state, conv_k, dy.device, dy.dtype, saturate=saturate
+        )
+        x_pad = torch.nn.functional.pad(x, (0, 0, conv_k - 1, 0))
+        if dy.dtype != torch.float32:
+            # Mixed-precision contract: oracle computes in fp32 from the
+            # same (already rounded) operand bits, rounds once at the output.
+            x_pad, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w = (
+                t.to(torch.float32)
+                for t in (x_pad, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w)
+            )
+        grads = reference_fused_block_backward(
+            x_pad,
+            conv_w,
+            conv_b,
+            delta,
+            a,
+            b_proj,
+            c_proj,
+            d_skip,
+            norm_w,
+            dy.to(torch.float32),
+            conv_kernel_size=conv_k,
+            chunk_size=chunk_size,
+        )
+        return grads[idx].to(dy.dtype)
+
+    return adapted
+
+
+def verify_fused_bwd_op(
+    bwd_fn: FusedBwdCallable,
+    *,
+    grad_field: str,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+) -> dict[str, GateResult]:
+    """Run all 12 contract gates over one gradient view of the fused backward.
+
+    Mirrors ``verify_bwd_scan_op`` per view, including the saturation-free
+    PRC-02 re-run (the op has a softplus inside its scan; the saturated
+    channels' amplification drowns the accumulator signal).
+    """
+    return _verify_op_views(
+        lambda saturate: fused_bwd_candidate_adapter(
+            bwd_fn,
+            grad_field,
+            n_state=n_state,
+            conv_k=conv_k,
+            chunk_size=chunk_size,
+            saturate=saturate,
+        ),
+        lambda saturate: fused_bwd_reference_adapter(
+            grad_field, n_state=n_state, conv_k=conv_k, chunk_size=chunk_size, saturate=saturate
+        ),
+        base_overrides=FUSED_BWD_GATE_OVERRIDES.get(grad_field, {}),
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=True,
+    )
+
+
+def verify_fused_bwd_op_all_grads(
+    bwd_fn: FusedBwdCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over all nine gradient views — the backward op's full verdict."""
+    return {
+        grad_field: verify_fused_bwd_op(
+            bwd_fn,
+            grad_field=grad_field,
+            device=device,
+            resource_meta=resource_meta,
+            n_state=n_state,
+            conv_k=conv_k,
+            chunk_size=chunk_size,
+        )
+        for grad_field in FUSED_BWD_GRAD_FIELDS
+    }

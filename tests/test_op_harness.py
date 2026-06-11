@@ -16,6 +16,7 @@ from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
     forward_chunked_scan,
+    fused_block_backward,
     fused_block_forward,
     mimo_backward,
 )
@@ -24,6 +25,9 @@ from flash_mamba_rl.kernels.references import (
     reference_forward_chunked_scan,
 )
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from flash_mamba_rl.kernels.references.fused_block_backward import (
+    reference_fused_block_backward,
+)
 from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
@@ -34,6 +38,8 @@ from flash_mamba_rl.verifier.contracts import (
 )
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
+    FUSED_BWD_GATE_OVERRIDES,
+    FUSED_BWD_GRAD_FIELDS,
     FUSED_GATE_OVERRIDES,
     MIMO_BWD_GATE_OVERRIDES,
     MIMO_BWD_GRAD_FIELDS,
@@ -48,6 +54,8 @@ from flash_mamba_rl.verifier.op_harness import (
     SCAN_CHUNK_SIZE,
     bwd_scan_candidate_adapter,
     bwd_scan_reference_adapter,
+    fused_bwd_candidate_adapter,
+    fused_bwd_reference_adapter,
     fused_candidate_adapter,
     fused_reference_adapter,
     mimo_bwd_candidate_adapter,
@@ -58,6 +66,7 @@ from flash_mamba_rl.verifier.op_harness import (
     scan_reference_adapter,
     verify_bwd_scan_op,
     verify_fused_block_op,
+    verify_fused_bwd_op,
     verify_mimo_bwd_op,
     verify_rope_op,
     verify_scan_op,
@@ -841,3 +850,122 @@ class TestRopePrc02Discrimination:
             **kwargs,
         )
         assert not cheat.passed, "PRC-02 lost its discriminative power on the rope scan"
+
+
+def _fused_bwd_via_autograd(
+    fwd_fn: Callable[..., torch.Tensor],
+) -> Callable[..., tuple[torch.Tensor, ...]]:
+    """Fused-backward-signature wrapper differentiating through a (cheating) forward."""
+
+    def bwd(
+        x: torch.Tensor,
+        conv_weight: torch.Tensor,
+        conv_bias: torch.Tensor,
+        delta: torch.Tensor,
+        a_mat: torch.Tensor,
+        b_proj: torch.Tensor,
+        c_proj: torch.Tensor,
+        d_skip: torch.Tensor,
+        norm_weight: torch.Tensor,
+        dy: torch.Tensor,
+        *,
+        conv_kernel_size: int = 4,
+        eps: float = 1e-5,
+        chunk_size: int = 8,
+    ) -> tuple[torch.Tensor, ...]:
+        inputs = (x, conv_weight, conv_bias, delta, a_mat, b_proj, c_proj, d_skip, norm_weight)
+        with torch.enable_grad():
+            leaves = [t.detach().requires_grad_(True) for t in inputs]
+            y = fwd_fn(*leaves)
+            return torch.autograd.grad(y, leaves, dy)
+
+    return bwd
+
+
+class TestFusedBackwardHarness:
+    def test_adapters_deterministic_per_view(self) -> None:
+        dy = torch.randn(2, 16, 8)
+        for field in FUSED_BWD_GRAD_FIELDS:
+            adapted = fused_bwd_candidate_adapter(fused_block_backward, field)
+            assert torch.equal(adapted(dy), adapted(dy.clone())), field
+
+    def test_reference_adapter_matches_direct_reference(self) -> None:
+        dy = torch.randn(2, 16, 8)
+        for field in FUSED_BWD_GRAD_FIELDS:
+            ref_adapted = fused_bwd_reference_adapter(field)
+            cand_adapted = fused_bwd_candidate_adapter(reference_fused_block_backward, field)
+            assert torch.equal(ref_adapted(dy), cand_adapted(dy)), field
+
+    def test_view_outputs_have_expected_shapes(self) -> None:
+        b, seq, d = 2, 16, 8
+        dy = torch.randn(b, seq, d)
+        expected = {
+            "grad_x": (b, seq + 3, d),  # the adapter's K-1 causal padding
+            "grad_conv_weight": (d, 1, 4),
+            "grad_conv_bias": (d,),
+            "grad_delta": (b, seq, d),
+            "grad_A": (d, 16),
+            "grad_B": (b, seq, 16),
+            "grad_C": (b, seq, 16),
+            "grad_D": (d,),
+            "grad_norm_weight": (d,),
+        }
+        for field, shape in expected.items():
+            out = fused_bwd_candidate_adapter(fused_block_backward, field)(dy)
+            assert out.shape == shape, field
+
+    def test_adapter_follows_input_dtype(self) -> None:
+        for dtype in (torch.float16, torch.bfloat16, torch.float64):
+            out = fused_bwd_candidate_adapter(fused_block_backward, "grad_x")(
+                torch.randn(1, 8, 4, dtype=dtype)
+            )
+            assert out.dtype == dtype
+
+    def test_all_gates_pass_on_cpu_grad_x_view(self) -> None:
+        # One full-suite view exercises every gate against the backward op
+        # on CPU (the eager path); the other eight views run the full suite
+        # on the box where the Triton pipeline — the actual target — is
+        # live (the C2 convention). resource_meta rides along to pin the
+        # verify wrapper's forwarding into RES-02.
+        results = verify_fused_bwd_op(
+            fused_block_backward,
+            grad_field="grad_x",
+            resource_meta={"n_regs": 64, "shared_bytes": 1024},
+        )
+        assert len(results) == _ALL_GATES_COUNT
+        failed = {name: result.reason for name, result in results.items() if not result.passed}
+        assert not failed, f"grad_x gates failed on CPU: {failed}"
+        assert results["gate_res_02_resource_limits"].details.get("applicable") is True
+
+
+class TestFusedBwdPrc02Discrimination:
+    def _check_view(self, field: str) -> None:
+        kwargs = dict(FUSED_BWD_GATE_OVERRIDES[field]["gate_prc_02_mixed_precision_accumulation"])
+        honest = gate_prc_02_mixed_precision_accumulation(
+            fused_bwd_candidate_adapter(fused_block_backward, field, saturate=False),
+            fused_bwd_reference_adapter(field, saturate=False),
+            **kwargs,
+        )
+        assert honest.passed, f"honest fp32 backward rejected on {field}: {honest.reason}"
+        cheat = gate_prc_02_mixed_precision_accumulation(
+            fused_bwd_candidate_adapter(
+                _fused_bwd_via_autograd(_fp16_state_fused), field, saturate=False
+            ),
+            fused_bwd_reference_adapter(field, saturate=False),
+            **kwargs,
+        )
+        assert not cheat.passed, f"PRC-02 lost its discriminative power on {field}"
+
+    def test_grad_a_view_widest_corridor(self) -> None:
+        # CPU floors at (1, 4096, 32), scale-normalised, 3 draws
+        # (scratch/c6_prc02_floor.py): honest <= 9.4e-4 vs fp16-scan-state
+        # cheat >= 4.2e-2 — a 44x corridor; unit atol 5e-3.
+        self._check_view("grad_A")
+
+    def test_grad_conv_bias_view_thinnest_corridor(self) -> None:
+        # The thin view: honest <= 1.6e-3 vs cheat >= 5.3e-3 (3.4x) — the
+        # bias path touches the fp16 state only through dconv, so the
+        # cheat's compounding is diluted. Unit atol 3e-3 sits 1.9x over
+        # honest / 1.8x under cheat; this pin is the flake canary — if it
+        # ever goes, re-measure on B200 before touching the atol.
+        self._check_view("grad_conv_bias")

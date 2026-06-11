@@ -7,8 +7,8 @@ semantics, widened to more dtypes and devices:
   path (``_triton_fused_block``: conv1d + SiLU + selective scan in one
   serial-L kernel, deterministic RMSNorm in a second — the why-not-one-
   kernel rationale lives on that module), wrapped in an autograd.Function
-  whose backward recomputes through the eager path (first-order only; the
-  training backward is C6's scope).
+  whose backward is the C6 Triton pipeline (first-order only — see
+  ``_FusedBlockCuda``).
 - everything else (CPU, fp64, missing triton) -> ``_fused_eager``, a
   differentiable eager-torch path replicating the reference op-for-op.
   For fp32 on the same device it is bitwise-equal to the reference.
