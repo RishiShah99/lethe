@@ -4,76 +4,78 @@
   "all": {
     "total_rows": 3134,
     "status_counts": {
-      "gated": 2691,
-      "cand_native_fail": 357,
+      "gated": 2692,
+      "cand_native_fail": 361,
       "not_auditable": 61,
-      "sandbox_timeout": 6,
+      "sandbox_timeout": 5,
       "cand_load_fail": 11,
-      "sandbox_other": 4,
       "ref_broken": 4
     },
     "audited": 3069,
-    "compile_artifacts_excluded": 298,
-    "denominator": 2771,
-    "pre_gate_findings": 80,
-    "gated": 2691,
-    "any_gate_fail": 1672,
+    "artifacts_excluded": 310,
+    "denominator": 2759,
+    "pre_gate_findings": 67,
+    "gated": 2692,
+    "any_gate_fail": 1659,
     "cuda_crash_rows": 18,
     "output_aliasing": 25,
-    "finding_rate": 0.6359,
+    "finding_rate": 0.6292,
     "gates_overall": {
       "CMP-01": {
-        "fail": 717,
-        "pass": 1969,
+        "fail": 674,
+        "pass": 2013,
         "error": 5
       },
       "CMP-03": {
-        "pass": 1910,
-        "fail": 503,
+        "pass": 1943,
+        "fail": 472,
         "na": 260,
-        "error": 18
+        "error": 17
       },
       "ORD-01": {
-        "pass": 2260,
-        "fail": 412,
-        "error": 19
+        "pass": 2263,
+        "fail": 411,
+        "error": 18
       },
       "ORD-02": {
-        "pass": 2536,
+        "pass": 2538,
         "fail": 137,
-        "error": 18
+        "error": 17
       },
       "ORD-03": {
-        "pass": 2487,
-        "fail": 186,
-        "error": 18
+        "pass": 2491,
+        "fail": 184,
+        "error": 17
       },
       "PRC-01": {
-        "pass": 2250,
-        "fail": 408,
+        "pass": 2324,
+        "fail": 335,
         "na": 14,
         "error": 19
       },
       "PRC-02": {
-        "pass": 2207,
-        "fail": 465,
-        "error": 19
+        "pass": 2250,
+        "fail": 412,
+        "error": 19,
+        "na": 11
       },
       "EXC-01": {
-        "pass": 1746,
-        "fail": 918,
+        "pass": 1743,
+        "fail": 911,
         "error": 26,
-        "na": 1
+        "na": 12
       },
       "EXC-02": {
-        "pass": 2393,
-        "fail": 280,
-        "error": 18
+        "pass": 2380,
+        "fail": 283,
+        "error": 18,
+        "na": 11
       },
       "RES-01": {
-        "pass": 2626,
+        "pass": 2621,
         "fail": 47,
-        "error": 18
+        "error": 18,
+        "na": 6
       }
     },
     "per_class": {
@@ -126,19 +128,19 @@
         }
       },
       "conv": {
-        "audited": 253,
-        "pre_gate_findings": 11,
+        "audited": 252,
+        "pre_gate_findings": 10,
         "gated": 242,
-        "gate_or_crash_findings": 139,
-        "finding_rate": 0.5929,
+        "gate_or_crash_findings": 134,
+        "finding_rate": 0.5714,
         "gates": {
           "CMP-01": {
-            "pass": 188,
-            "fail": 54
+            "pass": 191,
+            "fail": 51
           },
           "CMP-03": {
-            "pass": 173,
-            "fail": 60,
+            "pass": 177,
+            "fail": 56,
             "error": 3,
             "na": 6
           },
@@ -158,137 +160,144 @@
             "error": 1
           },
           "PRC-01": {
-            "pass": 186,
-            "fail": 54,
+            "pass": 195,
+            "fail": 45,
             "na": 1,
             "error": 1
           },
           "PRC-02": {
             "pass": 182,
-            "fail": 58,
-            "error": 2
+            "fail": 49,
+            "error": 2,
+            "na": 9
           },
           "EXC-01": {
-            "pass": 181,
-            "fail": 60,
+            "pass": 176,
+            "fail": 56,
+            "na": 9,
             "error": 1
           },
           "EXC-02": {
-            "pass": 218,
+            "pass": 209,
             "fail": 23,
+            "na": 9,
             "error": 1
           },
           "RES-01": {
-            "pass": 238,
+            "pass": 232,
+            "na": 6,
             "fail": 3,
             "error": 1
           }
         }
       },
       "matmul": {
-        "audited": 787,
-        "pre_gate_findings": 22,
-        "gated": 765,
-        "gate_or_crash_findings": 488,
-        "finding_rate": 0.648,
+        "audited": 780,
+        "pre_gate_findings": 14,
+        "gated": 766,
+        "gate_or_crash_findings": 481,
+        "finding_rate": 0.6346,
         "gates": {
           "CMP-01": {
-            "pass": 486,
-            "fail": 279
+            "pass": 491,
+            "fail": 275
           },
           "CMP-03": {
-            "pass": 440,
-            "fail": 251,
+            "pass": 442,
+            "fail": 250,
             "na": 74
           },
           "ORD-01": {
             "pass": 523,
-            "fail": 242
+            "fail": 243
           },
           "ORD-02": {
             "pass": 741,
-            "fail": 24
+            "fail": 25
           },
           "ORD-03": {
-            "pass": 708,
+            "pass": 709,
             "fail": 57
           },
           "PRC-01": {
-            "pass": 605,
-            "fail": 151,
-            "na": 9
+            "pass": 636,
+            "fail": 120,
+            "na": 10
           },
           "PRC-02": {
-            "pass": 599,
-            "fail": 166
+            "pass": 626,
+            "fail": 138,
+            "na": 2
           },
           "EXC-01": {
-            "fail": 237,
+            "fail": 236,
             "pass": 526,
-            "error": 2
+            "error": 2,
+            "na": 2
           },
           "EXC-02": {
-            "pass": 693,
-            "fail": 72
+            "pass": 691,
+            "fail": 73,
+            "na": 2
           },
           "RES-01": {
-            "pass": 746,
+            "pass": 747,
             "fail": 19
           }
         }
       },
       "norm": {
-        "audited": 382,
-        "pre_gate_findings": 17,
+        "audited": 380,
+        "pre_gate_findings": 15,
         "gated": 365,
-        "gate_or_crash_findings": 232,
-        "finding_rate": 0.6518,
+        "gate_or_crash_findings": 230,
+        "finding_rate": 0.6447,
         "gates": {
           "CMP-01": {
-            "fail": 111,
-            "pass": 253,
+            "fail": 104,
+            "pass": 260,
             "error": 1
           },
           "CMP-03": {
-            "pass": 309,
-            "fail": 37,
+            "pass": 317,
+            "fail": 29,
             "na": 14,
             "error": 5
           },
           "ORD-01": {
-            "pass": 338,
-            "fail": 25,
-            "error": 2
-          },
-          "ORD-02": {
-            "pass": 339,
-            "fail": 24,
-            "error": 2
-          },
-          "ORD-03": {
             "pass": 340,
             "fail": 23,
             "error": 2
           },
+          "ORD-02": {
+            "pass": 342,
+            "fail": 21,
+            "error": 2
+          },
+          "ORD-03": {
+            "pass": 342,
+            "fail": 21,
+            "error": 2
+          },
           "PRC-01": {
-            "pass": 317,
-            "fail": 44,
+            "pass": 324,
+            "fail": 37,
             "error": 3,
             "na": 1
           },
           "PRC-02": {
-            "pass": 308,
-            "fail": 55,
+            "pass": 313,
+            "fail": 50,
             "error": 2
           },
           "EXC-01": {
-            "pass": 265,
-            "fail": 98,
+            "pass": 266,
+            "fail": 97,
             "error": 2
           },
           "EXC-02": {
-            "pass": 308,
-            "fail": 55,
+            "pass": 309,
+            "fail": 54,
             "error": 2
           },
           "RES-01": {
@@ -302,18 +311,18 @@
         "audited": 792,
         "pre_gate_findings": 17,
         "gated": 775,
-        "gate_or_crash_findings": 555,
-        "finding_rate": 0.7222,
+        "gate_or_crash_findings": 558,
+        "finding_rate": 0.726,
         "gates": {
           "CMP-01": {
-            "pass": 636,
-            "fail": 137,
+            "pass": 654,
+            "fail": 119,
             "error": 2
           },
           "CMP-03": {
-            "pass": 577,
+            "pass": 589,
             "na": 113,
-            "fail": 80,
+            "fail": 68,
             "error": 5
           },
           "ORD-01": {
@@ -322,23 +331,23 @@
             "error": 8
           },
           "ORD-02": {
-            "pass": 721,
-            "fail": 46,
+            "pass": 720,
+            "fail": 47,
             "error": 8
           },
           "ORD-03": {
-            "pass": 716,
-            "fail": 51,
-            "error": 8
+            "pass": 715,
+            "error": 8,
+            "fail": 52
           },
           "PRC-01": {
-            "pass": 673,
-            "fail": 94,
+            "pass": 686,
+            "fail": 81,
             "error": 8
           },
           "PRC-02": {
-            "pass": 651,
-            "fail": 116,
+            "pass": 653,
+            "fail": 114,
             "error": 8
           },
           "EXC-01": {
@@ -348,8 +357,8 @@
             "na": 1
           },
           "EXC-02": {
-            "pass": 681,
-            "fail": 86,
+            "pass": 678,
+            "fail": 89,
             "error": 8
           },
           "RES-01": {
@@ -360,20 +369,20 @@
         }
       },
       "scan": {
-        "audited": 145,
-        "pre_gate_findings": 4,
+        "audited": 144,
+        "pre_gate_findings": 3,
         "gated": 141,
         "gate_or_crash_findings": 71,
-        "finding_rate": 0.5172,
+        "finding_rate": 0.5139,
         "gates": {
           "CMP-01": {
-            "pass": 111,
-            "fail": 29,
+            "pass": 113,
+            "fail": 27,
             "error": 1
           },
           "CMP-03": {
-            "pass": 114,
-            "fail": 21,
+            "pass": 117,
+            "fail": 18,
             "na": 5,
             "error": 1
           },
@@ -388,24 +397,24 @@
             "error": 2
           },
           "ORD-03": {
-            "pass": 123,
-            "fail": 16,
+            "pass": 124,
+            "fail": 15,
             "error": 2
           },
           "PRC-01": {
-            "fail": 26,
-            "pass": 112,
+            "fail": 20,
+            "pass": 118,
             "error": 2,
             "na": 1
           },
           "PRC-02": {
-            "pass": 114,
-            "fail": 25,
+            "pass": 117,
+            "fail": 22,
             "error": 2
           },
           "EXC-01": {
-            "pass": 110,
-            "fail": 29,
+            "pass": 111,
+            "fail": 28,
             "error": 2
           },
           "EXC-02": {
@@ -421,47 +430,47 @@
         }
       },
       "softmax": {
-        "audited": 403,
-        "pre_gate_findings": 9,
+        "audited": 402,
+        "pre_gate_findings": 8,
         "gated": 394,
-        "gate_or_crash_findings": 189,
-        "finding_rate": 0.4913,
+        "gate_or_crash_findings": 187,
+        "finding_rate": 0.4851,
         "gates": {
           "CMP-01": {
-            "fail": 101,
-            "pass": 292,
+            "fail": 92,
+            "pass": 301,
             "error": 1
           },
           "CMP-03": {
-            "fail": 49,
-            "pass": 296,
+            "fail": 46,
+            "pass": 300,
             "na": 45,
-            "error": 4
+            "error": 3
           },
           "ORD-01": {
-            "pass": 364,
+            "pass": 365,
             "fail": 25,
-            "error": 5
+            "error": 4
           },
           "ORD-02": {
             "pass": 372,
-            "fail": 17,
-            "error": 5
+            "fail": 18,
+            "error": 4
           },
           "ORD-03": {
-            "pass": 368,
+            "pass": 369,
             "fail": 21,
-            "error": 5
+            "error": 4
           },
           "PRC-01": {
-            "pass": 351,
-            "fail": 36,
-            "na": 2,
+            "pass": 359,
+            "fail": 29,
+            "na": 1,
             "error": 5
           },
           "PRC-02": {
-            "pass": 347,
-            "fail": 42,
+            "pass": 353,
+            "fail": 36,
             "error": 5
           },
           "EXC-01": {
@@ -486,75 +495,77 @@
   "accepted_only": {
     "total_rows": 2970,
     "status_counts": {
-      "gated": 2575,
-      "cand_native_fail": 325,
+      "gated": 2576,
+      "cand_native_fail": 329,
       "not_auditable": 51,
-      "sandbox_timeout": 5,
-      "cand_load_fail": 10,
-      "sandbox_other": 4
+      "sandbox_timeout": 4,
+      "cand_load_fail": 10
     },
     "audited": 2919,
-    "compile_artifacts_excluded": 269,
-    "denominator": 2650,
-    "pre_gate_findings": 75,
-    "gated": 2575,
-    "any_gate_fail": 1584,
+    "artifacts_excluded": 281,
+    "denominator": 2638,
+    "pre_gate_findings": 62,
+    "gated": 2576,
+    "any_gate_fail": 1569,
     "cuda_crash_rows": 16,
     "output_aliasing": 25,
-    "finding_rate": 0.6291,
+    "finding_rate": 0.6213,
     "gates_overall": {
       "CMP-01": {
-        "fail": 651,
-        "pass": 1921,
+        "fail": 608,
+        "pass": 1965,
         "error": 3
       },
       "CMP-03": {
-        "pass": 1869,
-        "fail": 451,
+        "pass": 1902,
+        "fail": 420,
         "na": 243,
-        "error": 12
+        "error": 11
       },
       "ORD-01": {
-        "pass": 2205,
-        "fail": 353,
-        "error": 17
+        "pass": 2209,
+        "fail": 351,
+        "error": 16
       },
       "ORD-02": {
-        "pass": 2431,
-        "fail": 128,
-        "error": 16
+        "pass": 2435,
+        "fail": 126,
+        "error": 15
       },
       "ORD-03": {
-        "pass": 2420,
-        "fail": 139,
-        "error": 16
+        "pass": 2425,
+        "fail": 136,
+        "error": 15
       },
       "PRC-01": {
-        "pass": 2186,
-        "fail": 361,
+        "pass": 2261,
+        "fail": 287,
         "na": 12,
         "error": 16
       },
       "PRC-02": {
-        "pass": 2151,
-        "fail": 407,
-        "error": 17
+        "pass": 2196,
+        "fail": 352,
+        "error": 17,
+        "na": 11
       },
       "EXC-01": {
-        "pass": 1675,
-        "fail": 875,
+        "pass": 1672,
+        "fail": 868,
         "error": 24,
-        "na": 1
+        "na": 12
       },
       "EXC-02": {
-        "pass": 2323,
-        "fail": 236,
-        "error": 16
+        "pass": 2311,
+        "fail": 238,
+        "error": 16,
+        "na": 11
       },
       "RES-01": {
-        "pass": 2514,
+        "pass": 2509,
         "fail": 45,
-        "error": 16
+        "error": 16,
+        "na": 6
       }
     },
     "per_class": {
@@ -605,19 +616,19 @@
         }
       },
       "conv": {
-        "audited": 240,
-        "pre_gate_findings": 11,
+        "audited": 239,
+        "pre_gate_findings": 10,
         "gated": 229,
-        "gate_or_crash_findings": 128,
-        "finding_rate": 0.5792,
+        "gate_or_crash_findings": 123,
+        "finding_rate": 0.5565,
         "gates": {
           "CMP-01": {
-            "pass": 186,
-            "fail": 43
+            "pass": 189,
+            "fail": 40
           },
           "CMP-03": {
-            "pass": 171,
-            "fail": 50,
+            "pass": 175,
+            "fail": 46,
             "error": 2,
             "na": 6
           },
@@ -637,137 +648,144 @@
             "error": 1
           },
           "PRC-01": {
-            "pass": 181,
-            "fail": 46,
+            "pass": 190,
+            "fail": 37,
             "na": 1,
             "error": 1
           },
           "PRC-02": {
             "pass": 178,
-            "fail": 49,
-            "error": 2
+            "fail": 40,
+            "error": 2,
+            "na": 9
           },
           "EXC-01": {
-            "pass": 172,
-            "fail": 56,
+            "pass": 167,
+            "fail": 52,
+            "na": 9,
             "error": 1
           },
           "EXC-02": {
-            "pass": 210,
+            "pass": 201,
             "fail": 18,
+            "na": 9,
             "error": 1
           },
           "RES-01": {
-            "pass": 225,
+            "pass": 219,
+            "na": 6,
             "fail": 3,
             "error": 1
           }
         }
       },
       "matmul": {
-        "audited": 758,
-        "pre_gate_findings": 21,
-        "gated": 737,
-        "gate_or_crash_findings": 465,
-        "finding_rate": 0.6412,
+        "audited": 751,
+        "pre_gate_findings": 13,
+        "gated": 738,
+        "gate_or_crash_findings": 458,
+        "finding_rate": 0.6272,
         "gates": {
           "CMP-01": {
-            "pass": 477,
-            "fail": 260
+            "pass": 483,
+            "fail": 255
           },
           "CMP-03": {
-            "pass": 433,
-            "fail": 233,
+            "pass": 435,
+            "fail": 232,
             "na": 71
           },
           "ORD-01": {
-            "pass": 513,
+            "pass": 514,
             "fail": 224
           },
           "ORD-02": {
-            "pass": 717,
+            "pass": 718,
             "fail": 20
           },
           "ORD-03": {
-            "pass": 691,
-            "fail": 46
+            "pass": 693,
+            "fail": 45
           },
           "PRC-01": {
-            "pass": 587,
-            "fail": 143,
-            "na": 7
+            "pass": 618,
+            "fail": 112,
+            "na": 8
           },
           "PRC-02": {
-            "pass": 587,
-            "fail": 150
+            "pass": 616,
+            "fail": 120,
+            "na": 2
           },
           "EXC-01": {
-            "fail": 232,
+            "fail": 231,
             "pass": 503,
-            "error": 2
+            "error": 2,
+            "na": 2
           },
           "EXC-02": {
-            "pass": 676,
-            "fail": 61
+            "pass": 675,
+            "fail": 61,
+            "na": 2
           },
           "RES-01": {
-            "pass": 718,
+            "pass": 719,
             "fail": 19
           }
         }
       },
       "norm": {
-        "audited": 354,
-        "pre_gate_findings": 16,
+        "audited": 352,
+        "pre_gate_findings": 14,
         "gated": 338,
-        "gate_or_crash_findings": 216,
-        "finding_rate": 0.6554,
+        "gate_or_crash_findings": 214,
+        "finding_rate": 0.6477,
         "gates": {
           "CMP-01": {
-            "fail": 100,
-            "pass": 237,
+            "fail": 93,
+            "pass": 244,
             "error": 1
           },
           "CMP-03": {
-            "pass": 294,
-            "fail": 29,
+            "pass": 302,
+            "fail": 21,
             "na": 13,
             "error": 2
           },
           "ORD-01": {
-            "pass": 319,
-            "fail": 17,
+            "pass": 321,
+            "fail": 15,
             "error": 2
           },
           "ORD-02": {
-            "pass": 312,
-            "fail": 24,
+            "pass": 315,
+            "fail": 21,
             "error": 2
           },
           "ORD-03": {
-            "pass": 320,
-            "fail": 16,
+            "pass": 322,
+            "fail": 14,
             "error": 2
           },
           "PRC-01": {
-            "pass": 299,
-            "fail": 36,
+            "pass": 306,
+            "fail": 29,
             "na": 1,
             "error": 2
           },
           "PRC-02": {
-            "pass": 289,
-            "fail": 47,
+            "pass": 294,
+            "fail": 42,
             "error": 2
           },
           "EXC-01": {
-            "pass": 247,
-            "fail": 89,
+            "pass": 248,
+            "fail": 88,
             "error": 2
           },
           "EXC-02": {
-            "pass": 288,
-            "fail": 48,
+            "pass": 289,
+            "fail": 47,
             "error": 2
           },
           "RES-01": {
@@ -781,18 +799,18 @@
         "audited": 758,
         "pre_gate_findings": 16,
         "gated": 742,
-        "gate_or_crash_findings": 527,
-        "finding_rate": 0.7164,
+        "gate_or_crash_findings": 528,
+        "finding_rate": 0.7177,
         "gates": {
           "CMP-01": {
-            "pass": 620,
-            "fail": 121,
+            "pass": 637,
+            "fail": 104,
             "error": 1
           },
           "CMP-03": {
-            "pass": 562,
+            "pass": 574,
             "na": 106,
-            "fail": 70,
+            "fail": 58,
             "error": 4
           },
           "ORD-01": {
@@ -806,18 +824,18 @@
             "error": 7
           },
           "ORD-03": {
-            "pass": 698,
-            "fail": 37,
-            "error": 7
+            "pass": 697,
+            "error": 7,
+            "fail": 38
           },
           "PRC-01": {
-            "pass": 656,
-            "fail": 79,
+            "pass": 669,
+            "fail": 66,
             "error": 7
           },
           "PRC-02": {
-            "pass": 635,
-            "fail": 100,
+            "pass": 637,
+            "fail": 98,
             "error": 7
           },
           "EXC-01": {
@@ -827,8 +845,8 @@
             "na": 1
           },
           "EXC-02": {
-            "pass": 662,
-            "fail": 73,
+            "pass": 659,
+            "fail": 76,
             "error": 7
           },
           "RES-01": {
@@ -839,19 +857,19 @@
         }
       },
       "scan": {
-        "audited": 141,
-        "pre_gate_findings": 3,
+        "audited": 140,
+        "pre_gate_findings": 2,
         "gated": 138,
         "gate_or_crash_findings": 69,
-        "finding_rate": 0.5106,
+        "finding_rate": 0.5071,
         "gates": {
           "CMP-01": {
-            "pass": 110,
-            "fail": 28
+            "pass": 112,
+            "fail": 26
           },
           "CMP-03": {
-            "pass": 113,
-            "fail": 20,
+            "pass": 116,
+            "fail": 17,
             "na": 5
           },
           "ORD-01": {
@@ -865,24 +883,24 @@
             "error": 1
           },
           "ORD-03": {
-            "pass": 122,
-            "fail": 15,
+            "pass": 123,
+            "fail": 14,
             "error": 1
           },
           "PRC-01": {
-            "fail": 25,
-            "pass": 111,
+            "fail": 19,
+            "pass": 117,
             "error": 1,
             "na": 1
           },
           "PRC-02": {
-            "pass": 113,
-            "fail": 24,
+            "pass": 116,
+            "fail": 21,
             "error": 1
           },
           "EXC-01": {
-            "pass": 109,
-            "fail": 28,
+            "pass": 110,
+            "fail": 27,
             "error": 1
           },
           "EXC-02": {
@@ -898,47 +916,47 @@
         }
       },
       "softmax": {
-        "audited": 391,
-        "pre_gate_findings": 8,
+        "audited": 390,
+        "pre_gate_findings": 7,
         "gated": 383,
-        "gate_or_crash_findings": 180,
-        "finding_rate": 0.4808,
+        "gate_or_crash_findings": 178,
+        "finding_rate": 0.4744,
         "gates": {
           "CMP-01": {
-            "fail": 94,
-            "pass": 288,
+            "fail": 85,
+            "pass": 297,
             "error": 1
           },
           "CMP-03": {
-            "fail": 44,
-            "pass": 295,
+            "fail": 41,
+            "pass": 299,
             "na": 40,
-            "error": 4
+            "error": 3
           },
           "ORD-01": {
-            "pass": 359,
+            "pass": 360,
             "fail": 19,
-            "error": 5
+            "error": 4
           },
           "ORD-02": {
             "pass": 362,
-            "fail": 16,
-            "error": 5
+            "fail": 17,
+            "error": 4
           },
           "ORD-03": {
-            "pass": 363,
+            "pass": 364,
             "fail": 15,
-            "error": 5
+            "error": 4
           },
           "PRC-01": {
-            "pass": 346,
-            "fail": 30,
-            "na": 2,
+            "pass": 355,
+            "fail": 22,
+            "na": 1,
             "error": 5
           },
           "PRC-02": {
-            "pass": 343,
-            "fail": 35,
+            "pass": 349,
+            "fail": 29,
             "error": 5
           },
           "EXC-01": {
