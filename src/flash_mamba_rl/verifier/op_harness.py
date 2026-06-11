@@ -358,6 +358,7 @@ def _bwd_view_overrides(
     ord03_atol: float,
     ord03_rtol: float,
     prc02: dict[str, Any] | None = None,
+    cmp03_atol: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-view gate overrides sharing the backward op's fixed shapes.
 
@@ -374,8 +375,12 @@ def _bwd_view_overrides(
     calibration approach). ORD-03 keeps the forward's L=8192 collapse
     length. ORD tolerances are theory-seeded; the B200 suite passes them
     as-is (C1 measured within 1.1x of the model).
+
+    ``cmp03_atol`` widens CMP-03's unit atol for views whose cross-impl
+    reorder noise compounds past the 1e-5 default (B200-calibrated, the
+    C1 lesson applied per view — see FUSED_BWD_GATE_OVERRIDES).
     """
-    return {
+    overrides: dict[str, dict[str, Any]] = {
         "gate_prc_02_mixed_precision_accumulation": (
             prc02 if prc02 is not None else {"shape": (2, 1024, 32), "rtol": 1e-3}
         ),
@@ -386,6 +391,9 @@ def _bwd_view_overrides(
             "rtol": ord03_rtol,
         },
     }
+    if cmp03_atol is not None:
+        overrides["gate_cmp_03_shape_polymorphism"] = {"atol": cmp03_atol}
+    return overrides
 
 
 # Accumulation extents at ORD-01's (4, 512, 32) gate shape:
@@ -1246,54 +1254,73 @@ def _fused_bwd_prc02(atol: float) -> dict[str, Any]:
 # collapse length with the fused forward's 3x headroom for the conv
 # window and cross-D norm reduction; the long-chain-sum views (grad_A
 # class) take 1e-2, the C2 grad_A precedent.
+#
+# CMP-03 unit atols are B200-calibrated (scratch/c6_cmp03_probe.py, the
+# gate's 5 shapes x 5 draws): the kernel's honest cross-impl reorder
+# noise rides the forward chain state h (recomputed in-kernel vs torch's
+# chunked scan, both fp32 — divergence compounds over L), and the views
+# that contract against h or the reverse carry g measure up to 1.4e-5 of
+# output scale (grad_A/B/C; 1.9e-5 observed in a live gate draw) — past
+# the 1e-5 default. grad_A/B/C take 1e-4 (~5-7x over measured), the
+# dconv-path views 5e-5 (measured <= 8.4e-6); grad_norm_weight keeps the
+# default (measured 1.5e-6 — h-free, the norm backward is local in t).
+# All remain >= 50x under the honest-vs-cheat PRC-02 corridors.
 FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_x": _bwd_view_overrides(
         ord01_reduction_elements=512,
         ord03_atol=3e-3,
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
+        cmp03_atol=5e-5,
     ),
     "grad_conv_weight": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512 * 512 // 2,
         ord03_atol=1e-2,
         ord03_rtol=1e-2,
         prc02=_fused_bwd_prc02(5e-3),
+        cmp03_atol=5e-5,
     ),
     "grad_conv_bias": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512 * 512 // 2,
         ord03_atol=1e-2,
         ord03_rtol=1e-2,
         prc02=_fused_bwd_prc02(3e-3),
+        cmp03_atol=5e-5,
     ),
     "grad_delta": _bwd_view_overrides(
         ord01_reduction_elements=512,
         ord03_atol=3e-3,
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
+        cmp03_atol=5e-5,
     ),
     "grad_A": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512 * 512 // 2,
         ord03_atol=1e-2,
         ord03_rtol=1e-2,
         prc02=_fused_bwd_prc02(5e-3),
+        cmp03_atol=1e-4,
     ),
     "grad_B": _bwd_view_overrides(
         ord01_reduction_elements=32 * 512 // 2,
         ord03_atol=3e-3,
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
+        cmp03_atol=1e-4,
     ),
     "grad_C": _bwd_view_overrides(
         ord01_reduction_elements=32 * 512 // 2,
         ord03_atol=3e-3,
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(4e-3),
+        cmp03_atol=1e-4,
     ),
     "grad_D": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512,
         ord03_atol=3e-3,
         ord03_rtol=3e-3,
         prc02=_fused_bwd_prc02(3e-3),
+        cmp03_atol=5e-5,
     ),
     "grad_norm_weight": _bwd_view_overrides(
         ord01_reduction_elements=4 * 512 * 512 // 2,
