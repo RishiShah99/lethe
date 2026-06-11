@@ -1020,6 +1020,15 @@ FUSED_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
         "atol": 5e-3,
         "scale_atol_by_ref_inf": True,
     },
+    # The conv bias makes this op affine in x — the first op in the suite
+    # where subnormal inputs do NOT produce subnormal-scale outputs (the
+    # bias path dominates at O(1), where C1-C4 are multiplicative in the
+    # primary). EXC-02's value branch therefore measures plain kernel
+    # reorder noise at output scale (B200 kernel: 8.0e-6), not subnormal
+    # handling; the flush detection lives in the gate's zero-mask parity
+    # branch, which keeps exact semantics. 1e-4 is ~12x the measured noise
+    # and far below any real numeric divergence.
+    "gate_exc_02_subnormal_handling": {"atol": 1e-4},
     "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
     "gate_ord_03_noncommutative_reduction": {
         "shape": (1, 8192, 16),
