@@ -569,9 +569,10 @@ class TestC4TritonParity:
         want = reference_complex_scan_rope(*args)
         max_err = (got - want).abs().max().item()
         scale = want.abs().max().clamp(min=1.0).item()
-        # scale_rel is the C2-honest metric; provisional bounds, tightened
-        # from B200 measurement like C1-C3's.
-        assert torch.allclose(got, want, atol=1e-3 * scale, rtol=1e-3), (
+        # scale_rel is the C2-honest metric. B200-measured worst over these
+        # shapes x 5 seeds: 1.2e-6 of scale (4.2e-6 at the L=2048 training
+        # shape; probe scratch/c4_parity_measure.py) — 1e-4 keeps ~80x margin.
+        assert torch.allclose(got, want, atol=1e-4 * scale, rtol=1e-4), (
             f"max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
         )
 

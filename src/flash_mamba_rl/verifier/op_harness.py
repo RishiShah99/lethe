@@ -846,6 +846,11 @@ def _rope_aux(
 # reorder noise. PRC-02 runs the scan's stress shape and default atol:
 # the rotation factors are bounded by 1 and leave the accumulator-error
 # structure of the decay scan unchanged (pinned by a discriminative test).
+# B200 re-measurement (scratch/c4_b200_floor.py, 3 draws, Triton kernel):
+# honest <= 6.3e-4 of output scale (4.7x under the flat 2e-2 atol at the
+# gate shape), fp16-state cheat >= 1.05e-2 of scale (3.3x over) — 16.8x
+# corridor on-device vs ~12x for the CPU eager floor (c4_prc02_floor.py).
+# The theory-seeded ORD-03 3e-3 passed the B200 gate run unchanged.
 ROPE_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32)},
     "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
