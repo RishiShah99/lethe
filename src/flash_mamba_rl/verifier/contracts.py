@@ -9,7 +9,7 @@ hardware limits, and reports not-applicable when no metadata is supplied
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,8 +93,8 @@ def gate_cmp_01_input_variation(
         denorm_val = torch.tensor(1.175494e-38, dtype=torch.float32)
         _check(torch.full(shape, denorm_val.item(), dtype=dtype, device=device), "denormals")
 
-    # Adversarial: longer sequence (double the second dim)
-    long_shape = (shape[0], shape[1] * 4, *shape[2:])
+    # Adversarial: longer sequence (4x the second dim; 1-D primaries grow dim 0)
+    long_shape = (shape[0], shape[1] * 4, *shape[2:]) if len(shape) >= 2 else (shape[0] * 4,)
     _check(torch.randn(long_shape, dtype=dtype, device=device), "long_seq")
 
     if failures:
@@ -114,6 +114,7 @@ def gate_cmp_03_shape_polymorphism(
     device: str | torch.device = "cpu",
     atol: float = 1e-5,
     rtol: float = 1e-5,
+    shapes: list[tuple[int, ...]] | None = None,
     **kwargs: Any,
 ) -> GateResult:
     """CMP-03: Shape polymorphism — vary batch, length, and model-dim independently.
@@ -121,14 +122,19 @@ def gate_cmp_03_shape_polymorphism(
     ``atol`` is interpreted at unit scale and multiplied by the reference
     output's magnitude (see CMP-01): cancellation elements carry the ULP
     noise of the large intermediates, not of their own small value.
+
+    ``shapes`` overrides the default scan-convention list for ops whose
+    primary tensor is not [batch, seq, d_model] (the audit harness derives
+    variants from a task's native input shape).
     """
-    shapes = [
-        (1, 16, 8),
-        (2, 32, 16),
-        (4, 64, 32),
-        (8, 128, 16),
-        (1, 256, 64),
-    ]
+    if shapes is None:
+        shapes = [
+            (1, 16, 8),
+            (2, 32, 16),
+            (4, 64, 32),
+            (8, 128, 16),
+            (1, 256, 64),
+        ]
     failures: list[str] = []
     for shape in shapes:
         t = torch.randn(shape, dtype=dtype, device=device)
@@ -843,14 +849,18 @@ def run_all_gates(
     reference: Callable[..., torch.Tensor],
     *,
     gate_overrides: Mapping[str, Mapping[str, Any]] | None = None,
+    gate_names: Sequence[str] | None = None,
     **kwargs: Any,
 ) -> dict[str, GateResult]:
-    """Run all 12 Kernel Contract gates and return results keyed by gate name.
+    """Run Kernel Contract gates and return results keyed by gate name.
 
     ``kwargs`` (e.g. ``shape``, ``dtype``, ``device``) are forwarded to every
     gate uniformly; ``gate_overrides`` maps a gate name to kwargs applied to
     that gate only, on top of the shared ``kwargs`` (use it for op-specific
     shapes or to supply RES-02's ``resource_meta``).
+
+    ``gate_names`` selects a subset (default: all 12). The audit harness uses
+    this to exclude gates outside an audited corpus's claimed scope.
 
     Stubbed gates that raise ``NotImplementedError`` are recorded as
     ``passed=False`` with reason ``"not_implemented"``. Any other exception
@@ -859,7 +869,7 @@ def run_all_gates(
     candidate must not crash the verifier loop.
     """
     results: dict[str, GateResult] = {}
-    for name in _ALL_GATE_NAMES:
+    for name in gate_names if gate_names is not None else _ALL_GATE_NAMES:
         gate_fn = _GATE_MAP[name]
         gate_kwargs = dict(kwargs)
         if gate_overrides and name in gate_overrides:
