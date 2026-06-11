@@ -1014,6 +1014,8 @@ def _fused_aux(
 # output scale, CPU over 3 draws (scratch/c5_prc02_floor.py): honest
 # eager <= 1.26e-3 vs fp16-state cheat >= 1.95e-2 — unit atol 5e-3 sits
 # 4.0x over honest / 3.9x under cheat, pinned by a discriminative test.
+# B200 (scratch/c5_b200_floor.py, 3 draws): Triton kernel <= 9.75e-4 vs
+# cheat >= 2.08e-2 — 21x corridor, 5.1x under / 4.2x over the unit atol.
 FUSED_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     "gate_prc_02_mixed_precision_accumulation": {
         "shape": (1, 4096, 32),

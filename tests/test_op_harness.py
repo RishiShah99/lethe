@@ -801,8 +801,10 @@ class TestFusedPrc02Discrimination:
     def test_prc02_separates_honest_from_fp16_state_cheat(self) -> None:
         # Measured at the gate shape (1, 4096, 32), scale-normalised:
         # honest <= 1.26e-3 of output scale vs fp16-state cheat >= 1.95e-2
-        # on CPU (3 draws, scratch/c5_prc02_floor.py). The scale-aware unit
-        # atol 5e-3 sits between with ~4x margin on both sides.
+        # on CPU (3 draws, scratch/c5_prc02_floor.py); B200 Triton kernel
+        # <= 9.75e-4 vs cheat >= 2.08e-2 (scratch/c5_b200_floor.py). The
+        # scale-aware unit atol 5e-3 sits between with >= 3.9x margin on
+        # both sides on both backends.
         kwargs = dict(FUSED_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             fused_candidate_adapter(fused_block_forward, saturate=False),

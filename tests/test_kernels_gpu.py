@@ -718,6 +718,9 @@ class TestC5TritonParity:
         want = reference_fused_block_forward(*args, conv_kernel_size=k, chunk_size=chunk)
         max_err = (got - want).abs().max().item()
         scale = want.abs().max().clamp(min=1.0).item()
+        # B200-measured worst over these shapes x 5 seeds: 4.4e-7 of scale
+        # (2.4e-6 at the B8/L2048/D4096 training shape; probe
+        # scratch/c5_parity_measure.py) — 1e-4 keeps ~40x margin.
         assert torch.allclose(got, want, atol=1e-4 * scale, rtol=1e-4), (
             f"max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
         )
