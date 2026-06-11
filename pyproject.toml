@@ -89,5 +89,5 @@ no_implicit_optional = true
 files = ["src/flash_mamba_rl"]
 
 [[tool.mypy.overrides]]
-module = ["triton.*", "wfdb.*", "mamba_ssm.*"]
+module = ["triton.*", "wfdb.*", "mamba_ssm.*", "causal_conv1d.*"]
 ignore_missing_imports = true

@@ -10,6 +10,8 @@ Mamba-3 backward dies on sm_100, #904).
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -17,21 +19,25 @@ from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
     forward_chunked_scan,
+    fused_block_forward,
     mimo_backward,
     triton_bwd_scan_resource_meta,
     triton_complex_rope_resource_meta,
+    triton_fused_block_resource_meta,
     triton_mimo_bwd_resource_meta,
     triton_scan_resource_meta,
 )
 from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
+    reference_fused_block_forward,
 )
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
 from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads, reference_mimo_backward
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
     verify_bwd_scan_op_all_grads,
+    verify_fused_block_op,
     verify_mimo_bwd_op_all_grads,
     verify_rope_op,
     verify_scan_op,
@@ -663,3 +669,144 @@ class TestC4ContractGates:
             if not result.passed
         }
         assert not failed, f"rope gates failed on CUDA (resource_meta={meta}): {failed}"
+
+
+def _fused_inputs(
+    b: int,
+    l_out: int,
+    d: int,
+    n: int,
+    k: int = 4,
+    dtype: torch.dtype = torch.float32,
+    seed: int = 0,
+) -> tuple[torch.Tensor, ...]:
+    torch.manual_seed(seed)
+    dev = torch.device("cuda")
+    x = torch.randn(b, l_out + k - 1, d, device=dev).to(dtype)
+    conv_w = (torch.randn(d, 1, k, device=dev) / math.sqrt(k)).to(dtype)
+    conv_b = (0.5 * torch.randn(d, device=dev)).to(dtype)
+    delta = torch.randn(b, l_out, d, device=dev).to(dtype)
+    a = (-torch.rand(d, n, device=dev)).to(dtype)
+    b_proj = torch.randn(b, l_out, n, device=dev).to(dtype)
+    c_proj = torch.randn(b, l_out, n, device=dev).to(dtype)
+    d_skip = torch.randn(d, device=dev).to(dtype)
+    norm_w = (1.0 + 0.25 * torch.randn(d, device=dev)).to(dtype)
+    return x, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC5TritonParity:
+    @pytest.mark.parametrize(
+        ("b", "l_out", "d", "n", "k", "chunk"),
+        [
+            (1, 8, 4, 8, 4, 8),  # tiny
+            (2, 64, 96, 16, 4, 8),  # non-pow2 D split across BLOCK_D=64
+            (3, 128, 100, 10, 3, 8),  # non-pow2 D/N, odd conv window
+            (2, 256, 512, 32, 4, 8),  # larger state, multi D-block
+            (2, 120, 300, 16, 4, 8),  # norm D-chunk tail (BLOCK_D_NORM=256)
+            (1, 13, 36, 8, 4, 13),  # norm t-block masking (l_out < BLOCK_T)
+            (2, 64, 48, 16, 1, 8),  # K=1: degenerate window
+            (1, 8, 16, 8, 2, 8),  # K=2
+        ],
+    )
+    def test_fp32_matches_reference(
+        self, b: int, l_out: int, d: int, n: int, k: int, chunk: int
+    ) -> None:
+        args = _fused_inputs(b, l_out, d, n, k=k)
+        got = fused_block_forward(*args, conv_kernel_size=k, chunk_size=chunk)
+        want = reference_fused_block_forward(*args, conv_kernel_size=k, chunk_size=chunk)
+        max_err = (got - want).abs().max().item()
+        scale = want.abs().max().clamp(min=1.0).item()
+        assert torch.allclose(got, want, atol=1e-4 * scale, rtol=1e-4), (
+            f"max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
+        )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_matches_fp32_oracle(self, dtype: torch.dtype) -> None:
+        args = _fused_inputs(2, 128, 64, 16, dtype=dtype)
+        got = fused_block_forward(*args, chunk_size=8)
+        want = reference_fused_block_forward(*(t.to(torch.float32) for t in args), chunk_size=8)
+        assert got.dtype == dtype
+        atol = 1e-2 if dtype == torch.float16 else 5e-2
+        scale = want.abs().max().clamp(min=1.0).item()
+        assert torch.allclose(got.float(), want, atol=atol * scale, rtol=atol)
+
+    def test_deterministic_across_runs(self) -> None:
+        args = _fused_inputs(2, 128, 64, 16)
+        first = fused_block_forward(*args, chunk_size=8)
+        for _ in range(4):
+            assert torch.equal(fused_block_forward(*args, chunk_size=8), first)
+
+    def test_noncontiguous_inputs_match_contiguous(self) -> None:
+        args = _fused_inputs(2, 64, 32, 16)
+        base = fused_block_forward(*args, chunk_size=8)
+        x = args[0].transpose(1, 2).contiguous().transpose(1, 2)
+        delta = args[3].transpose(1, 2).contiguous().transpose(1, 2)
+        assert not (x.is_contiguous() or delta.is_contiguous())
+        nc_args = (x, args[1], args[2], delta, *args[4:])
+        assert torch.equal(fused_block_forward(*nc_args, chunk_size=8), base)
+
+    def test_nonfinite_x_masks_match_oracle(self) -> None:
+        # NaN/Inf must smear over the conv window, ride the scan carry,
+        # and poison the whole D row through the RMSNorm — exactly as the
+        # reference composition does.
+        args = _fused_inputs(2, 64, 16, 8, seed=5)
+        args[0][0, 9, 1] = float("inf")
+        args[0][1, 33, 2] = float("nan")
+        args[0][1, 50, 3] = float("-inf")
+        got = fused_block_forward(*args, chunk_size=8)
+        want = reference_fused_block_forward(*args, chunk_size=8)
+        assert torch.equal(torch.isnan(got), torch.isnan(want))
+        assert torch.equal(torch.isinf(got), torch.isinf(want))
+
+    def test_cuda_backward_matches_reference_grads(self) -> None:
+        # Exercises _FusedBlockCuda's autograd plumbing (saved-tensor
+        # re-leafing, 9-grad + eps arity) — the backward recomputes through
+        # the eager path, so grads must match autograd through the reference.
+        args = _fused_inputs(2, 32, 16, 8, seed=9)
+        ours = tuple(t.detach().clone().requires_grad_(True) for t in args)
+        ref = tuple(t.detach().clone().requires_grad_(True) for t in args)
+        torch.manual_seed(11)
+        dy = torch.randn(2, 32, 16, device="cuda")
+        fused_block_forward(*ours, chunk_size=8).backward(dy)
+        reference_fused_block_forward(*ref, chunk_size=8).backward(dy)
+        for got, want in zip(ours, ref, strict=True):
+            assert got.grad is not None and want.grad is not None
+            scale = want.grad.abs().max().clamp(min=1.0).item()
+            assert torch.allclose(got.grad, want.grad, atol=1e-4 * scale, rtol=1e-4)
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC5NumWarpsCompile:
+    def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
+        # Same #904 framing as C1-C4: no tl.dot anywhere, so the
+        # TMEM-promotion pass never engages on sm_100.
+        from flash_mamba_rl.kernels.ops import _triton_fused_block
+
+        args = _fused_inputs(2, 256, 128, 32)
+        base = _triton_fused_block.launch_fused_block_forward(*args, 1e-5, num_warps=2)
+        for warps in (4, 8):
+            got = _triton_fused_block.launch_fused_block_forward(*args, 1e-5, num_warps=warps)
+            assert torch.allclose(got, base, atol=1e-4, rtol=1e-4), warps
+        meta = triton_fused_block_resource_meta()
+        assert meta is not None
+        assert 0 < meta["n_regs"] <= 255
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC5ContractGates:
+    def test_all_gates_pass_on_cuda(self) -> None:
+        args = _fused_inputs(1, 8, 4, 8)
+        fused_block_forward(*args, chunk_size=8)  # warm the cache
+        meta = triton_fused_block_resource_meta()
+
+        results = verify_fused_block_op(fused_block_forward, device="cuda", resource_meta=meta)
+        failed = {
+            name: (result.reason, result.details)
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"fused-block gates failed on CUDA (resource_meta={meta}): {failed}"

@@ -200,8 +200,14 @@ def launch_fused_block_forward(
     d_skip: Tensor,
     norm_weight: Tensor,
     eps: float,
+    num_warps: int | None = None,
 ) -> Tensor:
-    """Launch the fused block. Inputs must be CUDA tensors of one dtype."""
+    """Launch the fused block. Inputs must be CUDA tensors of one dtype.
+
+    ``num_warps`` overrides the conv-scan kernel's heuristic (bench sweep
+    hook); the norm kernel keeps its own heuristic — it is a trivially
+    memory-bound pass, not the sweep's subject.
+    """
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]
     n_state = a.shape[1]
@@ -231,7 +237,7 @@ def launch_fused_block_forward(
     out = torch.empty(batch, l_out, d_model, device=x.device, dtype=x.dtype)
 
     grid_scan = (batch, triton.cdiv(d_model, block_d))
-    num_warps_scan = 4 if block_d * block_n >= 512 else 2
+    num_warps_scan = num_warps if num_warps is not None else (4 if block_d * block_n >= 512 else 2)
     _conv_scan_kernel[grid_scan](
         x_c,
         conv_w_c,
