@@ -57,10 +57,12 @@ def _fused_eager(
 
 
 class _FusedBlockCuda(torch.autograd.Function):
-    """Triton forward; backward recomputes the VJP through the eager path.
+    """Triton forward; backward is the hand-written Triton pipeline (C6).
 
-    First-order only — the recomputed graph is built per backward call and
-    freed; double-backward routes through the eager path (CPU or fp64).
+    First-order only: the Triton backward returns plain tensors with no
+    graph, so double-backward through the CUDA path is unsupported — route
+    through the eager path (CPU or fp64) when higher-order gradients are
+    needed.
     """
 
     @staticmethod
@@ -87,11 +89,12 @@ class _FusedBlockCuda(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
-        inputs = ctx.saved_tensors
-        with torch.enable_grad():
-            leaves = [t.detach().clone().requires_grad_(True) for t in inputs]
-            y = _fused_eager(*leaves, eps=ctx.eps)
-            grads = torch.autograd.grad(y, leaves, grad_y)
+        from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
+
+        x, conv_weight, conv_bias, delta, a, b, c, d_skip, norm_weight = ctx.saved_tensors
+        grads = _triton_fused_block_bwd.launch_fused_block_backward(
+            x, conv_weight, conv_bias, delta, a, b, c, d_skip, norm_weight, grad_y, ctx.eps
+        )
         return (*grads, None)
 
 
