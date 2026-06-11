@@ -66,9 +66,11 @@ def main() -> None:
             args.model, torch_dtype=torch.bfloat16, device_map="auto"
         )
         messages = [{"role": "user", "content": prompt}]
-        input_ids = tok.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        ).to(model.device)
+        enc = tok.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
+        )
+        input_ids = enc["input_ids"].to(model.device)
+        attention_mask = enc["attention_mask"].to(model.device)
 
         t0 = time.time()
         completions: list[str] = []
@@ -79,6 +81,7 @@ def main() -> None:
             with torch.no_grad():
                 out = model.generate(
                     input_ids,
+                    attention_mask=attention_mask,
                     do_sample=True,
                     temperature=args.temperature,
                     top_p=args.top_p,
