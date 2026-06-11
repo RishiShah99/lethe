@@ -16,6 +16,7 @@ from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
     forward_chunked_scan,
+    fused_block_forward,
     mimo_backward,
 )
 from flash_mamba_rl.kernels.references import (
@@ -23,6 +24,7 @@ from flash_mamba_rl.kernels.references import (
     reference_forward_chunked_scan,
 )
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     gate_cmp_01_input_variation,
@@ -32,6 +34,7 @@ from flash_mamba_rl.verifier.contracts import (
 )
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
+    FUSED_GATE_OVERRIDES,
     MIMO_BWD_GATE_OVERRIDES,
     MIMO_BWD_GRAD_FIELDS,
     MIMO_HEADDIM,
@@ -45,6 +48,8 @@ from flash_mamba_rl.verifier.op_harness import (
     SCAN_CHUNK_SIZE,
     bwd_scan_candidate_adapter,
     bwd_scan_reference_adapter,
+    fused_candidate_adapter,
+    fused_reference_adapter,
     mimo_bwd_candidate_adapter,
     mimo_bwd_reference_adapter,
     rope_candidate_adapter,
@@ -52,6 +57,7 @@ from flash_mamba_rl.verifier.op_harness import (
     scan_candidate_adapter,
     scan_reference_adapter,
     verify_bwd_scan_op,
+    verify_fused_block_op,
     verify_mimo_bwd_op,
     verify_rope_op,
     verify_scan_op,
@@ -721,6 +727,95 @@ def _fp16_state_rope(
         h = (alpha_t.half() * h + bu.half()).half()
         ys.append((h.float() * c_rot[:, t].unsqueeze(2)).sum(-1))
     return torch.stack(ys, dim=1).to(x.dtype)
+
+
+class TestFusedBlockHarness:
+    def test_adapter_pads_and_preserves_shape(self) -> None:
+        x = torch.randn(2, 16, 8)
+        out = fused_candidate_adapter(fused_block_forward)(x)
+        assert out.shape == x.shape
+
+    def test_adapter_deterministic(self) -> None:
+        x = torch.randn(2, 16, 8)
+        adapted = fused_candidate_adapter(fused_block_forward)
+        assert torch.equal(adapted(x), adapted(x.clone()))
+
+    def test_reference_adapter_matches_direct_reference(self) -> None:
+        x = torch.randn(2, 16, 8)
+        ref_adapted = fused_reference_adapter()
+        cand_adapted = fused_candidate_adapter(reference_fused_block_forward)
+        assert torch.equal(ref_adapted(x), cand_adapted(x))
+
+    def test_adapter_follows_input_dtype(self) -> None:
+        for dtype in (torch.float16, torch.bfloat16, torch.float64):
+            out = fused_candidate_adapter(fused_block_forward)(torch.randn(1, 8, 4, dtype=dtype))
+            assert out.dtype == dtype
+
+    def test_all_gates_pass_on_cpu(self) -> None:
+        results = verify_fused_block_op(
+            fused_block_forward, resource_meta={"n_regs": 64, "shared_bytes": 1024}
+        )
+        assert len(results) == _ALL_GATES_COUNT
+        failed = {name: result.reason for name, result in results.items() if not result.passed}
+        assert not failed, f"fused-block gates failed on CPU: {failed}"
+        assert results["gate_res_02_resource_limits"].details.get("applicable") is True
+
+
+def _fp16_state_fused(
+    x: torch.Tensor,
+    conv_weight: torch.Tensor,
+    conv_bias: torch.Tensor,
+    delta: torch.Tensor,
+    a_mat: torch.Tensor,
+    b_proj: torch.Tensor,
+    c_proj: torch.Tensor,
+    d_skip: torch.Tensor,
+    norm_weight: torch.Tensor,
+    **_kwargs: object,
+) -> torch.Tensor:
+    """Cheating fused block: conv/SiLU/norm in fp32, scan state carried in fp16."""
+    import torch.nn.functional as F
+
+    xf, wf, bf, dltf, af, bpf, cpf, dsf, nwf = (
+        t.float()
+        for t in (x, conv_weight, conv_bias, delta, a_mat, b_proj, c_proj, d_skip, norm_weight)
+    )
+    d_model = xf.shape[-1]
+    conv = F.conv1d(xf.transpose(1, 2), wf, bf, groups=d_model).transpose(1, 2)
+    z = F.silu(conv)
+    delta_bar = F.softplus(dltf)
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * af.unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * bpf.unsqueeze(2)
+    h = torch.zeros(z.shape[0], d_model, af.shape[1], dtype=torch.float16)
+    ys: list[torch.Tensor] = []
+    for t in range(z.shape[1]):
+        bu = b_bar[:, t] * z[:, t].unsqueeze(-1)
+        h = (a_bar[:, t].half() * h + bu.half()).half()
+        ys.append((h.float() * cpf[:, t].unsqueeze(1)).sum(-1) + dsf * z[:, t])
+    y_scan = torch.stack(ys, dim=1)
+    rms = y_scan.pow(2).mean(dim=-1, keepdim=True).add(1e-5).sqrt()
+    return (y_scan / rms * nwf).to(x.dtype)
+
+
+class TestFusedPrc02Discrimination:
+    def test_prc02_separates_honest_from_fp16_state_cheat(self) -> None:
+        # Measured at the gate shape (1, 4096, 32), scale-normalised:
+        # honest <= 1.26e-3 of output scale vs fp16-state cheat >= 1.95e-2
+        # on CPU (3 draws, scratch/c5_prc02_floor.py). The scale-aware unit
+        # atol 5e-3 sits between with ~4x margin on both sides.
+        kwargs = dict(FUSED_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"])
+        honest = gate_prc_02_mixed_precision_accumulation(
+            fused_candidate_adapter(fused_block_forward, saturate=False),
+            fused_reference_adapter(saturate=False),
+            **kwargs,
+        )
+        assert honest.passed, f"honest fp32-accumulator fused block rejected: {honest.reason}"
+        cheat = gate_prc_02_mixed_precision_accumulation(
+            fused_candidate_adapter(_fp16_state_fused, saturate=False),
+            fused_reference_adapter(saturate=False),
+            **kwargs,
+        )
+        assert not cheat.passed, "PRC-02 lost its discriminative power on the fused block"
 
 
 class TestRopePrc02Discrimination:

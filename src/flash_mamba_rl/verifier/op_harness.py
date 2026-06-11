@@ -60,6 +60,7 @@ from flash_mamba_rl.kernels.references import (
     reference_forward_chunked_scan,
 )
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     GateResult,
@@ -940,4 +941,179 @@ def verify_rope_op(
         device=device,
         resource_meta=resource_meta,
         saturation_rerun=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fused block (C5): forward op, one gate view
+# ---------------------------------------------------------------------------
+
+# Fused-block signature: (x, conv_weight, conv_bias, delta, A, B, C, D,
+# norm_weight, *, conv_kernel_size, eps, chunk_size) -> y.
+FusedCallable = Callable[..., Tensor]
+
+FUSED_CONV_K = 4
+_FUSED_AUX_SEED = 40427
+
+
+def _fused_aux(
+    batch: int,
+    seq_len: int,
+    d_model: int,
+    n_state: int,
+    conv_k: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    saturate: bool = True,
+) -> tuple[Tensor, ...]:
+    """Deterministic (conv_w, conv_b, delta, A, B, C, D_skip, norm_w) for a [B, L, D] primary.
+
+    The scan core (delta/A/B/C/D_skip) comes from ``_aux_from_gen`` — same
+    distribution rationale, including the saturation variant (the op has a
+    softplus inside its scan). ``conv_weight`` is unit-normal scaled
+    1/sqrt(K) so the conv output stays near input scale; ``conv_bias`` is
+    half-scale, shifting the SiLU operating point across its nonlinear
+    range without drowning the signal; ``norm_weight`` is 1 + 0.25*jitter —
+    exact ones is gain-degenerate (per-channel gain would go untested).
+    Draw order under ``_FUSED_AUX_SEED`` is pinned.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_FUSED_AUX_SEED)
+    delta, a, b_proj, c_proj, d_skip = _aux_from_gen(
+        gen, batch, seq_len, d_model, n_state, saturate
+    )
+    conv_w = torch.randn(d_model, 1, conv_k, generator=gen) / math.sqrt(conv_k)
+    conv_b = 0.5 * torch.randn(d_model, generator=gen)
+    norm_w = 1.0 + 0.25 * torch.randn(d_model, generator=gen)
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype)
+
+    return (
+        cast(conv_w),
+        cast(conv_b),
+        cast(delta),
+        cast(a),
+        cast(b_proj),
+        cast(c_proj),
+        cast(d_skip),
+        cast(norm_w),
+    )
+
+
+# The dominant accumulation chain is still the scan over L (extent 512 at
+# ORD-01's gate shape); the RMSNorm adds a D-extent reduction (32) that is
+# negligible under the sqrt-N model. ORD-03 keeps the scan's L=8192
+# collapse length with 3x the scan's value tolerance as kernel reorder/FMA
+# headroom across the conv window, the scan chain and the cross-D norm
+# reduction (theory-seeded, the C4 convention; B200 must confirm).
+# PRC-02 runs at L=4096, the C3 lesson: at L=1024 the fp16-state cheat's
+# per-step re-rounding has only compounded to 7.8x the honest floor; at
+# L=4096 the corridor is 15.6x. Scale-aware (the C2 grad_A / C3 / C4
+# convention — outputs here reach |ref|_inf ~7). Floors as fractions of
+# output scale, CPU over 3 draws (scratch/c5_prc02_floor.py): honest
+# eager <= 1.26e-3 vs fp16-state cheat >= 1.95e-2 — unit atol 5e-3 sits
+# 4.0x over honest / 3.9x under cheat, pinned by a discriminative test.
+FUSED_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "gate_prc_02_mixed_precision_accumulation": {
+        "shape": (1, 4096, 32),
+        "atol": 5e-3,
+        "scale_atol_by_ref_inf": True,
+    },
+    "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
+    "gate_ord_03_noncommutative_reduction": {
+        "shape": (1, 8192, 16),
+        "atol": 3e-3,
+        "rtol": 3e-3,
+    },
+}
+
+
+def fused_candidate_adapter(
+    fused_fn: FusedCallable,
+    *,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of the fused block: ``x -> y``.
+
+    The primary is the *unpadded* input; the adapter applies the causal
+    left-padding of K-1 zeros itself, so the op's output length equals the
+    gate primary's length and non-finite injections at step t smear
+    causally into outputs t..t+K-1, identically for candidate and
+    reference.
+    """
+
+    def adapted(x: Tensor) -> Tensor:
+        batch, seq_len, d_model = x.shape
+        aux = _fused_aux(
+            batch, seq_len, d_model, n_state, conv_k, x.device, x.dtype, saturate=saturate
+        )
+        x_pad = torch.nn.functional.pad(x, (0, 0, conv_k - 1, 0))
+        return fused_fn(x_pad, *aux, conv_kernel_size=conv_k, chunk_size=chunk_size)
+
+    return adapted
+
+
+def fused_reference_adapter(
+    *,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The reference oracle behind the same single-tensor interface."""
+
+    def adapted(x: Tensor) -> Tensor:
+        batch, seq_len, d_model = x.shape
+        aux = _fused_aux(
+            batch, seq_len, d_model, n_state, conv_k, x.device, x.dtype, saturate=saturate
+        )
+        x_pad = torch.nn.functional.pad(x, (0, 0, conv_k - 1, 0))
+        if x.dtype == torch.float32:
+            return reference_fused_block_forward(
+                x_pad, *aux, conv_kernel_size=conv_k, chunk_size=chunk_size
+            )
+        # Mixed-precision contract: oracle computes in fp32 from the same
+        # (already rounded) operand bits, rounds once at the output.
+        y = reference_fused_block_forward(
+            x_pad.to(torch.float32),
+            *(t.to(torch.float32) for t in aux),
+            conv_kernel_size=conv_k,
+            chunk_size=chunk_size,
+        )
+        return y.to(x.dtype)
+
+    return adapted
+
+
+def verify_fused_block_op(
+    fused_fn: FusedCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    n_state: int = SCAN_N_STATE,
+    conv_k: int = FUSED_CONV_K,
+    chunk_size: int = SCAN_CHUNK_SIZE,
+) -> dict[str, GateResult]:
+    """Run all 12 contract gates over a fused-block-signature callable.
+
+    PRC-02 is re-run with saturation-free auxiliaries, exactly as for the
+    forward scan: the saturated delta entries probe softplus value
+    correctness (CMP-01's same-bits domain) but their amplification drowns
+    PRC-02's accumulator signal in fp16 input-rounding noise.
+    """
+    return _verify_op_views(
+        lambda saturate: fused_candidate_adapter(
+            fused_fn, n_state=n_state, conv_k=conv_k, chunk_size=chunk_size, saturate=saturate
+        ),
+        lambda saturate: fused_reference_adapter(
+            n_state=n_state, conv_k=conv_k, chunk_size=chunk_size, saturate=saturate
+        ),
+        base_overrides=FUSED_GATE_OVERRIDES,
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=True,
     )
