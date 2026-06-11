@@ -348,3 +348,71 @@ def test_shape_variants_exclude_native_and_dedupe() -> None:
 
 def test_gate_short_names_cover_audit_set() -> None:
     assert set(GATE_SHORT_NAMES) >= set(AUDIT_GATE_NAMES)
+
+
+REF_NAN_EMITTING = """
+import torch
+
+
+class Model(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return torch.log(x)
+
+
+def get_inputs():
+    return [torch.randn(8, 16)]
+
+
+def get_init_inputs():
+    return []
+"""
+
+CAND_NAN_MATCHING = """
+import torch
+
+
+class ModelNew(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return torch.log(x)
+"""
+
+CAND_UNDEEPCOPYABLE = """
+import threading
+
+import torch
+
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.linear = torch.nn.Linear(in_features, out_features)
+        self._lock = threading.Lock()
+
+    def forward(self, x):
+        return self.linear(x)
+"""
+
+
+def test_nan_matching_candidate_not_charged() -> None:
+    # log(randn) emits NaN on negatives in BOTH implementations; positional
+    # NaN agreement must not count as a value failure (C6.g-review FIX #2).
+    gates = _gates(audit_worker(REF_NAN_EMITTING, CAND_NAN_MATCHING, {"device": "cpu"}))
+    assert gates["CMP-01"] == "pass", gates
+    assert gates["CMP-03"] == "pass", gates
+    assert gates["EXC-01"] == "pass", gates
+
+
+def test_undeepcopyable_candidate_prc_gates_via_rebuild() -> None:
+    # Half-dtype variants rebuild by re-instantiation under the audit seed;
+    # a deepcopy-hostile module must not be charged on the PRC gates
+    # (C6.g-review FIX #3).
+    gates = _gates(audit_worker(REF_LINEAR, CAND_UNDEEPCOPYABLE, {"device": "cpu"}))
+    assert gates["PRC-01"] in ("pass", "na"), gates
+    assert gates["PRC-02"] in ("pass", "na"), gates
+    assert gates["CMP-01"] == "pass", gates

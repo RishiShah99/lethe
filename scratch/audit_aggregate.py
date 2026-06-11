@@ -3,13 +3,14 @@
 Denominator policy (the honest-reporting rules, mirrored in the writeup):
 - ref_broken / not_auditable rows are excluded entirely (the reference or
   task shape is at fault, not the candidate).
-- Native-shape Triton CompilationErrors are reported as a separate
-  environment-sensitivity bucket, NOT in the headline finding rate — the
-  corpus was authored against an unknown triton version and a compile
-  failure on our pinned 3.7.0 stack is toolchain drift, not proven
-  incorrectness. All other pre-gate failures (run errors at the task's own
-  shape, sandbox crashes/timeouts/OOM, load errors that are not compiles)
-  count as findings.
+- Native-shape toolchain artifacts (Triton CompilationError /
+  UnsupportedLanguageConstruct / impossible-on-any-GPU OutOfResources /
+  ptxas-blackwell PTXASError) and harness IPC corruption are reported as a
+  separate bucket, NOT in the headline finding rate — the corpus was
+  authored against an unknown triton version and a compile failure on our
+  pinned 3.7.0 stack is drift, not proven incorrectness. All other
+  pre-gate failures (run errors at the task's own shape, sandbox
+  crashes/timeouts/OOM, non-compile load errors) count as findings.
 - Rows whose gates report CUDA-context-killing errors (illegal memory
   access, device asserts) count as crash findings even where no gate
   reaches "fail".
@@ -43,11 +44,20 @@ GATE_ORDER = [
 ]
 
 
-def _is_compile_artifact(row: dict[str, Any]) -> bool:
+def _is_artifact(row: dict[str, Any]) -> bool:
+    # OutOfResources rows in this corpus request shared memory beyond ANY
+    # GPU's limit (262-417 KB) — they only ever ran under a different triton
+    # config selection; PTXASError on ptxas-blackwell is an sm_100 toolchain
+    # bug. Both are drift, same category as CompilationError. The harness's
+    # own IPC corruption (unpickle) is excluded as a harness artifact.
+    if row["status"] == "sandbox_other" and "unpickle error" in row.get("error", ""):
+        return True
     if row["status"] != "cand_native_fail":
         return False
     err = row.get("error", "")
-    return err.startswith(("CompilationError", "UnsupportedLanguageConstruct"))
+    return err.startswith(
+        ("CompilationError", "UnsupportedLanguageConstruct", "OutOfResources", "PTXASError")
+    )
 
 
 def _is_crash(row: dict[str, Any]) -> bool:
@@ -71,8 +81,8 @@ def _gate_stats(pop: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     excluded = {"ref_broken", "not_auditable"}
     audited = [r for r in rows if r["status"] not in excluded]
-    compile_artifacts = [r for r in audited if _is_compile_artifact(r)]
-    denominator = [r for r in audited if not _is_compile_artifact(r)]
+    artifacts = [r for r in audited if _is_artifact(r)]
+    denominator = [r for r in audited if not _is_artifact(r)]
     gated = [r for r in denominator if r["status"] == "gated"]
     pre_gate = [r for r in denominator if r["status"] != "gated"]
     crashes = [r for r in gated if _is_crash(r)]
@@ -100,7 +110,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_rows": len(rows),
         "status_counts": dict(Counter(r["status"] for r in rows)),
         "audited": len(audited),
-        "compile_artifacts_excluded": len(compile_artifacts),
+        "artifacts_excluded": len(artifacts),
         "denominator": len(denominator),
         "pre_gate_findings": len(pre_gate),
         "gated": len(gated),
@@ -147,7 +157,7 @@ def main() -> None:
         print(
             f"    pre-gate={s['pre_gate_findings']} gate-fail={s['any_gate_fail']} "
             f"crash={s['cuda_crash_rows']} aliasing={s['output_aliasing']} "
-            f"compile-artifacts-excluded={s['compile_artifacts_excluded']}"
+            f"artifacts-excluded={s['artifacts_excluded']}"
         )
     print()
     s = result["accepted_only"]

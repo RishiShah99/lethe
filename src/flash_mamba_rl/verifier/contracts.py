@@ -70,7 +70,9 @@ def gate_cmp_01_input_variation(
         finite = ref32[torch.isfinite(ref32)]
         scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
         atol_eff = atol * scale
-        if not torch.allclose(out_cand.float(), ref32, atol=atol_eff, rtol=rtol):
+        # equal_nan is positional: a candidate matching the reference's own
+        # NaNs passes; minting NaN where the reference is finite still fails.
+        if not torch.allclose(out_cand.float(), ref32, atol=atol_eff, rtol=rtol, equal_nan=True):
             max_err = (out_cand.float() - ref32).abs().max().item()
             failures.append(f"{label}: max_err={max_err:.3e} > atol={atol_eff:.3e} (scaled)")
 
@@ -152,7 +154,9 @@ def gate_cmp_03_shape_polymorphism(
         ref32 = out_ref.float()
         finite = ref32[torch.isfinite(ref32)]
         scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
-        if not torch.allclose(out_cand.float(), ref32, atol=atol * scale, rtol=rtol):
+        if not torch.allclose(
+            out_cand.float(), ref32, atol=atol * scale, rtol=rtol, equal_nan=True
+        ):
             max_err = (out_cand.float() - ref32).abs().max().item()
             failures.append(f"shape={shape}: max_err={max_err:.3e} > atol={atol * scale:.3e}")
 
@@ -312,7 +316,9 @@ def gate_prc_01_precision_regime(
         ref32 = out_ref.float()
         finite = ref32[torch.isfinite(ref32)]
         scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
-        if not torch.allclose(out_cand.float(), ref32, atol=atol * scale, rtol=rtol):
+        if not torch.allclose(
+            out_cand.float(), ref32, atol=atol * scale, rtol=rtol, equal_nan=True
+        ):
             max_err = (out_cand.float() - ref32).abs().max().item()
             failures.append(f"{dtype}: max_err={max_err:.3e} > atol={atol * scale:.3e}")
 
@@ -582,13 +588,21 @@ def gate_prc_02_mixed_precision_accumulation(
         finite = ref32[torch.isfinite(ref32)]
         scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
     atol_eff = atol * scale
-    diff = (out_cand.float() - ref32).abs()
+    cand32 = out_cand.float()
+    diff = (cand32 - ref32).abs()
     max_err = diff.max().item()
     details: dict[str, Any] = {"max_err": max_err, "atol": atol, "rtol": rtol}
     if scale_atol_by_ref_inf:
         details["output_scale"] = scale
         details["atol_effective"] = atol_eff
-    ok = bool((diff <= atol_eff + rtol * ref32.abs()).all().item())
+    # Matching NaNs and bitwise-equal values (covers same-sign Inf) are ok —
+    # the candidate is only charged where it diverges from the reference.
+    within = (
+        (diff <= atol_eff + rtol * ref32.abs())
+        | (torch.isnan(cand32) & torch.isnan(ref32))
+        | (cand32 == ref32)
+    )
+    ok = bool(within.all().item())
     if not ok:
         return GateResult(
             passed=False,

@@ -24,10 +24,12 @@ load-bearing part of this module):
   GPU-targeted candidate that raises on a CPU tensor is recorded as skipped
   coverage, not failure.
 - **Mixed-precision convention** (the op-harness contract, applied
-  generically): for half-precision checks the reference stays fp32 but
-  consumes parameters and auxiliary inputs round-tripped through the half
-  dtype, and rounds its output once — the candidate is charged only for its
-  own compute precision, never for consuming rounded operands.
+  generically): for half-dtype *inputs* (PRC-01) the reference stays fp32
+  but consumes parameters and auxiliary inputs round-tripped through the
+  half dtype, and rounds its output once — the candidate is charged only
+  for its own compute precision. PRC-02's fp32 reference call consumes
+  pristine fp32 operands by gate design; its 2e-2·scale budget sits >20x
+  above the fp16 parameter-rounding floor, which covers the asymmetry.
 - **Output aliasing.** A candidate returning the same buffer across calls
   defeats ORD-02's comparison (the runs alias) and breaks torch semantics
   (the previous return value is invalidated by the next call). Candidate
@@ -50,6 +52,7 @@ import math
 import os
 import sys
 import tempfile
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -145,20 +148,38 @@ class _ModuleAdapter:
         primary_idx: int,
         *,
         is_reference: bool,
+        ctor: Callable[..., nn.Module] | None = None,
+        init_args: list[Any] | None = None,
+        device: torch.device | None = None,
     ) -> None:
         self._models: dict[torch.dtype, nn.Module] = {torch.float32: model}
         self._aux: dict[torch.dtype, list[Any]] = {torch.float32: inputs}
         self._primary_idx = primary_idx
         self._is_reference = is_reference
+        self._ctor = ctor
+        self._init_args = init_args if init_args is not None else []
+        self._device = device
         self._prev_raw: Tensor | None = None
         self.aliased = False
         self.multi_output = False
 
+    def _rebuild(self) -> nn.Module:
+        # Re-instantiation under the audit seed reproduces the fp32 base's
+        # parameters exactly; deepcopy is only the fallback when no ctor is
+        # supplied (it chokes on modules holding locks/caches and those
+        # failures must not be charged to the candidate).
+        if self._ctor is None:
+            return copy.deepcopy(self._models[torch.float32])
+        torch.manual_seed(AUDIT_SEED)
+        model = self._ctor(*self._init_args)
+        if self._device is not None:
+            model = model.to(self._device)
+        return model
+
     def _variant(self, dtype: torch.dtype) -> tuple[nn.Module, list[Any]]:
         if dtype not in self._models:
-            base = self._models[torch.float32]
             base_aux = self._aux[torch.float32]
-            model = copy.deepcopy(base)
+            model = self._rebuild()
             if self._is_reference:
                 with torch.no_grad():
                     for p in model.parameters():
@@ -295,7 +316,20 @@ def audit_worker(ref_source: str, cand_source: str, config: dict[str, Any]) -> d
     the audit denominator (the reference or task shape is at fault);
     ``cand_load_fail`` and ``cand_native_fail`` are candidate findings in
     their own right; ``gated`` carries per-gate statuses.
+
+    The sandbox marshals this function's return value as pickled stdout, so
+    candidate prints (exec-time banners, autotune chatter) would corrupt the
+    channel — stdout is swapped to stderr for the body's duration.
     """
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        return _audit_worker_body(ref_source, cand_source, config)
+    finally:
+        sys.stdout = real_stdout
+
+
+def _audit_worker_body(ref_source: str, cand_source: str, config: dict[str, Any]) -> dict[str, Any]:
     device = str(config.get("device", "cpu"))
     torch.manual_seed(AUDIT_SEED)
 
@@ -325,7 +359,15 @@ def audit_worker(ref_source: str, cand_source: str, config: dict[str, Any]) -> d
         ref_model = ref_model.to(dev).eval()
         inputs = [a.to(dev) if isinstance(a, Tensor) else a for a in inputs]
         native = inputs[primary_idx]
-        ref_adapter = _ModuleAdapter(ref_model, inputs, primary_idx, is_reference=True)
+        ref_adapter = _ModuleAdapter(
+            ref_model,
+            inputs,
+            primary_idx,
+            is_reference=True,
+            ctor=ref_ns["Model"],
+            init_args=init_args,
+            device=dev,
+        )
         ref_adapter(native)
     except TypeError as exc:
         return {"status": "not_auditable", "error": f"{type(exc).__name__}: {_trunc(exc)}"}
@@ -340,7 +382,15 @@ def audit_worker(ref_source: str, cand_source: str, config: dict[str, Any]) -> d
     except Exception as exc:
         return {"status": "cand_load_fail", "error": f"{type(exc).__name__}: {_trunc(exc)}"}
 
-    cand_adapter = _ModuleAdapter(cand_model, inputs, primary_idx, is_reference=False)
+    cand_adapter = _ModuleAdapter(
+        cand_model,
+        inputs,
+        primary_idx,
+        is_reference=False,
+        ctor=cand_ns["ModelNew"],
+        init_args=init_args,
+        device=dev,
+    )
     try:
         cand_adapter(native)
     except Exception as exc:
