@@ -1016,6 +1016,13 @@ def _fused_aux(
 # 4.0x over honest / 3.9x under cheat, pinned by a discriminative test.
 # B200 (scratch/c5_b200_floor.py, 3 draws): Triton kernel <= 9.75e-4 vs
 # cheat >= 2.08e-2 — 21x corridor, 5.1x under / 4.2x over the unit atol.
+# PRC-02's discrimination here is the L-chain scan state only: a fp16
+# norm-ssq cheat measures 1.2-1.6e-3 of scale (C5.g review) — at the
+# honest floor, because the D=32 ssq chain is too short for fp16
+# re-rounding to compound above input-rounding noise; no tolerance can
+# separate it at the gate's d_model. The norm's fp32 accumulator is
+# pinned structurally instead (kernel-replica test + byte-identical
+# determinism).
 FUSED_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     "gate_prc_02_mixed_precision_accumulation": {
         "shape": (1, 4096, 32),
@@ -1027,9 +1034,13 @@ FUSED_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     # bias path dominates at O(1), where C1-C4 are multiplicative in the
     # primary). EXC-02's value branch therefore measures plain kernel
     # reorder noise at output scale (B200 kernel: 8.0e-6), not subnormal
-    # handling; the flush detection lives in the gate's zero-mask parity
-    # branch, which keeps exact semantics. 1e-4 is ~12x the measured noise
-    # and far below any real numeric divergence.
+    # handling; the zero-mask parity branch keeps exact semantics. 1e-4 is
+    # ~12x the measured noise and far below any real numeric divergence.
+    # Input-subnormal preservation is fundamentally unobservable for this
+    # op (a DAZ load changes the output by ~1e-38 under an O(1) bias term)
+    # — that is the op's structure, not the override. Internal subnormal
+    # behaviour (a_bar underflow at saturated delta, the C1 ex2.approx
+    # lesson) stays covered by EXC-01/CMP-01's saturated-delta aux.
     "gate_exc_02_subnormal_handling": {"atol": 1e-4},
     "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
     "gate_ord_03_noncommutative_reduction": {

@@ -119,6 +119,10 @@ class TestKernelReplicaParity:
     def test_window_one_degenerate(self) -> None:
         self._check(1, 32, 6, 8, 1)
 
+    def test_window_at_budget(self) -> None:
+        # K=8 is MAX_CONV_K, the widest window the launcher admits.
+        self._check(1, 32, 6, 8, 8)
+
     def test_single_output_step(self) -> None:
         self._check(1, 1, 8, 16, 4)
 

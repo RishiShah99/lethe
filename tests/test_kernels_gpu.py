@@ -708,6 +708,8 @@ class TestC5TritonParity:
             (1, 13, 36, 8, 4, 13),  # norm t-block masking (l_out < BLOCK_T)
             (2, 64, 48, 16, 1, 8),  # K=1: degenerate window
             (1, 8, 16, 8, 2, 8),  # K=2
+            (2, 32, 64, 16, 4, 8),  # D = exactly one full unmasked block
+            (1, 16, 24, 8, 8, 8),  # K = MAX_CONV_K (BLOCK_K == CONV_K == 8)
         ],
     )
     def test_fp32_matches_reference(
