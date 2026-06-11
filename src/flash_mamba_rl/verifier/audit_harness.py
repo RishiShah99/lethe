@@ -45,7 +45,11 @@ defensible calibration.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import math
+import os
+import sys
+import tempfile
 from typing import Any
 
 import torch
@@ -96,11 +100,23 @@ def _trunc(obj: Any, limit: int = 300) -> str:
 
 
 def _exec_source(source: str, required: str) -> dict[str, Any]:
-    ns: dict[str, Any] = {}
-    exec(compile(source, f"<{required}>", "exec"), ns)
+    # @triton.jit refuses functions without a real source file (inspect-based
+    # tracing), and the lazy PTX compile re-reads it during gating — so the
+    # source goes to a temp .py imported by path and the file stays alive for
+    # the worker's lifetime (one short-lived sandbox subprocess per row).
+    fd, path = tempfile.mkstemp(suffix=".py", prefix=f"audit_{required.lower()}_")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(source)
+    name = f"_audit_{required.lower()}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    ns = vars(mod)
     if required not in ns:
         raise KeyError(f"source defines no {required}")
-    return ns
+    return dict(ns)
 
 
 def _first_tensor(out: Any) -> Tensor:

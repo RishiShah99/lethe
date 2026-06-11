@@ -60,6 +60,10 @@ def main() -> None:
     n_done_already = sum(1 for r in rows if r["id"] in done)
     print(f"[shard {args.shard}] {len(rows)} rows, {n_done_already} already done", flush=True)
 
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     with open(args.out, "a", encoding="utf-8") as out:
         for i, row in enumerate(rows):
             if row["id"] in done:
