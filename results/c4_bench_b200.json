@@ -1,0 +1,367 @@
+{
+  "op": "complex_scan_rope",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.12.0+cu130",
+    "triton": "3.7.0",
+    "python": "3.12.3"
+  },
+  "runs": [
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 256,
+        "nheads": 4,
+        "headdim": 16,
+        "n_state": 32,
+        "num_angles": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 0.21855999529361725,
+          "std_ms": 0.004242426798901746,
+          "min_ms": 0.21593600511550903,
+          "max_ms": 0.23366400599479675,
+          "n_trials": 50.0
+        },
+        "reference_loop": {
+          "median_ms": 16.61516761779785,
+          "std_ms": 0.13017799732016685,
+          "min_ms": 16.61395263671875,
+          "max_ms": 16.84003257751465,
+          "n_trials": 3.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact"
+      },
+      "parity": {
+        "ours_vs_reference": {
+          "max_err": 3.1948089599609375e-05,
+          "ref_inf": 17.877788543701172,
+          "scale_rel": 1.787026931296016e-06
+        }
+      },
+      "speedups_vs_ours": {
+        "reference_loop": 76.02108334362265
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 256,
+        "nheads": 4,
+        "headdim": 16,
+        "n_state": 32,
+        "num_angles": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 0.21567999571561813,
+          "std_ms": 0.0031795213365411142,
+          "min_ms": 0.21305599808692932,
+          "max_ms": 0.22543999552726746,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 64
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 7.60536003112793,
+          "std_ms": 0.00855896638455938,
+          "min_ms": 7.586880207061768,
+          "max_ms": 7.627295970916748,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 7.172576189041138,
+          "std_ms": 0.00723323739863082,
+          "min_ms": 7.159743785858154,
+          "max_ms": 7.194528102874756,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 16
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 7.381183862686157,
+          "std_ms": 0.016544024121185944,
+          "min_ms": 7.365856170654297,
+          "max_ms": 7.488959789276123,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 16
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 6.793568134307861,
+          "std_ms": 0.005207282205911956,
+          "min_ms": 6.783679962158203,
+          "max_ms": 6.811232089996338,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 4096,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 64
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 15.193503856658936,
+          "std_ms": 0.013568133981819554,
+          "min_ms": 15.172063827514648,
+          "max_ms": 15.231807708740234,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 4096,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 14.202928066253662,
+          "std_ms": 0.010574945231752985,
+          "min_ms": 14.18393611907959,
+          "max_ms": 14.228128433227539,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 16384,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 64
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 50.479984283447266,
+          "std_ms": 0.012152310806385404,
+          "min_ms": 50.44838333129883,
+          "max_ms": 50.498111724853516,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 16384,
+        "nheads": 32,
+        "headdim": 64,
+        "n_state": 128,
+        "num_angles": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 47.47115135192871,
+          "std_ms": 0.02247997353790887,
+          "min_ms": 47.440799713134766,
+          "max_ms": 47.59312057495117,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official": "no open full-sequence rotary scan exists; official ships the decode-step rotary kernel and a standalone angle_dt cumsum, and the training path is a compiled TileLang artifact",
+        "reference_loop": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {},
+      "speedups_vs_ours": {}
+    }
+  ],
+  "num_warps_sweep": {
+    "shape": "B8xL2048xH32xP64xN128xS64",
+    "configs": {
+      "num_warps=2": {
+        "compiles": true,
+        "median_ms": 6.484272003173828,
+        "std_ms": 0.003509092577613853,
+        "min_ms": 6.477151870727539,
+        "max_ms": 6.494336128234863,
+        "n_trials": 30.0
+      },
+      "num_warps=4": {
+        "compiles": true,
+        "median_ms": 7.597343921661377,
+        "std_ms": 0.008572785321616462,
+        "min_ms": 7.583424091339111,
+        "max_ms": 7.612800121307373,
+        "n_trials": 30.0,
+        "scale_rel_vs_first_config": 1.3032213114253143e-06
+      },
+      "num_warps=8": {
+        "compiles": true,
+        "median_ms": 11.768256187438965,
+        "std_ms": 0.009252449824597305,
+        "min_ms": 11.748384475708008,
+        "max_ms": 11.789471626281738,
+        "n_trials": 30.0,
+        "scale_rel_vs_first_config": 1.3032213114253143e-06
+      }
+    },
+    "specializations": [
+      {
+        "num_warps": 4,
+        "n_regs": 48,
+        "spill_bytes": 8,
+        "shared_bytes": 64,
+        "name": "_complex_rope_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 48,
+        "spill_bytes": 8,
+        "shared_bytes": 64,
+        "name": "_complex_rope_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 254,
+        "spill_bytes": 8,
+        "shared_bytes": 1024,
+        "name": "_complex_rope_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 204,
+        "spill_bytes": 8,
+        "shared_bytes": 1024,
+        "name": "_complex_rope_kernel"
+      },
+      {
+        "num_warps": 2,
+        "n_regs": 254,
+        "spill_bytes": 8,
+        "shared_bytes": 512,
+        "name": "_complex_rope_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 253,
+        "spill_bytes": 8,
+        "shared_bytes": 1024,
+        "name": "_complex_rope_kernel"
+      }
+    ],
+    "official_mamba3_context": "the sibling SISO Triton backward fails compile at all num_warps>=4 on sm_100 (TMEM 544 > 512); no open full-sequence rotary scan exists to sweep. evidence: docs/904_reproducer.md, results/repro_904_report.json"
+  },
+  "resource_meta": {
+    "n_regs": 254,
+    "spill_bytes": 8,
+    "shared_bytes": 1024
+  }
+}
