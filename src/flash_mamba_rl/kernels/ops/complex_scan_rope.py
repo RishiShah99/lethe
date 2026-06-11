@@ -80,7 +80,8 @@ def complex_scan_rope(
     Args/semantics mirror ``reference_complex_scan_rope``: ``x`` [B, L, H, P],
     ``B``/``C`` [B, L, H, N], ``dt`` [B, L, H] positive, ``A`` [H] negative,
     ``angle_proj`` [B, L, H, S] with 2*S <= N; returns ``y`` [B, L, H, P] in
-    ``x``'s dtype.
+    ``x``'s dtype. All floating inputs share ``x``'s dtype (dispatch keys on
+    ``x`` alone, the C1-C3 family contract).
 
     Raises:
         ValueError: If 2*S exceeds N (mirrors the reference's contract).

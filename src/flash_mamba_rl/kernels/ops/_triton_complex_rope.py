@@ -93,6 +93,9 @@ def _complex_rope_kernel(  # type: ignore[no-untyped-def]
     h = tl.zeros((BLOCK_P, BLOCK_N), dtype=tl.float32)
     theta = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
+    # Running offsets are int64 via the promoted base; the per-step
+    # increments are H-scale strides (nheads * max(P, N, S)), int32-safe
+    # at any contract-legal shape.
     xhp_off = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * headdim + offs_p
     bn_off = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * n_state + offs_n
     bn_partner_off = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * n_state + partner
@@ -156,6 +159,8 @@ def launch_complex_scan_rope(
     block_n = triton.next_power_of_2(n_state)
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
+    if 2 * s_angles > n_state:
+        raise ValueError(f"rotary_dim={2 * s_angles} exceeds d_state={n_state}")
     block_p = min(64, triton.next_power_of_2(headdim))
 
     x_c = x.contiguous()
@@ -167,6 +172,11 @@ def launch_complex_scan_rope(
     y = torch.empty_like(x_c)
 
     grid = (batch, nheads, triton.cdiv(headdim, block_p))
+    # B200 nw2-vs-nw4 medians (scratch/c4_warp_probe.py): the heuristic wins
+    # or ties at B2xL256xH4 (0.211 vs 0.233), B2xL1024xH8 (tie) and
+    # B4xL2048xH16 (6.29 vs 6.37); at B8xL2048xH32 nw=2 wins (6.50 vs 7.64)
+    # — grid-size dependent, not block-size. Autotune is the v2 lever; the
+    # num_warps override below serves measured callers meanwhile.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     _complex_rope_kernel[grid](
         x_c,

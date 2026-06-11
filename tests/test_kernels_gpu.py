@@ -560,6 +560,8 @@ class TestC4TritonParity:
             (3, 121, 4, 100, 10, 4),  # odd L, non-pow2 P/N, masked N lanes
             (2, 256, 8, 64, 128, 64),  # training-like, N at MAX_BLOCK_N
             (2, 64, 2, 80, 16, 6),  # P split across blocks (BLOCK_P=64)
+            (2, 64, 2, 128, 16, 4),  # P = two full unmasked blocks
+            (2, 64, 2, 8, 16, 0),  # S=0: pure decay scan, mask_rot all-false
             (1, 1, 2, 4, 8, 2),  # L=1
         ],
     )
@@ -610,6 +612,22 @@ class TestC4TritonParity:
         want = reference_complex_scan_rope(*args)
         assert torch.equal(torch.isnan(got), torch.isnan(want))
         assert torch.equal(torch.isinf(got), torch.isinf(want))
+
+    def test_cuda_backward_matches_reference_grads(self) -> None:
+        # Exercises _ComplexRopeCuda's autograd plumbing (saved-tensor
+        # re-leafing, 6-grad arity) — the backward recomputes through the
+        # eager path, so grads must match autograd through the reference.
+        args = _rope_inputs(2, 64, 2, 16, 16, 4, seed=9)
+        ours = tuple(t.detach().clone().requires_grad_(True) for t in args)
+        ref = tuple(t.detach().clone().requires_grad_(True) for t in args)
+        torch.manual_seed(11)
+        dy = torch.randn_like(args[0])
+        complex_scan_rope(*ours).backward(dy)
+        reference_complex_scan_rope(*ref).backward(dy)
+        for got, want in zip(ours, ref, strict=True):
+            assert got.grad is not None and want.grad is not None
+            scale = want.grad.abs().max().clamp(min=1.0).item()
+            assert torch.allclose(got.grad, want.grad, atol=1e-4 * scale, rtol=1e-4)
 
 
 @pytest.mark.gpu

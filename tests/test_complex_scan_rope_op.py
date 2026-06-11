@@ -118,6 +118,21 @@ class TestComplexScanRopeCpu:
         want = reference_complex_scan_rope(x, bb, cc, dt, a, torch.zeros_like(angle))
         assert torch.equal(got, want)
 
+    def test_zero_angles_is_plain_decay_scan(self) -> None:
+        # S=0 is contract-legal (2*0 <= N): the op must degenerate to the
+        # plain decay scan, pinned here against an independent loop.
+        x, bb, cc, dt, a, angle = (t.to(torch.float64) for t in _rope_inputs(s=0, seed=7))
+        got = complex_scan_rope(x, bb, cc, dt, a, angle)
+        alpha = torch.exp(dt * a)
+        h = torch.zeros(x.shape[0], x.shape[2], x.shape[3], bb.shape[-1], dtype=torch.float64)
+        ys = []
+        for t in range(x.shape[1]):
+            bu = (dt[:, t].unsqueeze(-1) * bb[:, t]).unsqueeze(2) * x[:, t].unsqueeze(-1)
+            h = alpha[:, t, :, None, None] * h + bu
+            ys.append((h * cc[:, t].unsqueeze(2)).sum(-1))
+        want = torch.stack(ys, dim=1)
+        assert (got - want).abs().max().item() < 1e-12
+
     def test_differentiable_for_vjp(self) -> None:
         args = _rope_inputs()
         leaves = tuple(t.detach().requires_grad_(True) for t in args)

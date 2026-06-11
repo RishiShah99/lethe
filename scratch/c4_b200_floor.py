@@ -2,9 +2,9 @@
 
 CPU calibration (c4_prc02_floor.py) measured the eager op's honest floor;
 this records the Triton kernel's actual honest floor (fp16 inputs vs fp32
-reference) and both fp16-state cheats on the box, against the gate's flat
-default atol (2e-2 at the (2, 1024, 32) gate shape) and as fractions of
-output scale for comparison with the CPU corridor. Box usage:
+reference) and both fp16-state cheats on the box, as fractions of output
+scale against the gate's scale-aware unit atol (3e-3 at the (2, 1024, 32)
+gate shape). Box usage:
 fleet run "bash scratch/detach.sh uv run python scratch/c4_b200_floor.py"
 """
 
@@ -26,7 +26,7 @@ from flash_mamba_rl.verifier.op_harness import (
     _rope_aux,
 )
 
-PRC02_DEFAULT_ATOL = 2e-2
+PRC02_UNIT_ATOL = 3e-3
 
 
 def _rotated_bc(
@@ -115,13 +115,15 @@ def main() -> None:
         f"mild>= {worst['mild']:9.3e} ({sep_m:5.1f}x)  "
         f"harsh>= {worst['harsh']:9.3e} ({sep_h:5.1f}x)"
     )
-    margin_h = PRC02_DEFAULT_ATOL / max(worst_abs["hon"], 1e-12)
-    margin_m = worst_abs["mild"] / PRC02_DEFAULT_ATOL
-    margin_hh = worst_abs["harsh"] / PRC02_DEFAULT_ATOL
+    margin_h = PRC02_UNIT_ATOL / max(worst["hon"], 1e-12)
+    margin_m = worst["mild"] / PRC02_UNIT_ATOL
+    margin_hh = worst["harsh"] / PRC02_UNIT_ATOL
     print(
-        f"vs flat atol {PRC02_DEFAULT_ATOL:.0e}: kernel<= {worst_abs['hon']:9.3e} "
-        f"({margin_h:4.1f}x under)  mild>= {worst_abs['mild']:9.3e} ({margin_m:4.1f}x over)  "
-        f"harsh>= {worst_abs['harsh']:9.3e} ({margin_hh:4.1f}x over)"
+        f"vs scale-aware unit atol {PRC02_UNIT_ATOL:.0e}: "
+        f"kernel {margin_h:4.1f}x under  mild {margin_m:4.1f}x over  "
+        f"harsh {margin_hh:4.1f}x over"
+        f"  (abs for reference: kernel<= {worst_abs['hon']:9.3e} "
+        f"mild>= {worst_abs['mild']:9.3e})"
     )
 
 

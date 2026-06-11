@@ -725,10 +725,12 @@ def _fp16_state_rope(
 
 class TestRopePrc02Discrimination:
     def test_prc02_separates_honest_from_fp16_state_cheat(self) -> None:
-        # Measured at the gate shape (2, 1024, 32) over 3 draws
-        # (scratch/c4_prc02_floor.py, scale-normalised): honest <= 7.3e-4 of
-        # output scale, fp16-state cheat >= 8.6e-3 — a ~12x corridor under
-        # the gate's default tolerance.
+        # Measured at the gate shape (2, 1024, 32), scale-normalised:
+        # honest <= 7.3e-4 of output scale vs fp16-state cheat >= 8.6e-3 on
+        # CPU (3 draws, scratch/c4_prc02_floor.py); B200 Triton kernel
+        # <= 6.3e-4 vs cheat >= 1.05e-2 (scratch/c4_b200_floor.py). The
+        # scale-aware unit atol 3e-3 sits between with >= 2.9x margin on
+        # both sides on both backends.
         kwargs = dict(ROPE_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             rope_candidate_adapter(complex_scan_rope),
