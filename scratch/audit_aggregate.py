@@ -1,13 +1,23 @@
-"""Aggregate audit shard results into results/audit_drkernel.json + a summary table.
+"""Aggregate audit shard results into results/audit_drkernel.json + summary tables.
 
-Denominator policy: rows with status ref_broken / not_auditable are excluded
-(the reference or task is at fault, not the candidate). cand_load_fail,
-cand_native_fail and sandbox crashes/timeouts are candidate findings.
-Per-gate rates are computed over rows that reached gating, counting only
-pass/fail (na and error excluded from that gate's denominator).
+Denominator policy (the honest-reporting rules, mirrored in the writeup):
+- ref_broken / not_auditable rows are excluded entirely (the reference or
+  task shape is at fault, not the candidate).
+- Native-shape Triton CompilationErrors are reported as a separate
+  environment-sensitivity bucket, NOT in the headline finding rate — the
+  corpus was authored against an unknown triton version and a compile
+  failure on our pinned 3.7.0 stack is toolchain drift, not proven
+  incorrectness. All other pre-gate failures (run errors at the task's own
+  shape, sandbox crashes/timeouts/OOM, load errors that are not compiles)
+  count as findings.
+- Rows whose gates report CUDA-context-killing errors (illegal memory
+  access, device asserts) count as crash findings even where no gate
+  reaches "fail".
+- The headline rate is computed over BOTH populations: all audited rows and
+  the subset the source system's own harness accepted (final_speedup > 0).
 
 Usage:
-    uv run python scratch/audit_aggregate.py audit_out/results_shard*.jsonl \
+    uv run python scratch/audit_aggregate.py "audit_out/results_shard*.jsonl" \
         --json results/audit_drkernel.json
 """
 
@@ -33,11 +43,80 @@ GATE_ORDER = [
 ]
 
 
+def _is_compile_artifact(row: dict[str, Any]) -> bool:
+    if row["status"] != "cand_native_fail":
+        return False
+    err = row.get("error", "")
+    return err.startswith(("CompilationError", "UnsupportedLanguageConstruct"))
+
+
+def _is_crash(row: dict[str, Any]) -> bool:
+    return row["status"] == "gated" and any(
+        "CUDA error" in g.get("reason", "") for g in row.get("gates", {}).values()
+    )
+
+
+def _any_gate_fail(row: dict[str, Any]) -> bool:
+    return any(g["status"] == "fail" for g in row.get("gates", {}).values())
+
+
+def _gate_stats(pop: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    stats: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in pop:
+        for gate, info in row.get("gates", {}).items():
+            stats[gate][info["status"]] += 1
+    return {g: dict(stats[g]) for g in GATE_ORDER if g in stats}
+
+
+def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    excluded = {"ref_broken", "not_auditable"}
+    audited = [r for r in rows if r["status"] not in excluded]
+    compile_artifacts = [r for r in audited if _is_compile_artifact(r)]
+    denominator = [r for r in audited if not _is_compile_artifact(r)]
+    gated = [r for r in denominator if r["status"] == "gated"]
+    pre_gate = [r for r in denominator if r["status"] != "gated"]
+    crashes = [r for r in gated if _is_crash(r)]
+    gate_fails = [r for r in gated if _any_gate_fail(r)]
+    findings = len(pre_gate) + len({id(r) for r in crashes + gate_fails})
+
+    per_class: dict[str, dict[str, Any]] = {}
+    for op_class in sorted({r["op_class"] for r in denominator}):
+        cls = [r for r in denominator if r["op_class"] == op_class]
+        cls_gated = [r for r in cls if r["status"] == "gated"]
+        cls_pre = len(cls) - len(cls_gated)
+        cls_findings = cls_pre + len(
+            {id(r) for r in cls_gated if _any_gate_fail(r) or _is_crash(r)}
+        )
+        per_class[op_class] = {
+            "audited": len(cls),
+            "pre_gate_findings": cls_pre,
+            "gated": len(cls_gated),
+            "gate_or_crash_findings": cls_findings - cls_pre,
+            "finding_rate": round(cls_findings / max(1, len(cls)), 4),
+            "gates": _gate_stats(cls_gated),
+        }
+
+    return {
+        "total_rows": len(rows),
+        "status_counts": dict(Counter(r["status"] for r in rows)),
+        "audited": len(audited),
+        "compile_artifacts_excluded": len(compile_artifacts),
+        "denominator": len(denominator),
+        "pre_gate_findings": len(pre_gate),
+        "gated": len(gated),
+        "any_gate_fail": len(gate_fails),
+        "cuda_crash_rows": len(crashes),
+        "output_aliasing": sum(1 for r in gated if r.get("output_aliasing")),
+        "finding_rate": round(findings / max(1, len(denominator)), 4),
+        "gates_overall": _gate_stats(gated),
+        "per_class": per_class,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("inputs", nargs="+")
     ap.add_argument("--json", default="")
-    ap.add_argument("--accepted-only", action="store_true", help="final_speedup > 0 rows only")
     args = ap.parse_args()
 
     paths: list[str] = []
@@ -54,73 +133,36 @@ def main() -> None:
                 seen.add(row["id"])
                 rows.append(row)
 
-    if args.accepted_only:
-        rows = [r for r in rows if (r.get("final_speedup") or 0) > 0]
-
-    status_counts: Counter[str] = Counter(r["status"] for r in rows)
-    excluded = {"ref_broken", "not_auditable"}
-    audited = [r for r in rows if r["status"] not in excluded]
-    gated = [r for r in audited if r["status"] == "gated"]
-
-    pre_gate_findings = len(audited) - len(gated)
-    aliasing = sum(1 for r in gated if r.get("output_aliasing"))
-
-    def gate_stats(pop: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
-        stats: dict[str, Counter[str]] = defaultdict(Counter)
-        for r in pop:
-            for gate, info in r.get("gates", {}).items():
-                stats[gate][info["status"]] += 1
-        return {g: dict(stats[g]) for g in GATE_ORDER if g in stats}
-
-    def any_fail(r: dict[str, Any]) -> bool:
-        return any(info["status"] == "fail" for info in r.get("gates", {}).values())
-
-    per_class: dict[str, dict[str, Any]] = {}
-    for op_class in sorted({r["op_class"] for r in audited}):
-        cls_audited = [r for r in audited if r["op_class"] == op_class]
-        cls_gated = [r for r in cls_audited if r["status"] == "gated"]
-        n_fail = sum(1 for r in cls_gated if any_fail(r))
-        n_pre = len(cls_audited) - len(cls_gated)
-        per_class[op_class] = {
-            "audited": len(cls_audited),
-            "pre_gate_findings": n_pre,
-            "gated": len(cls_gated),
-            "any_gate_fail": n_fail,
-            "finding_rate": round((n_pre + n_fail) / max(1, len(cls_audited)), 4),
-            "gates": gate_stats(cls_gated),
-        }
-
-    n_any_fail = sum(1 for r in gated if any_fail(r))
-    summary = {
-        "total_rows": len(rows),
-        "status_counts": dict(status_counts),
-        "audited": len(audited),
-        "pre_gate_findings": pre_gate_findings,
-        "gated": len(gated),
-        "any_gate_fail": n_any_fail,
-        "overall_finding_rate": round(
-            (pre_gate_findings + n_any_fail) / max(1, len(audited)), 4
-        ),
-        "output_aliasing": aliasing,
-        "gates_overall": gate_stats(gated),
-        "per_class": per_class,
+    accepted = [r for r in rows if (r.get("final_speedup") or 0) > 0]
+    result = {
+        "corpus": "hkust-nlp/drkernel-coldstart-8k",
+        "classes": "matmul,attention,softmax,scan,norm,conv,reduction",
+        "all": summarize(rows),
+        "accepted_only": summarize(accepted),
     }
 
-    print(json.dumps({k: v for k, v in summary.items() if k != "per_class"}, indent=2))
-    print()
-    header = "| class | audited | pre-gate | any-gate-fail | finding rate |"
-    print(header)
-    print("|" + "---|" * 5)
-    for op_class, s in per_class.items():
+    for label in ("all", "accepted_only"):
+        s = result[label]
+        print(f"=== {label}: denominator={s['denominator']} finding_rate={s['finding_rate']:.1%}")
         print(
-            f"| {op_class} | {s['audited']} | {s['pre_gate_findings']} | "
-            f"{s['any_gate_fail']} | {s['finding_rate']:.1%} |"
+            f"    pre-gate={s['pre_gate_findings']} gate-fail={s['any_gate_fail']} "
+            f"crash={s['cuda_crash_rows']} aliasing={s['output_aliasing']} "
+            f"compile-artifacts-excluded={s['compile_artifacts_excluded']}"
+        )
+    print()
+    s = result["accepted_only"]
+    print("| class | audited | pre-gate | gate/crash | finding rate |")
+    print("|" + "---|" * 5)
+    for op_class, c in s["per_class"].items():
+        print(
+            f"| {op_class} | {c['audited']} | {c['pre_gate_findings']} | "
+            f"{c['gate_or_crash_findings']} | {c['finding_rate']:.1%} |"
         )
     print()
     print("| gate | pass | fail | na | error |")
     print("|" + "---|" * 5)
     for gate in GATE_ORDER:
-        g = summary["gates_overall"].get(gate, {})
+        g = s["gates_overall"].get(gate, {})
         print(
             f"| {gate} | {g.get('pass', 0)} | {g.get('fail', 0)} | "
             f"{g.get('na', 0)} | {g.get('error', 0)} |"
@@ -128,7 +170,7 @@ def main() -> None:
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
+            json.dump(result, f, indent=2)
         print(f"\nwrote {args.json}")
 
 
