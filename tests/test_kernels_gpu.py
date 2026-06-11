@@ -19,10 +19,12 @@ from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
     forward_chunked_scan,
+    fused_block_backward,
     fused_block_forward,
     mimo_backward,
     triton_bwd_scan_resource_meta,
     triton_complex_rope_resource_meta,
+    triton_fused_block_bwd_resource_meta,
     triton_fused_block_resource_meta,
     triton_mimo_bwd_resource_meta,
     triton_scan_resource_meta,
@@ -33,11 +35,16 @@ from flash_mamba_rl.kernels.references import (
     reference_fused_block_forward,
 )
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from flash_mamba_rl.kernels.references.fused_block_backward import (
+    reference_fused_block_backward,
+)
 from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads, reference_mimo_backward
 from flash_mamba_rl.verifier.op_harness import (
     BWD_GRAD_FIELDS,
+    FUSED_BWD_GRAD_FIELDS,
     verify_bwd_scan_op_all_grads,
     verify_fused_block_op,
+    verify_fused_bwd_op_all_grads,
     verify_mimo_bwd_op_all_grads,
     verify_rope_op,
     verify_scan_op,
@@ -767,8 +774,9 @@ class TestC5TritonParity:
 
     def test_cuda_backward_matches_reference_grads(self) -> None:
         # Exercises _FusedBlockCuda's autograd plumbing (saved-tensor
-        # re-leafing, 9-grad + eps arity) — the backward recomputes through
-        # the eager path, so grads must match autograd through the reference.
+        # unpacking, 9-grad + eps arity) — the backward dispatches to the
+        # C6 Triton pipeline, so grads must match autograd through the
+        # reference within kernel reorder noise.
         args = _fused_inputs(2, 32, 16, 8, seed=9)
         ours = tuple(t.detach().clone().requires_grad_(True) for t in args)
         ref = tuple(t.detach().clone().requires_grad_(True) for t in args)
@@ -815,3 +823,159 @@ class TestC5ContractGates:
             if not result.passed
         }
         assert not failed, f"fused-block gates failed on CUDA (resource_meta={meta}): {failed}"
+
+
+def _fused_bwd_inputs(
+    b: int,
+    l_out: int,
+    d: int,
+    n: int,
+    k: int = 4,
+    dtype: torch.dtype = torch.float32,
+    seed: int = 0,
+) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    args = _fused_inputs(b, l_out, d, n, k=k, dtype=dtype, seed=seed)
+    torch.manual_seed(seed + 1000)
+    dy = torch.randn(b, l_out, d, device="cuda").to(dtype)
+    return args, dy
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC6TritonParity:
+    @pytest.mark.parametrize(
+        ("b", "l_out", "d", "n", "k", "chunk"),
+        [
+            (1, 8, 4, 8, 4, 8),  # tiny
+            (2, 64, 96, 16, 4, 8),  # non-pow2 D split across BLOCK_D=64
+            (3, 120, 100, 10, 3, 8),  # non-pow2 D/N, odd conv window, chunk_k=8 tail
+            (2, 256, 512, 32, 4, 8),  # larger state, multi D-block
+            (2, 120, 300, 16, 4, 8),  # norm D-chunk tail (BLOCK_D_NORM=256)
+            (1, 13, 36, 8, 4, 13),  # norm t-block masking + chunk_k=1 (13 odd)
+            (2, 64, 48, 16, 1, 8),  # K=1: degenerate window
+            (1, 8, 16, 8, 2, 8),  # K=2
+            (2, 32, 64, 16, 4, 8),  # D = exactly one full unmasked block
+            (1, 16, 24, 8, 8, 8),  # K = MAX_CONV_K (BLOCK_K == CONV_K == 8)
+        ],
+    )
+    def test_fp32_grads_match_reference(
+        self, b: int, l_out: int, d: int, n: int, k: int, chunk: int
+    ) -> None:
+        args, dy = _fused_bwd_inputs(b, l_out, d, n, k=k)
+        ours = fused_block_backward(*args, dy, conv_kernel_size=k, chunk_size=chunk)
+        ref = reference_fused_block_backward(*args, dy, conv_kernel_size=k, chunk_size=chunk)
+        for field, got, want in zip(FUSED_BWD_GRAD_FIELDS, ours, ref, strict=True):
+            max_err = (got.float() - want.float()).abs().max().item()
+            scale = want.float().abs().max().clamp(min=1.0).item()
+            assert torch.allclose(got, want, atol=1e-4 * scale, rtol=1e-4), (
+                f"{field}: max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
+            )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_grads_match_fp32_oracle(self, dtype: torch.dtype) -> None:
+        args, dy = _fused_bwd_inputs(2, 128, 64, 16, dtype=dtype)
+        ours = fused_block_backward(*args, dy, chunk_size=8)
+        ref = reference_fused_block_backward(
+            *(t.to(torch.float32) for t in args), dy.to(torch.float32), chunk_size=8
+        )
+        atol = 1e-2 if dtype == torch.float16 else 5e-2
+        for field, got, want in zip(FUSED_BWD_GRAD_FIELDS, ours, ref, strict=True):
+            assert got.dtype == dtype, field
+            scale = want.abs().max().clamp(min=1.0).item()
+            assert torch.allclose(got.float(), want, atol=atol * scale, rtol=atol), field
+
+    def test_deterministic_across_runs(self) -> None:
+        args, dy = _fused_bwd_inputs(2, 128, 64, 16)
+        first = fused_block_backward(*args, dy, chunk_size=8)
+        for _ in range(4):
+            again = fused_block_backward(*args, dy, chunk_size=8)
+            for field, a_, b_ in zip(FUSED_BWD_GRAD_FIELDS, first, again, strict=True):
+                assert torch.equal(a_, b_), field
+
+    def test_noncontiguous_inputs_match_contiguous(self) -> None:
+        args, dy = _fused_bwd_inputs(2, 64, 32, 16)
+        base = fused_block_backward(*args, dy, chunk_size=8)
+        x = args[0].transpose(1, 2).contiguous().transpose(1, 2)
+        dy_nc = dy.transpose(1, 2).contiguous().transpose(1, 2)
+        assert not (x.is_contiguous() or dy_nc.is_contiguous())
+        nc = fused_block_backward(x, *args[1:], dy_nc, chunk_size=8)
+        for field, got, want in zip(FUSED_BWD_GRAD_FIELDS, nc, base, strict=True):
+            assert torch.equal(got, want), field
+
+    def test_nonfinite_dy_masks_match_oracle(self) -> None:
+        # Non-finites in dy flow through the norm backward (whole-D rows via
+        # the sdw reduction) and ride the reverse carry to every earlier
+        # step's gradients — masks must match autograd's grouping exactly.
+        args, dy = _fused_bwd_inputs(2, 64, 16, 8, seed=5)
+        dy[0, 9, 1] = float("inf")
+        dy[1, 33, 2] = float("nan")
+        dy[1, 50, 3] = float("-inf")
+        ours = fused_block_backward(*args, dy, chunk_size=8)
+        ref = reference_fused_block_backward(*args, dy, chunk_size=8)
+        for field, got, want in zip(FUSED_BWD_GRAD_FIELDS, ours, ref, strict=True):
+            assert torch.equal(got.isnan(), want.isnan()), field
+            assert torch.equal(got.isinf(), want.isinf()), field
+
+    def test_forward_op_autograd_uses_this_kernel(self) -> None:
+        # The C5 forward op's CUDA autograd backward now dispatches to the
+        # C6 pipeline: differentiating it must reproduce the public backward
+        # op bit-for-bit (same launcher, same inputs, deterministic kernels).
+        args, dy = _fused_bwd_inputs(2, 64, 32, 16, seed=5)
+        direct = fused_block_backward(*args, dy, chunk_size=8)
+        leaves = tuple(t.detach().requires_grad_(True) for t in args)
+        y = fused_block_forward(*leaves, chunk_size=8)
+        via_autograd = torch.autograd.grad(y, leaves, dy)
+        for field, got, want in zip(FUSED_BWD_GRAD_FIELDS, direct, via_autograd, strict=True):
+            assert torch.equal(got, want), field
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC6NumWarpsCompile:
+    def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
+        # Same #904 framing as C1-C5: no tl.dot in any of the four kernels,
+        # so the TMEM-promotion pass never engages on sm_100 — where the
+        # official Mamba-3 Triton *backward* is exactly the op that dies.
+        from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
+
+        args, dy = _fused_bwd_inputs(2, 256, 128, 32)
+        base = _triton_fused_block_bwd.launch_fused_block_backward(*args, dy, 1e-5, num_warps=2)
+        for warps in (4, 8):
+            got = _triton_fused_block_bwd.launch_fused_block_backward(
+                *args, dy, 1e-5, num_warps=warps
+            )
+            for field, g, want in zip(FUSED_BWD_GRAD_FIELDS, got, base, strict=True):
+                scale = want.abs().max().clamp(min=1.0).item()
+                assert torch.allclose(g, want, atol=1e-4 * scale, rtol=1e-4), (warps, field)
+        meta = triton_fused_block_bwd_resource_meta()
+        assert meta is not None
+        assert 0 < meta["n_regs"] <= 255
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC6ContractGates:
+    def test_all_gates_all_grads_pass_on_cuda(self) -> None:
+        # C6's exit criterion: 12/12 gates on every gradient view, with the
+        # four compiled kernels' resource envelope feeding RES-02.
+        args, dy = _fused_bwd_inputs(1, 8, 4, 8)
+        fused_block_backward(*args, dy, chunk_size=8)  # warm the cache
+        meta = triton_fused_block_bwd_resource_meta()
+
+        all_results = verify_fused_bwd_op_all_grads(
+            fused_block_backward, device="cuda", resource_meta=meta
+        )
+        failed = {
+            f"{view}.{name}": (result.reason, result.details)
+            for view, results in all_results.items()
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"gates failed on CUDA (resource_meta={meta}): {failed}"
+
+    def test_resource_meta_extracted(self) -> None:
+        args, dy = _fused_bwd_inputs(1, 8, 4, 8)
+        fused_block_backward(*args, dy, chunk_size=8)
+        meta = triton_fused_block_bwd_resource_meta()
+        assert meta is not None, "no resource metadata from the compiled kernel cache"
+        assert 0 < meta["n_regs"] <= 255
