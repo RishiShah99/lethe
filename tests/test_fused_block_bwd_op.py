@@ -91,6 +91,17 @@ class TestFusedBlockBackwardCpu:
                 assert got.dtype == dtype, field
                 assert torch.equal(got, want.to(dtype)), field
 
+    def test_inputs_unmutated(self) -> None:
+        # The eager path detaches without cloning, so its safety rests on
+        # _fused_eager staying mutation-free — pinned here, since the
+        # bitwise test feeds both paths the same tensors and would hide a
+        # shared mutation.
+        args = _fused_inputs(2, 16, 8, 8, seed=3)
+        snapshot = tuple(t.clone() for t in args)
+        fused_block_backward(*args, chunk_size=8)
+        for orig, snap in zip(args, snapshot, strict=True):
+            assert torch.equal(orig, snap)
+
     def test_consistent_with_public_forward_autograd(self) -> None:
         # The op pair must be self-consistent: differentiating the public
         # forward must give the same gradients the public backward returns.

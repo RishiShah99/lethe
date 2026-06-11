@@ -969,3 +969,10 @@ class TestFusedBwdPrc02Discrimination:
         # honest / 1.8x under cheat; this pin is the flake canary — if it
         # ever goes, re-measure on B200 before touching the atol.
         self._check_view("grad_conv_bias")
+
+    def test_grad_d_view_thinnest_b200_margin(self) -> None:
+        # CPU: honest <= 1.3e-3 vs cheat >= 6.4e-3 (5.0x), unit atol 3e-3;
+        # on B200 this view carries the thinnest cheat-side margin of all
+        # nine (1.8x over, scratch/c6_b200_floor.py) — same canary rule as
+        # conv_bias: re-measure on B200 before touching the atol.
+        self._check_view("grad_D")

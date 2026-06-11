@@ -856,6 +856,7 @@ class TestC6TritonParity:
             (1, 8, 16, 8, 2, 8),  # K=2
             (2, 32, 64, 16, 4, 8),  # D = exactly one full unmasked block
             (1, 16, 24, 8, 8, 8),  # K = MAX_CONV_K (BLOCK_K == CONV_K == 8)
+            (1, 16, 32, 128, 4, 8),  # N at the single-block ceiling (MAX_BLOCK_N)
         ],
     )
     def test_fp32_grads_match_reference(
