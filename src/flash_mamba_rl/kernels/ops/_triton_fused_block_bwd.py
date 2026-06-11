@@ -50,11 +50,19 @@ EXC-01 lesson):
   ``dys = (dy*w)/r + (2*ys) * ((-sdw/r^2) / (2r) / D)`` with
   ``sdw = sum_d (dy*w)*ys``. Factoring 1/r^2 out of the sdw sum is
   mask-equivalent in every reachable case (r >= sqrt(eps) > 0 for finite
-  ys; an Inf in ys makes both forms NaN through Inf/Inf) — pinned by the
-  replica's non-finite tests.
+  ys; an Inf in ys makes both forms NaN through Inf/Inf; the one excluded
+  window is all-finite overflow of the undivided sdw sum, unreachable at
+  the gate contract's randn scales) — pinned by the replica's non-finite
+  tests.
 - SiLU': ``(dz * sig) * (1 + conv * (1 - sig))`` — aten silu_backward's
   grouping.
 - The scan adjoint is C2's, with z (the SiLU output) in place of u.
+- The sweep's in-chunk recompute keeps C2's ``b_bar = dbar*B`` grouping
+  (the dataflow the gradient expressions consume); stage 1 keeps C5's
+  ``(dbar*z)*B`` so the staged ``ys`` reproduces the forward bit-for-bit.
+  The two trajectories diverge at ULP level — regrouping a product cannot
+  change NaN/Inf class, and the divergence sits inside the calibrated
+  tolerances.
 """
 
 from __future__ import annotations
@@ -135,7 +143,9 @@ def _fwd_stage_kernel(  # type: ignore[no-untyped-def]
     bln_off = pid_b.to(tl.int64) * l_out * n_state + offs_n
 
     for c in range(n_chunks):
-        tl.store(ckpt_prog + c * BLOCK_D * BLOCK_N, h)
+        # c is int32: promote before the tile-stride product (it crosses
+        # 2^31 once the per-program ckpt region exceeds 8 GiB).
+        tl.store(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N, h)  # type: ignore[attr-defined]
         for _j in range(CHUNK_K):
             xw = tl.load(
                 x_ptr + x_off[:, None] + offs_k[None, :] * d_model, mask=mask_dk, other=0.0
@@ -296,7 +306,7 @@ def _bwd_sweep_kernel(  # type: ignore[no-untyped-def]
         c = n_chunks - 1 - ci
         t0 = c * CHUNK_K
 
-        h_prev = tl.load(ckpt_prog + c * BLOCK_D * BLOCK_N)
+        h_prev = tl.load(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N)
         x_base = (pid_b.to(tl.int64) * seq_in + t0) * d_model + offs_d
         od_base = (pid_b.to(tl.int64) * l_out + t0) * d_model + offs_d
         bln_base = (pid_b.to(tl.int64) * l_out + t0) * n_state + offs_n
@@ -451,6 +461,13 @@ def launch_fused_block_backward(
     its input's dtype. ``num_warps`` overrides the two serial-sweep
     kernels' heuristic (bench hook); the norm-backward and gather kernels
     keep their own.
+
+    Checkpoint scratch is ``4 * B * ceil(D/64) * n_chunks * BLOCK_D *
+    BLOCK_N`` bytes with ``n_chunks = l_out / chunk_k(l_out)``; chunk_k is
+    the largest power-of-2 divisor of l_out capped at 16, so an odd l_out
+    collapses it to 1 and inflates the buffer 16x vs the even-L envelope
+    (the public op's chunk_size divisibility check keeps default callers
+    out of that regime).
     """
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]

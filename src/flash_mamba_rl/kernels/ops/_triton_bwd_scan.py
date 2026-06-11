@@ -142,7 +142,9 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
     uld_off = pid_b.to(tl.int64) * seq_len * d_model + offs_d
     bln_off = pid_b.to(tl.int64) * seq_len * n_state + offs_n
     for c in range(n_chunks):
-        tl.store(ckpt_prog + c * BLOCK_D * BLOCK_N, h)
+        # c is int32: promote before the tile-stride product (it crosses
+        # 2^31 once the per-program ckpt region exceeds 8 GiB).
+        tl.store(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N, h)  # type: ignore[attr-defined]
         for _j in range(CHUNK_K):
             u_t = tl.load(u_ptr + uld_off, mask=mask_d, other=0.0).to(tl.float32)
             dlt = tl.load(delta_ptr + uld_off, mask=mask_d, other=0.0).to(tl.float32)
@@ -174,7 +176,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
         # state h_{t-1} per step: the reverse sweep then reads h_{t-1}
         # uniformly from the scratch (the j=0 entry is the checkpoint
         # itself) and walks h_t backward in a register.
-        h_prev = tl.load(ckpt_prog + c * BLOCK_D * BLOCK_N)
+        h_prev = tl.load(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N)
         # Fold t0 into the int64 batch term before multiplying by the row
         # stride: a bare int32 t0 * d_model overflows past L*D ~ 2^31 (the
         # C1 invariant; j * d_model stays tiny, j < CHUNK_K).

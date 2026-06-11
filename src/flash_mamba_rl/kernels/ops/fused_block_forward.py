@@ -60,9 +60,11 @@ class _FusedBlockCuda(torch.autograd.Function):
     """Triton forward; backward is the hand-written Triton pipeline (C6).
 
     First-order only: the Triton backward returns plain tensors with no
-    graph, so double-backward through the CUDA path is unsupported — route
-    through the eager path (CPU or fp64) when higher-order gradients are
-    needed.
+    graph, so double-backward through the CUDA path is silently absent
+    rather than an error — route through the eager path (CPU or fp64)
+    when higher-order gradients are needed. All nine gradients are
+    computed unconditionally; ``needs_input_grad`` is not consulted
+    (autograd drops the extras — C2's convention).
     """
 
     @staticmethod
