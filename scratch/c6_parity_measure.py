@@ -18,7 +18,11 @@ from flash_mamba_rl.kernels.references.fused_block_backward import (
     reference_fused_block_backward,
 )
 
-# (batch, l_out, d_model, n_state, conv_k, chunk_size)
+# (batch, l_out, d_model, n_state, conv_k, chunk_size). The full training
+# shape (8, 2048, 4096, 128) is reference-infeasible here — autograd
+# through the chunked reference materialises ~34 GB per [B, L, D, N]
+# intermediate and OOMs a 180 GB B200; the training-shape cross-check is
+# the bench's parity vs the composed-autograd path instead.
 SHAPES = [
     (1, 8, 4, 8, 4, 8),
     (2, 64, 96, 16, 4, 8),
@@ -27,7 +31,7 @@ SHAPES = [
     (2, 120, 300, 16, 4, 8),
     (1, 13, 36, 8, 4, 13),
     (2, 64, 48, 16, 1, 8),
-    (8, 2048, 4096, 128, 4, 64),  # training shape
+    (2, 2048, 2048, 64, 4, 64),  # largest reference-feasible long shape
 ]
 
 

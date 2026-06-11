@@ -1,0 +1,1122 @@
+{
+  "op": "fused_block_backward",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.12.0+cu130",
+    "triton": "3.7.0",
+    "python": "3.12.3",
+    "mamba_ssm": true,
+    "causal_conv1d": true
+  },
+  "runs": [
+    {
+      "shape": {
+        "batch": 2,
+        "l_out": 256,
+        "d_model": 256,
+        "n_state": 16,
+        "conv_k": 4
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 0.8416000008583069,
+          "std_ms": 0.003554777534485001,
+          "min_ms": 0.8371520042419434,
+          "max_ms": 0.8602240085601807,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 0.706959992647171,
+          "std_ms": 0.00903865294509618,
+          "min_ms": 0.6890239715576172,
+          "max_ms": 0.7324159741401672,
+          "n_trials": 50.0
+        },
+        "official_composed_bwd": {
+          "median_ms": 0.4214880019426346,
+          "std_ms": 0.015442033314943893,
+          "min_ms": 0.3882240056991577,
+          "max_ms": 0.4540480077266693,
+          "n_trials": 50.0
+        },
+        "eager_vjp": {
+          "median_ms": 52.83523178100586,
+          "std_ms": 0.6645421672368922,
+          "min_ms": 52.658912658691406,
+          "max_ms": 54.258399963378906,
+          "n_trials": 5.0
+        },
+        "reference_loop_bwd": {
+          "median_ms": 81.7435531616211,
+          "std_ms": 0.43792859539129825,
+          "min_ms": 80.98925018310547,
+          "max_ms": 81.75190734863281,
+          "n_trials": 3.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 6.198883056640625e-06,
+            "ref_inf": 25.645103454589844,
+            "scale_rel": 2.417179976527323e-07
+          },
+          "grad_conv_weight": {
+            "max_err": 4.57763671875e-05,
+            "ref_inf": 128.2677001953125,
+            "scale_rel": 3.5688148394176075e-07
+          },
+          "grad_conv_bias": {
+            "max_err": 2.288818359375e-05,
+            "ref_inf": 107.67311096191406,
+            "scale_rel": 2.125710252938263e-07
+          },
+          "grad_delta": {
+            "max_err": 7.62939453125e-06,
+            "ref_inf": 20.87401008605957,
+            "scale_rel": 3.654973098027384e-07
+          },
+          "grad_A": {
+            "max_err": 0.00244140625,
+            "ref_inf": 6649.505859375,
+            "scale_rel": 3.6715604161140966e-07
+          },
+          "grad_B": {
+            "max_err": 1.1444091796875e-05,
+            "ref_inf": 36.92374801635742,
+            "scale_rel": 3.0993851956213125e-07
+          },
+          "grad_C": {
+            "max_err": 2.6702880859375e-05,
+            "ref_inf": 58.717071533203125,
+            "scale_rel": 4.547720136940949e-07
+          },
+          "grad_D": {
+            "max_err": 3.337860107421875e-06,
+            "ref_inf": 17.785308837890625,
+            "scale_rel": 1.8767512770488118e-07
+          },
+          "grad_norm_weight": {
+            "max_err": 3.4332275390625e-05,
+            "ref_inf": 115.01372528076172,
+            "scale_rel": 2.9850589837705e-07
+          }
+        },
+        "ours_vs_official_composed": {
+          "grad_x": {
+            "max_err": 8.392333984375e-05,
+            "ref_inf": 25.645105361938477,
+            "scale_rel": 3.2724895709847983e-06,
+            "note": "core rows only (implicit-pad grad semantics)"
+          },
+          "grad_conv_weight": {
+            "max_err": 0.0002288818359375,
+            "ref_inf": 128.2674560546875,
+            "scale_rel": 1.7844108160990972e-06
+          },
+          "grad_conv_bias": {
+            "max_err": 0.00017547607421875,
+            "ref_inf": 107.6731185913086,
+            "scale_rel": 1.6297110784428832e-06
+          },
+          "grad_delta": {
+            "max_err": 4.291534423828125e-05,
+            "ref_inf": 20.874004364013672,
+            "scale_rel": 2.055922931216129e-06
+          },
+          "grad_A": {
+            "max_err": 0.0205078125,
+            "ref_inf": 6649.48779296875,
+            "scale_rel": 3.0841191289478284e-06
+          },
+          "grad_B": {
+            "max_err": 8.58306884765625e-05,
+            "ref_inf": 36.92375564575195,
+            "scale_rel": 2.324538416406654e-06
+          },
+          "grad_C": {
+            "max_err": 3.314018249511719e-05,
+            "ref_inf": 58.71707534790039,
+            "scale_rel": 5.644045160417244e-07
+          },
+          "grad_D": {
+            "max_err": 7.62939453125e-06,
+            "ref_inf": 17.78531265258789,
+            "scale_rel": 4.289716284599511e-07
+          },
+          "grad_norm_weight": {
+            "max_err": 0.0001678466796875,
+            "ref_inf": 115.01365661621094,
+            "scale_rel": 1.4593630411003067e-06
+          }
+        },
+        "ours_vs_reference": {
+          "grad_x": {
+            "max_err": 5.7220458984375e-06,
+            "ref_inf": 25.645103454589844,
+            "scale_rel": 2.2312430552559906e-07
+          },
+          "grad_conv_weight": {
+            "max_err": 5.7220458984375e-05,
+            "ref_inf": 128.26771545410156,
+            "scale_rel": 4.461018018587099e-07
+          },
+          "grad_conv_bias": {
+            "max_err": 2.956390380859375e-05,
+            "ref_inf": 107.6731185913086,
+            "scale_rel": 2.7457088821592055e-07
+          },
+          "grad_delta": {
+            "max_err": 6.67572021484375e-06,
+            "ref_inf": 20.874013900756836,
+            "scale_rel": 3.198100876325327e-07
+          },
+          "grad_A": {
+            "max_err": 0.002685546875,
+            "ref_inf": 6649.50390625,
+            "scale_rel": 4.038717643997173e-07
+          },
+          "grad_B": {
+            "max_err": 9.5367431640625e-06,
+            "ref_inf": 36.92375183105469,
+            "scale_rel": 2.5828207295125496e-07
+          },
+          "grad_C": {
+            "max_err": 2.288818359375e-05,
+            "ref_inf": 58.71707534790039,
+            "scale_rel": 3.898045578417665e-07
+          },
+          "grad_D": {
+            "max_err": 9.5367431640625e-06,
+            "ref_inf": 17.78529930114746,
+            "scale_rel": 5.362149381116805e-07
+          },
+          "grad_norm_weight": {
+            "max_err": 3.0517578125e-05,
+            "ref_inf": 115.01371765136719,
+            "scale_rel": 2.653385939362967e-07
+          }
+        }
+      },
+      "causal_conv1d_installed": true,
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 0.8400190018134231,
+        "official_composed_bwd": 0.5008174922918007,
+        "eager_vjp": 62.77950537918462,
+        "reference_loop_bwd": 97.1287465283446
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "l_out": 256,
+        "d_model": 256,
+        "n_state": 16,
+        "conv_k": 4
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 0.8945919871330261,
+          "std_ms": 0.0030306818079230097,
+          "min_ms": 0.8908479809761047,
+          "max_ms": 0.9060800075531006,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 0.9015839993953705,
+          "std_ms": 0.009961876999199006,
+          "min_ms": 0.8895040154457092,
+          "max_ms": 0.9401280283927917,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "official_composed_bwd": "official scan anchored at fp32 only",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 0.125,
+            "ref_inf": 25.625,
+            "scale_rel": 0.004878048780487805
+          },
+          "grad_conv_weight": {
+            "max_err": 0.5,
+            "ref_inf": 128.0,
+            "scale_rel": 0.00390625
+          },
+          "grad_conv_bias": {
+            "max_err": 0.375,
+            "ref_inf": 108.0,
+            "scale_rel": 0.003472222222222222
+          },
+          "grad_delta": {
+            "max_err": 0.125,
+            "ref_inf": 20.875,
+            "scale_rel": 0.005988023952095809
+          },
+          "grad_A": {
+            "max_err": 32.0,
+            "ref_inf": 6688.0,
+            "scale_rel": 0.004784688995215311
+          },
+          "grad_B": {
+            "max_err": 0.25,
+            "ref_inf": 37.25,
+            "scale_rel": 0.006711409395973154
+          },
+          "grad_C": {
+            "max_err": 0.25,
+            "ref_inf": 59.0,
+            "scale_rel": 0.00423728813559322
+          },
+          "grad_D": {
+            "max_err": 0.0625,
+            "ref_inf": 17.75,
+            "scale_rel": 0.0035211267605633804
+          },
+          "grad_norm_weight": {
+            "max_err": 0.75,
+            "ref_inf": 115.0,
+            "scale_rel": 0.006521739130434782
+          }
+        }
+      },
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 1.0078158673036546
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "l_out": 2048,
+        "d_model": 4096,
+        "n_state": 128,
+        "conv_k": 4
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 108.75918579101562,
+          "std_ms": 0.06100751577725711,
+          "min_ms": 108.60470581054688,
+          "max_ms": 108.94032287597656,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 109.75564956665039,
+          "std_ms": 0.24744638293135726,
+          "min_ms": 108.84406280517578,
+          "max_ms": 110.1773452758789,
+          "n_trials": 50.0
+        },
+        "official_composed_bwd": {
+          "median_ms": 39.74763107299805,
+          "std_ms": 0.053039415032600144,
+          "min_ms": 39.607425689697266,
+          "max_ms": 39.810462951660156,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 1.9073486328125e-05,
+            "ref_inf": 59.34992218017578,
+            "scale_rel": 3.2137340079775164e-07
+          },
+          "grad_conv_weight": {
+            "max_err": 0.00080108642578125,
+            "ref_inf": 1172.61474609375,
+            "scale_rel": 6.831625036695586e-07
+          },
+          "grad_conv_bias": {
+            "max_err": 0.0008544921875,
+            "ref_inf": 585.4629516601562,
+            "scale_rel": 1.4595153887653803e-06
+          },
+          "grad_delta": {
+            "max_err": 1.9073486328125e-05,
+            "ref_inf": 51.7336311340332,
+            "scale_rel": 3.6868640205650326e-07
+          },
+          "grad_A": {
+            "max_err": 0.1875,
+            "ref_inf": 301077.40625,
+            "scale_rel": 6.227634359394911e-07
+          },
+          "grad_B": {
+            "max_err": 0.0001220703125,
+            "ref_inf": 88.7808609008789,
+            "scale_rel": 1.3749620274158834e-06
+          },
+          "grad_C": {
+            "max_err": 0.0001220703125,
+            "ref_inf": 51.51411056518555,
+            "scale_rel": 2.3696480665337936e-06
+          },
+          "grad_D": {
+            "max_err": 1.239776611328125e-05,
+            "ref_inf": 38.35246658325195,
+            "scale_rel": 3.232586380427276e-07
+          },
+          "grad_norm_weight": {
+            "max_err": 0.0003204345703125,
+            "ref_inf": 742.8954467773438,
+            "scale_rel": 4.313319885086586e-07
+          }
+        },
+        "ours_vs_official_composed": {
+          "grad_x": {
+            "max_err": 0.00110626220703125,
+            "ref_inf": 59.349647521972656,
+            "scale_rel": 1.863974350684535e-05,
+            "note": "core rows only (implicit-pad grad semantics)"
+          },
+          "grad_conv_weight": {
+            "max_err": 0.008270263671875,
+            "ref_inf": 1172.6072998046875,
+            "scale_rel": 7.05288434862423e-06
+          },
+          "grad_conv_bias": {
+            "max_err": 0.00762939453125,
+            "ref_inf": 585.4625244140625,
+            "scale_rel": 1.303139690945306e-05
+          },
+          "grad_delta": {
+            "max_err": 0.001171112060546875,
+            "ref_inf": 51.73299026489258,
+            "scale_rel": 2.2637625518075332e-05
+          },
+          "grad_A": {
+            "max_err": 5.859375,
+            "ref_inf": 301074.25,
+            "scale_rel": 1.9461561392247924e-05
+          },
+          "grad_B": {
+            "max_err": 0.0012454986572265625,
+            "ref_inf": 88.78001403808594,
+            "scale_rel": 1.4029043256202384e-05
+          },
+          "grad_C": {
+            "max_err": 0.00070953369140625,
+            "ref_inf": 51.51413345336914,
+            "scale_rel": 1.3773573267004938e-05
+          },
+          "grad_D": {
+            "max_err": 0.0001049041748046875,
+            "ref_inf": 38.352542877197266,
+            "scale_rel": 2.7352599576144117e-06
+          },
+          "grad_norm_weight": {
+            "max_err": 0.0068359375,
+            "ref_inf": 742.8935546875,
+            "scale_rel": 9.201772524295966e-06
+          }
+        }
+      },
+      "causal_conv1d_installed": true,
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 1.0091621113967284,
+        "official_composed_bwd": 0.3654645884291046
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "l_out": 2048,
+        "d_model": 4096,
+        "n_state": 128,
+        "conv_k": 4
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 112.21452713012695,
+          "std_ms": 0.1085089773894365,
+          "min_ms": 112.02674865722656,
+          "max_ms": 112.52019500732422,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 90.52659225463867,
+          "std_ms": 0.2222074498796468,
+          "min_ms": 90.26998138427734,
+          "max_ms": 91.10963439941406,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "official_composed_bwd": "official scan anchored at fp32 only",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 0.25,
+            "ref_inf": 59.0,
+            "scale_rel": 0.00423728813559322
+          },
+          "grad_conv_weight": {
+            "max_err": 6.0,
+            "ref_inf": 1176.0,
+            "scale_rel": 0.00510204081632653
+          },
+          "grad_conv_bias": {
+            "max_err": 4.0,
+            "ref_inf": 588.0,
+            "scale_rel": 0.006802721088435374
+          },
+          "grad_delta": {
+            "max_err": 0.375,
+            "ref_inf": 52.0,
+            "scale_rel": 0.007211538461538462
+          },
+          "grad_A": {
+            "max_err": 2048.0,
+            "ref_inf": 301056.0,
+            "scale_rel": 0.006802721088435374
+          },
+          "grad_B": {
+            "max_err": 0.625,
+            "ref_inf": 89.0,
+            "scale_rel": 0.007022471910112359
+          },
+          "grad_C": {
+            "max_err": 0.625,
+            "ref_inf": 52.25,
+            "scale_rel": 0.011961722488038277
+          },
+          "grad_D": {
+            "max_err": 0.13671875,
+            "ref_inf": 38.25,
+            "scale_rel": 0.003574346405228758
+          },
+          "grad_norm_weight": {
+            "max_err": 4.0,
+            "ref_inf": 744.0,
+            "scale_rel": 0.005376344086021506
+          }
+        }
+      },
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 0.8067279216857691
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "l_out": 4096,
+        "d_model": 4096,
+        "n_state": 128,
+        "conv_k": 4
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 217.35894775390625,
+          "std_ms": 0.1378243262623498,
+          "min_ms": 217.1604766845703,
+          "max_ms": 217.98265075683594,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 217.73799896240234,
+          "std_ms": 0.3238179110988914,
+          "min_ms": 217.0061492919922,
+          "max_ms": 218.4819793701172,
+          "n_trials": 50.0
+        },
+        "official_composed_bwd": {
+          "median_ms": 76.8763542175293,
+          "std_ms": 0.06654515979637232,
+          "min_ms": 76.7107162475586,
+          "max_ms": 77.01599884033203,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 3.24249267578125e-05,
+            "ref_inf": 75.85609436035156,
+            "scale_rel": 4.2745315364879043e-07
+          },
+          "grad_conv_weight": {
+            "max_err": 0.0015716552734375,
+            "ref_inf": 1538.31787109375,
+            "scale_rel": 1.0216713352748395e-06
+          },
+          "grad_conv_bias": {
+            "max_err": 0.00115966796875,
+            "ref_inf": 973.0712890625,
+            "scale_rel": 1.191760543944602e-06
+          },
+          "grad_delta": {
+            "max_err": 3.0517578125e-05,
+            "ref_inf": 68.00712585449219,
+            "scale_rel": 4.487408891576348e-07
+          },
+          "grad_A": {
+            "max_err": 0.40625,
+            "ref_inf": 1221295.375,
+            "scale_rel": 3.3263861332480684e-07
+          },
+          "grad_B": {
+            "max_err": 3.814697265625e-05,
+            "ref_inf": 83.29171752929688,
+            "scale_rel": 4.579923885328965e-07
+          },
+          "grad_C": {
+            "max_err": 5.340576171875e-05,
+            "ref_inf": 73.29778289794922,
+            "scale_rel": 7.286136034033333e-07
+          },
+          "grad_D": {
+            "max_err": 2.09808349609375e-05,
+            "ref_inf": 59.28270721435547,
+            "scale_rel": 3.539115527412509e-07
+          },
+          "grad_norm_weight": {
+            "max_err": 0.000396728515625,
+            "ref_inf": 1824.195556640625,
+            "scale_rel": 2.1748135181054898e-07
+          }
+        },
+        "ours_vs_official_composed": {
+          "grad_x": {
+            "max_err": 0.002605438232421875,
+            "ref_inf": 75.8554916381836,
+            "scale_rel": 3.434739102146124e-05,
+            "note": "core rows only (implicit-pad grad semantics)"
+          },
+          "grad_conv_weight": {
+            "max_err": 0.02764892578125,
+            "ref_inf": 1538.32177734375,
+            "scale_rel": 1.7973434549559543e-05
+          },
+          "grad_conv_bias": {
+            "max_err": 0.02911376953125,
+            "ref_inf": 973.075927734375,
+            "scale_rel": 2.9919319450267318e-05
+          },
+          "grad_delta": {
+            "max_err": 0.002864837646484375,
+            "ref_inf": 68.00582122802734,
+            "scale_rel": 4.212635910797126e-05
+          },
+          "grad_A": {
+            "max_err": 63.375,
+            "ref_inf": 1221231.875,
+            "scale_rel": 5.1894321870693064e-05
+          },
+          "grad_B": {
+            "max_err": 0.00363922119140625,
+            "ref_inf": 83.2905044555664,
+            "scale_rel": 4.369311021939712e-05
+          },
+          "grad_C": {
+            "max_err": 0.0020055770874023438,
+            "ref_inf": 73.29768371582031,
+            "scale_rel": 2.736208002394852e-05
+          },
+          "grad_D": {
+            "max_err": 0.0002899169921875,
+            "ref_inf": 59.282997131347656,
+            "scale_rel": 4.890390267299724e-06
+          },
+          "grad_norm_weight": {
+            "max_err": 0.0275115966796875,
+            "ref_inf": 1824.194580078125,
+            "scale_rel": 1.5081503355036422e-05
+          }
+        }
+      },
+      "causal_conv1d_installed": true,
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 1.001743895121011,
+        "official_composed_bwd": 0.3536838718255514
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "l_out": 4096,
+        "d_model": 4096,
+        "n_state": 128,
+        "conv_k": 4
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 224.6909408569336,
+          "std_ms": 0.19956306357418843,
+          "min_ms": 224.25888061523438,
+          "max_ms": 225.2288360595703,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 180.4182357788086,
+          "std_ms": 0.48041388999915047,
+          "min_ms": 179.8572540283203,
+          "max_ms": 181.40342712402344,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "official_composed_bwd": "official scan anchored at fp32 only",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 0.5,
+            "ref_inf": 76.0,
+            "scale_rel": 0.006578947368421052
+          },
+          "grad_conv_weight": {
+            "max_err": 8.0,
+            "ref_inf": 1544.0,
+            "scale_rel": 0.0051813471502590676
+          },
+          "grad_conv_bias": {
+            "max_err": 8.0,
+            "ref_inf": 976.0,
+            "scale_rel": 0.00819672131147541
+          },
+          "grad_delta": {
+            "max_err": 0.25,
+            "ref_inf": 68.0,
+            "scale_rel": 0.003676470588235294
+          },
+          "grad_A": {
+            "max_err": 9216.0,
+            "ref_inf": 1220608.0,
+            "scale_rel": 0.007550335570469799
+          },
+          "grad_B": {
+            "max_err": 0.5,
+            "ref_inf": 83.5,
+            "scale_rel": 0.005988023952095809
+          },
+          "grad_C": {
+            "max_err": 0.5,
+            "ref_inf": 71.0,
+            "scale_rel": 0.007042253521126761
+          },
+          "grad_D": {
+            "max_err": 0.25,
+            "ref_inf": 59.0,
+            "scale_rel": 0.00423728813559322
+          },
+          "grad_norm_weight": {
+            "max_err": 8.0,
+            "ref_inf": 1824.0,
+            "scale_rel": 0.0043859649122807015
+          }
+        }
+      },
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 0.802961770913966
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "l_out": 16384,
+        "d_model": 4096,
+        "n_state": 128,
+        "conv_k": 4
+      },
+      "dtype": "float32",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 221.9786834716797,
+          "std_ms": 0.6049139204434232,
+          "min_ms": 220.64242553710938,
+          "max_ms": 222.70895385742188,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 325.0604553222656,
+          "std_ms": 0.27094747816759024,
+          "min_ms": 324.6579284667969,
+          "max_ms": 325.6343688964844,
+          "n_trials": 50.0
+        },
+        "official_composed_bwd": {
+          "median_ms": 81.42139053344727,
+          "std_ms": 0.715170659294822,
+          "min_ms": 79.26905822753906,
+          "max_ms": 81.66598510742188,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 8.392333984375e-05,
+            "ref_inf": 89.72364807128906,
+            "scale_rel": 9.353536291465714e-07
+          },
+          "grad_conv_weight": {
+            "max_err": 0.0048828125,
+            "ref_inf": 2174.072509765625,
+            "scale_rel": 2.245929001018641e-06
+          },
+          "grad_conv_bias": {
+            "max_err": 0.0048828125,
+            "ref_inf": 2112.6083984375,
+            "scale_rel": 2.311271934548477e-06
+          },
+          "grad_delta": {
+            "max_err": 5.7220458984375e-05,
+            "ref_inf": 68.47587585449219,
+            "scale_rel": 8.356294573867973e-07
+          },
+          "grad_A": {
+            "max_err": 4.5,
+            "ref_inf": 5320462.0,
+            "scale_rel": 8.457912113647273e-07
+          },
+          "grad_B": {
+            "max_err": 9.1552734375e-05,
+            "ref_inf": 137.89695739746094,
+            "scale_rel": 6.639213518766567e-07
+          },
+          "grad_C": {
+            "max_err": 3.0517578125e-05,
+            "ref_inf": 58.8067741394043,
+            "scale_rel": 5.189466446953306e-07
+          },
+          "grad_D": {
+            "max_err": 3.814697265625e-05,
+            "ref_inf": 57.441810607910156,
+            "scale_rel": 6.640976712352602e-07
+          },
+          "grad_norm_weight": {
+            "max_err": 0.0006103515625,
+            "ref_inf": 1605.209228515625,
+            "scale_rel": 3.8023178016762746e-07
+          }
+        },
+        "ours_vs_official_composed": {
+          "grad_x": {
+            "max_err": 0.01457977294921875,
+            "ref_inf": 89.71916198730469,
+            "scale_rel": 0.00016250456007694094,
+            "note": "core rows only (implicit-pad grad semantics)"
+          },
+          "grad_conv_weight": {
+            "max_err": 0.207763671875,
+            "ref_inf": 2173.862060546875,
+            "scale_rel": 9.55735304671232e-05
+          },
+          "grad_conv_bias": {
+            "max_err": 0.172607421875,
+            "ref_inf": 2112.475830078125,
+            "scale_rel": 8.17085901847296e-05
+          },
+          "grad_delta": {
+            "max_err": 0.010181427001953125,
+            "ref_inf": 68.46918487548828,
+            "scale_rel": 0.00014870086478272125
+          },
+          "grad_A": {
+            "max_err": 1082.5,
+            "ref_inf": 5319851.0,
+            "scale_rel": 0.00020348314266696566
+          },
+          "grad_B": {
+            "max_err": 0.01705169677734375,
+            "ref_inf": 137.8874053955078,
+            "scale_rel": 0.00012366391787874828
+          },
+          "grad_C": {
+            "max_err": 0.0051479339599609375,
+            "ref_inf": 58.80264663696289,
+            "scale_rel": 8.754595676183368e-05
+          },
+          "grad_D": {
+            "max_err": 0.0007781982421875,
+            "ref_inf": 57.442474365234375,
+            "scale_rel": 1.3547435948519743e-05
+          },
+          "grad_norm_weight": {
+            "max_err": 0.12823486328125,
+            "ref_inf": 1605.226318359375,
+            "scale_rel": 7.988584650936494e-05
+          }
+        }
+      },
+      "causal_conv1d_installed": true,
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 1.464376895287503,
+        "official_composed_bwd": 0.3667982405339164
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "l_out": 16384,
+        "d_model": 4096,
+        "n_state": 128,
+        "conv_k": 4
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_triton": {
+          "median_ms": 230.3304214477539,
+          "std_ms": 0.28957515732052447,
+          "min_ms": 229.77296447753906,
+          "max_ms": 230.94483947753906,
+          "n_trials": 50.0
+        },
+        "composed_autograd_bwd": {
+          "median_ms": 279.2865295410156,
+          "std_ms": 0.12259960957634763,
+          "min_ms": 278.9734802246094,
+          "max_ms": 279.48394775390625,
+          "n_trials": 50.0
+        }
+      },
+      "skipped": {
+        "official_fused_block_bwd": "the official fused-block training backward is a compiled TileLang artifact and its Triton SISO backward is the #904 casualty; the composed official path below is the honest anchor",
+        "official_composed_bwd": "official scan anchored at fp32 only",
+        "eager_vjp": "memory cap or non-fp32",
+        "reference_loop_bwd": "sequence too long for the Python-loop oracle"
+      },
+      "parity": {
+        "ours_vs_composed": {
+          "grad_x": {
+            "max_err": 0.5,
+            "ref_inf": 90.5,
+            "scale_rel": 0.0055248618784530384
+          },
+          "grad_conv_weight": {
+            "max_err": 16.0,
+            "ref_inf": 2192.0,
+            "scale_rel": 0.0072992700729927005
+          },
+          "grad_conv_bias": {
+            "max_err": 16.0,
+            "ref_inf": 2112.0,
+            "scale_rel": 0.007575757575757576
+          },
+          "grad_delta": {
+            "max_err": 0.5,
+            "ref_inf": 68.5,
+            "scale_rel": 0.0072992700729927005
+          },
+          "grad_A": {
+            "max_err": 32768.0,
+            "ref_inf": 5308416.0,
+            "scale_rel": 0.006172839506172839
+          },
+          "grad_B": {
+            "max_err": 1.0,
+            "ref_inf": 137.0,
+            "scale_rel": 0.0072992700729927005
+          },
+          "grad_C": {
+            "max_err": 0.5,
+            "ref_inf": 59.5,
+            "scale_rel": 0.008403361344537815
+          },
+          "grad_D": {
+            "max_err": 0.25,
+            "ref_inf": 57.25,
+            "scale_rel": 0.004366812227074236
+          },
+          "grad_norm_weight": {
+            "max_err": 8.0,
+            "ref_inf": 1600.0,
+            "scale_rel": 0.005
+          }
+        }
+      },
+      "speedups_vs_ours": {
+        "composed_autograd_bwd": 1.212547295253252
+      }
+    }
+  ],
+  "num_warps_sweep": {
+    "shape": "B8xL2048xD4096xN128xK4",
+    "configs": {
+      "num_warps=2": {
+        "compiles": true,
+        "median_ms": 934.3961791992188,
+        "std_ms": 2.616652813368934,
+        "min_ms": 928.3036499023438,
+        "max_ms": 938.3308715820312,
+        "n_trials": 30.0
+      },
+      "num_warps=4": {
+        "compiles": true,
+        "median_ms": 139.1396484375,
+        "std_ms": 0.46261262072557224,
+        "min_ms": 138.14735412597656,
+        "max_ms": 140.00277709960938,
+        "n_trials": 30.0,
+        "max_scale_rel_vs_first_config": 5.924124114547086e-07
+      },
+      "num_warps=8": {
+        "compiles": true,
+        "median_ms": 108.88201522827148,
+        "std_ms": 0.0849367937568052,
+        "min_ms": 108.729248046875,
+        "max_ms": 109.0354232788086,
+        "n_trials": 30.0,
+        "max_scale_rel_vs_first_config": 1.777237234364126e-06
+      }
+    },
+    "specializations": [
+      {
+        "num_warps": 8,
+        "n_regs": 61,
+        "spill_bytes": 0,
+        "shared_bytes": 4096,
+        "name": "_fwd_stage_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 61,
+        "spill_bytes": 0,
+        "shared_bytes": 4096,
+        "name": "_fwd_stage_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 219,
+        "spill_bytes": 0,
+        "shared_bytes": 32768,
+        "name": "_fwd_stage_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 209,
+        "spill_bytes": 0,
+        "shared_bytes": 32768,
+        "name": "_fwd_stage_kernel"
+      },
+      {
+        "num_warps": 2,
+        "n_regs": 255,
+        "spill_bytes": 282,
+        "shared_bytes": 16384,
+        "name": "_fwd_stage_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 255,
+        "spill_bytes": 34,
+        "shared_bytes": 32768,
+        "name": "_fwd_stage_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 96,
+        "spill_bytes": 0,
+        "shared_bytes": 2048,
+        "name": "_norm_bwd_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 96,
+        "spill_bytes": 0,
+        "shared_bytes": 4096,
+        "name": "_norm_bwd_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 128,
+        "spill_bytes": 4,
+        "shared_bytes": 4096,
+        "name": "_bwd_sweep_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 128,
+        "spill_bytes": 4,
+        "shared_bytes": 4096,
+        "name": "_bwd_sweep_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 255,
+        "spill_bytes": 138,
+        "shared_bytes": 32768,
+        "name": "_bwd_sweep_kernel"
+      },
+      {
+        "num_warps": 8,
+        "n_regs": 255,
+        "spill_bytes": 172,
+        "shared_bytes": 16384,
+        "name": "_bwd_sweep_kernel"
+      },
+      {
+        "num_warps": 2,
+        "n_regs": 32,
+        "spill_bytes": 2000,
+        "shared_bytes": 16384,
+        "name": "_bwd_sweep_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 255,
+        "spill_bytes": 624,
+        "shared_bytes": 32768,
+        "name": "_bwd_sweep_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 88,
+        "spill_bytes": 0,
+        "shared_bytes": 1024,
+        "name": "_conv_x_bwd_kernel"
+      },
+      {
+        "num_warps": 4,
+        "n_regs": 92,
+        "spill_bytes": 0,
+        "shared_bytes": 512,
+        "name": "_conv_x_bwd_kernel"
+      }
+    ],
+    "official_mamba3_triton_bwd": "fails compile at all num_warps>=4 on sm_100 (TMEM 544 > 512) \u2014 the exact op class this pipeline replaces; evidence: docs/904_reproducer.md, results/repro_904_report.json"
+  },
+  "resource_meta": {
+    "n_regs": 255,
+    "spill_bytes": 2000,
+    "shared_bytes": 32768
+  }
+}

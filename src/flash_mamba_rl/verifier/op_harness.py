@@ -1235,6 +1235,12 @@ def _fused_bwd_prc02(atol: float) -> dict[str, Any]:
     diluted there; those two views carry the thinnest margins (the C3
     grad_dt situation — re-measure first on B200 if either flakes).
     Per-view unit atols sit between the floors, margin biased honest-side.
+
+    B200 re-measurement (scratch/c6_b200_floor.py, Triton pipeline vs the
+    same cheat, 3 draws): kernel honest <= 1.28e-3 of scale (worst view
+    grad_B), every view discriminates both ways; margins vs the unit
+    atols 3.1-6.2x under / 1.8-6.3x over, thinnest grad_D (1.8x over)
+    and grad_conv_bias (2.5x over) — matching the CPU prediction.
     """
     return {
         "shape": (1, 4096, 32),

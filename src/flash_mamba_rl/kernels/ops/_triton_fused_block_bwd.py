@@ -500,7 +500,12 @@ def launch_fused_block_backward(
     gcb_part = torch.empty(batch, d_model, dtype=f32, device=dev)
 
     grid_sweep = (batch, n_d_blocks)
-    warps = num_warps if num_warps is not None else (4 if block_d * block_n >= 512 else 2)
+    # num_warps=8 measured fastest at every (shape, dtype) cell on B200
+    # (scratch/c6_warp_probe.py) — and at num_warps<=4 ptxas collapses the
+    # half-dtype _bwd_sweep_kernel specs to 32 registers with 1.4-2.6 KB
+    # spill (train bf16: 722 ms at nw=4 vs 114 ms at nw=8); nw=8 compiles
+    # every spec at >=219 regs with <=172 B spill.
+    warps = num_warps if num_warps is not None else (8 if block_d * block_n >= 512 else 2)
     _fwd_stage_kernel[grid_sweep](
         x_c,
         conv_w_c,
