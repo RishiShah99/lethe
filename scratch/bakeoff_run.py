@@ -123,7 +123,7 @@ def main() -> None:
                     row = {
                         "model": args.model,
                         "idx": n_existing + i,
-                        "source_chars": len(source),
+                        "source": source,
                         "uses_triton": "@triton.jit" in source,
                         "score_s": round(time.time() - t1, 1),
                         **score,

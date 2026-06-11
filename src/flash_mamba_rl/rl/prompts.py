@@ -41,6 +41,10 @@ Semantics (zero-order-hold discretisation, then a linear recurrence over L):
     h_t = A_bar_t * h_{t-1} + B_bar_t * u_t[..., None]
     y_t = (h_t * C_t).sum(-1) + D * u_t               # [B, L, D]
 
+PITFALL — the arguments named B, C, D are TENSORS (input projection,
+output projection, skip weight). Do NOT shadow them with shape variables:
+write `batch, seqlen, dmodel = u.shape`, never `B, L, D = u.shape`.
+
 The output must satisfy a 12-gate contract verifier, graded against a
 float32 eager reference:
 
