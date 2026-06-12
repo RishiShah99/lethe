@@ -15,7 +15,6 @@ Poll:  tail -5 grpo_toy_out/metrics.jsonl
 from __future__ import annotations
 
 import argparse
-import os
 
 
 def main() -> None:
@@ -35,8 +34,7 @@ def main() -> None:
     from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
     from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
-    adapter_dir = os.path.join(args.ckpt_dir, "adapter")
-    adapter_path = adapter_dir if args.resume and os.path.isdir(adapter_dir) else None
+    adapter_path = GRPOTrainingLoop.latest_adapter_path(args.ckpt_dir) if args.resume else None
     policy = HFPolicy.from_pretrained(
         args.model,
         adapter_path=adapter_path,

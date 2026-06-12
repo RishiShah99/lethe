@@ -34,13 +34,23 @@ class StubTrainablePolicy:
         self._completions = completions
         self.saved_paths: list[str] = []
         self.eval_calls = 0
+        self.last_terminated: list[bool] = []
+        self.seen_append_eos: list[Any] = []
 
     def generate(self, prompt: str, n: int) -> list[str]:
-        return [self._completions[i % len(self._completions)] for i in range(n)]
+        out = [self._completions[i % len(self._completions)] for i in range(n)]
+        self.last_terminated = [True] * n
+        return out
 
     def completion_log_probs(
-        self, prompt: str, completions: list[str], *, use_adapter: bool = True
+        self,
+        prompt: str,
+        completions: list[str],
+        *,
+        use_adapter: bool = True,
+        append_eos: Any = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.seen_append_eos.append(append_eos)
         k, t = len(completions), self.theta.shape[0]
         base = -torch.nn.functional.softplus(self.theta).expand(k, t)
         if not use_adapter:
@@ -79,7 +89,7 @@ def make_loop(
 ) -> tuple[GRPOTrainingLoop, StubTrainablePolicy]:
     policy = StubTrainablePolicy(completions)
     config = TrainLoopConfig(
-        n_per_prompt=4,
+        n_per_prompt=overrides.pop("n_per_prompt", 4),
         total_steps=overrides.pop("total_steps", 3),
         checkpoint_dir=str(tmp_path / "ckpt"),
         device="cpu",
@@ -123,6 +133,30 @@ class TestStep:
         assert metrics.mean_kl is None
         assert torch.equal(policy.theta.detach(), before)
         assert loop.step_idx == 1
+
+    def test_saturated_all_equal_group_skips_despite_fp32_std(self, tmp_path: Any) -> None:
+        # Eight 0.1 rewards carry std ~7e-9 from fp32 mean rounding; a
+        # float-std guard would issue a spurious uniform-negative update
+        # (the toy-run review blocker). The exact-equality guard must skip.
+        assert torch.tensor([0.1] * 8).std(correction=0).item() > 0.0
+        loop, policy = make_loop(tmp_path, [BAD], n_per_prompt=8)
+        before = policy.theta.detach().clone()
+        metrics = loop.step()
+        assert metrics.loss is None
+        assert torch.equal(policy.theta.detach(), before)
+
+    def test_termination_flags_forwarded_as_append_eos(self, tmp_path: Any) -> None:
+        loop, policy = make_loop(tmp_path, [GOOD, BAD])
+        policy.last_terminated = []  # overwritten by generate inside step
+        loop.step()
+        flags = [False, True, False, True]
+        policy.generate = lambda prompt, n: (  # type: ignore[method-assign]
+            setattr(policy, "last_terminated", flags),
+            [GOOD, BAD, GOOD, BAD],
+        )[1]
+        policy.seen_append_eos.clear()
+        loop.step()
+        assert policy.seen_append_eos == [flags, flags]  # ref + new streams
 
     def test_no_code_block_scores_zero(self, tmp_path: Any) -> None:
         loop, _ = make_loop(tmp_path, [NO_CODE, GOOD])
@@ -196,3 +230,36 @@ class TestRunAndCheckpoint:
         history = resumed.run()
         assert len(history) == 2
         assert resumed.step_idx == 4
+
+    def test_latest_adapter_path_names_committed_dir(self, tmp_path: Any) -> None:
+        loop, policy = make_loop(tmp_path, [GOOD, BAD])
+        assert GRPOTrainingLoop.latest_adapter_path(str(tmp_path / "ckpt")) is None
+        loop.step()
+        loop.save_checkpoint()
+        path = GRPOTrainingLoop.latest_adapter_path(str(tmp_path / "ckpt"))
+        assert path is not None and path.endswith("adapter_step_1")
+        assert path in policy.saved_paths
+
+    def test_uncommitted_adapter_dir_never_referenced(self, tmp_path: Any) -> None:
+        # A half-written adapter dir from a preempted save must not be
+        # picked up: trainer_state.pt is the commit point.
+        loop, _ = make_loop(tmp_path, [GOOD, BAD])
+        loop.step()
+        loop.save_checkpoint()
+        os.makedirs(tmp_path / "ckpt" / "adapter_step_99")  # orphan, no commit
+        path = GRPOTrainingLoop.latest_adapter_path(str(tmp_path / "ckpt"))
+        assert path is not None and path.endswith("adapter_step_1")
+
+    def test_old_adapters_pruned_keeping_two(self, tmp_path: Any) -> None:
+        loop, _ = make_loop(tmp_path, [GOOD, BAD], total_steps=4)
+        loop.run()
+        stamped = sorted(d for d in os.listdir(tmp_path / "ckpt") if d.startswith("adapter_step_"))
+        assert stamped == ["adapter_step_3", "adapter_step_4"]
+
+    def test_rollout_step_field_matches_metrics(self, tmp_path: Any) -> None:
+        loop, _ = make_loop(tmp_path, [GOOD, BAD])
+        loop.step()
+        ckpt = tmp_path / "ckpt"
+        rollout_rows = [json.loads(line) for line in (ckpt / "rollouts.jsonl").open()]
+        metric_rows = [json.loads(line) for line in (ckpt / "metrics.jsonl").open()]
+        assert {r["step"] for r in rollout_rows} == {metric_rows[0]["step"]} == {1}

@@ -57,6 +57,7 @@ class StubModel(torch.nn.Module):
         self.completion_ids = [ord(c) for c in completion]
         self.generate_calls: list[int] = []
         self.ref_logit_shift = 0.0
+        self.emit_eos = True
 
     @property
     def device(self) -> torch.device:
@@ -75,7 +76,8 @@ class StubModel(torch.nn.Module):
         **kwargs: Any,
     ) -> torch.Tensor:
         self.generate_calls.append(num_return_sequences)
-        comp = torch.tensor([[*self.completion_ids, EOS]], dtype=torch.long)
+        ids = [*self.completion_ids, EOS] if self.emit_eos else self.completion_ids
+        comp = torch.tensor([ids], dtype=torch.long)
         full = torch.cat([input_ids, comp], dim=1)
         return full.repeat(num_return_sequences, 1)
 
@@ -96,14 +98,17 @@ class StubPeftModel(StubModel):
 
 
 def make_policy(model: StubModel | None = None, **sampling: Any) -> HFPolicy:
+    sampling.setdefault("temperature", 1.0)
     return HFPolicy(
         model if model is not None else StubModel(),
         StubTokenizer(),
-        sampling=SamplingSettings(**sampling) if sampling else None,
+        sampling=SamplingSettings(**sampling),
     )
 
 
-def manual_log_probs(model: StubModel, prompt: str, completion: str) -> torch.Tensor:
+def manual_log_probs(
+    model: StubModel, prompt: str, completion: str, *, temperature: float = 1.0
+) -> torch.Tensor:
     tok = StubTokenizer()
     prompt_ids = tok.apply_chat_template(
         [{"role": "user", "content": prompt}],
@@ -117,7 +122,7 @@ def manual_log_probs(model: StubModel, prompt: str, completion: str) -> torch.Te
         logits = model(input_ids=full, attention_mask=torch.ones_like(full)).logits
     p = prompt_ids.shape[1]
     pred = logits[0, p - 1 : p + len(comp_ids) - 1, :]
-    return torch.log_softmax(pred.float(), dim=-1)[
+    return torch.log_softmax(pred.float() / temperature, dim=-1)[
         torch.arange(len(comp_ids)), torch.tensor(comp_ids)
     ]
 
@@ -136,6 +141,15 @@ class TestGenerate:
     def test_negative_n_raises(self) -> None:
         with pytest.raises(ValueError, match="non-negative"):
             make_policy().generate("p", -1)
+
+    def test_last_terminated_tracks_eos_presence(self) -> None:
+        model = StubModel(completion="xy")
+        policy = make_policy(model)
+        policy.generate("p", 2)
+        assert policy.last_terminated == [True, True]
+        model.emit_eos = False
+        policy.generate("p", 2)
+        assert policy.last_terminated == [False, False]
 
     def test_decode_strips_prompt(self) -> None:
         # Completion must not contain any prompt text even though the
@@ -182,6 +196,29 @@ class TestLogProbs:
         loss.backward()
         assert model.head.weight.grad is not None
         assert torch.isfinite(model.head.weight.grad).all()
+
+    def test_log_probs_under_sampling_temperature(self) -> None:
+        # The behaviour policy is the tempered one — log-probs must divide
+        # logits by the sampling temperature (biased gradient otherwise).
+        model = StubModel()
+        policy = make_policy(model, temperature=2.0)
+        got = policy.log_probs("p", "abc")
+        want = manual_log_probs(model, "p", "abc", temperature=2.0)
+        torch.testing.assert_close(torch.tensor(got), want)
+        raw = manual_log_probs(model, "p", "abc", temperature=1.0)
+        assert not torch.allclose(want, raw)
+
+    def test_append_eos_false_drops_stop_token(self) -> None:
+        model = StubModel()
+        policy = make_policy(model)
+        lp, mask = policy.completion_log_probs("p", ["abc", "de"], append_eos=[False, True])
+        assert mask.sum(dim=1).tolist() == [3, 3]  # no EOS vs +EOS
+        single = manual_log_probs(model, "p", "abc")[:-1]  # manual minus EOS slot
+        torch.testing.assert_close(lp[0][mask[0]], single)
+
+    def test_append_eos_length_mismatch_raises(self) -> None:
+        with pytest.raises(ValueError, match="append_eos"):
+            make_policy().completion_log_probs("p", ["a", "b"], append_eos=[True])
 
     def test_no_grad_streams_identical_to_grad_stream(self) -> None:
         # new == old at step 0: same retokenization path must give the

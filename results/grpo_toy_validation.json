@@ -23,8 +23,10 @@
   "kl_max": 0.0031823165422682964,
   "contract_passes": 0,
   "notes": [
-    "Policy converged toward the 0.1 compile-ceiling: it learned to emit runnable Triton modules (exec-rate 61% -> 94%); no candidate passed contracts within 40 steps, so the group degenerates at all-0.1 and further movement requires an exploratory contract pass (Phase E scale/budget, 32B base).",
-    "Steps 20-27 zeroed: a mid-run fleet sync truncated verifier sources on the box; every scoring sandbox failed, groups went degenerate, the trainer skipped updates by design and recovered after a clean re-sync. Lesson re-learned: never sync while a box-side run is live.",
+    "Policy converged toward the 0.1 compile-ceiling: it learned to emit runnable Triton modules (exec-rate 61% -> 94%); no candidate passed contracts within 40 steps, so movement past the ceiling requires an exploratory contract pass (Phase E scale/budget, 32B base).",
+    "REVIEW CORRECTION (post-run): the run's all-0.1 steps (16, 31, 33-35, 37, 38, 40) were NOT skipped as degenerate \u2014 fp32 mean rounding left std ~7e-9 > 0, so the guard passed and those steps performed spurious uniform-negative updates (advantages all -7.45e-05; the non-null loss/grad_norm in those rows is this defect, not signal). Fixed post-run: the guard is now exact value equality (rewards.max != rewards.min). The headline trend (0.061 -> 0.094, exec-rate 61% -> 94%) is computed over candidate rewards and is unaffected.",
+    "Log-prob streams in this run were computed from UNTEMPERED logits while sampling used temperature 0.8 \u2014 a biased policy-gradient estimator (ratio silently 1 instead of correcting the sharpened sampler). Fixed post-run: all streams now divide logits by the sampling temperature. Direction of the toy conclusion unaffected (reward moved despite the bias).",
+    "Steps 20-27 zeroed: a mid-run fleet sync truncated verifier sources on the box; every scoring sandbox failed, groups went degenerate (exact-0.0 path), the trainer skipped updates by design and recovered after a clean re-sync. Lesson re-learned: never sync while a box-side run is live.",
     "Wall ~110 s/step at K=8 (generation + 8 sandboxed scoring subprocesses, single B200)."
   ],
   "steps": [

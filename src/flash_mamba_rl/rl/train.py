@@ -5,16 +5,22 @@ fenced code block → score each source through the sandboxed op-harness
 battery (``score_candidate_source``) → group-relative advantages →
 clipped surrogate + KL loss → one optimizer step on the LoRA adapter.
 
-Degenerate groups (zero reward variance — e.g. every candidate fails
-identically) carry no policy-gradient signal; the step skips all three
-log-prob forward passes and the update entirely, recording ``loss=None``.
+Degenerate groups (all rewards identical — e.g. every candidate fails the
+same way, or all saturate at the compile ceiling) carry no policy-gradient
+signal; the step skips the log-prob forward passes and the update
+entirely, recording ``loss=None``. The test is exact value equality, not a
+float-std threshold: fp32 mean rounding gives an all-0.1 group a std of
+~7e-9, which would otherwise turn every saturated group into a spurious
+uniform-negative update.
 
-Checkpointing is spot-box-shaped: adapter weights via peft
-``save_pretrained`` plus a ``trainer_state.pt`` (step counter, optimizer
-state, RNG states). Resume = ``HFPolicy.from_pretrained(adapter_path=...)``
-+ :meth:`GRPOTrainingLoop.load_trainer_state`. Per-step metrics and
+Checkpointing is spot-box-shaped: step-stamped immutable adapter dirs via
+peft ``save_pretrained``, with the atomically replaced ``trainer_state.pt``
+as the commit point naming the valid adapter (step counter, optimizer
+state, RNG states ride along). Resume = ``HFPolicy.from_pretrained(
+adapter_path=GRPOTrainingLoop.latest_adapter_path(dir))`` +
+:meth:`GRPOTrainingLoop.load_trainer_state`. Per-step metrics and
 per-candidate rollout rows append to JSONL files in the checkpoint dir so
-a detached box run can be polled with ``tail``.
+a detached box run can be polled with ``tail``; both use 1-based step ids.
 """
 
 from __future__ import annotations
@@ -22,7 +28,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable, Iterator
+import shutil
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -54,7 +61,12 @@ class TrainablePolicy(Protocol):
     def generate(self, prompt: str, n: int) -> list[str]: ...
 
     def completion_log_probs(
-        self, prompt: str, completions: list[str], *, use_adapter: bool = True
+        self,
+        prompt: str,
+        completions: list[str],
+        *,
+        use_adapter: bool = True,
+        append_eos: bool | Sequence[bool] = True,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
     def trainable_parameters(self) -> Iterator[torch.nn.Parameter]: ...
@@ -140,7 +152,7 @@ class GRPOTrainingLoop:
             if source is None:
                 rows.append(
                     {
-                        "step": self.step_idx,
+                        "step": self.step_idx + 1,
                         "idx": idx,
                         "status": "no_code_block",
                         "reward": 0.0,
@@ -152,7 +164,7 @@ class GRPOTrainingLoop:
                 score = self._scorer(source)
                 rows.append(
                     {
-                        "step": self.step_idx,
+                        "step": self.step_idx + 1,
                         "idx": idx,
                         "source": source,
                         **score,
@@ -165,14 +177,28 @@ class GRPOTrainingLoop:
         mean_kl: float | None = None
         grad_norm: float | None = None
 
-        if rewards.std(correction=0).item() > 0.0:
+        # Exact-equality test, not a float-std compare: eight identical 0.1
+        # rewards carry std ~7e-9 from fp32 mean rounding, which would turn
+        # every saturated group into a spurious uniform-negative update.
+        if rewards.max().item() != rewards.min().item():
             advantages = compute_group_advantages(rewards)
+            # EOS joins the scored trajectory only where the policy actually
+            # stopped (HFPolicy.last_terminated); stubs without it score all.
+            terminated = getattr(self.policy, "last_terminated", None)
+            append_eos: bool | list[bool] = (
+                list(terminated) if terminated and len(terminated) == len(completions) else True
+            )
             with torch.no_grad():
-                old_lp, mask = self.policy.completion_log_probs(self.prompt, completions)
                 ref_lp, _ = self.policy.completion_log_probs(
-                    self.prompt, completions, use_adapter=False
+                    self.prompt, completions, use_adapter=False, append_eos=append_eos
                 )
-            new_lp, _ = self.policy.completion_log_probs(self.prompt, completions)
+            new_lp, mask = self.policy.completion_log_probs(
+                self.prompt, completions, append_eos=append_eos
+            )
+            # One update per rollout = on-policy: the behaviour log-probs are
+            # the current ones, detached. A multi-iteration update would need
+            # a separate pre-update old pass.
+            old_lp = new_lp.detach()
             device = new_lp.device
             loss = compute_grpo_loss(
                 advantages.to(device),
@@ -234,11 +260,17 @@ class GRPOTrainingLoop:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self) -> None:
+        """Adapter dirs are step-stamped and immutable; the atomically
+        replaced ``trainer_state.pt`` is the commit point naming the valid
+        one — a preemption mid-save leaves the previous checkpoint fully
+        consistent (a half-written adapter dir is never referenced)."""
         cfg = self.config
         os.makedirs(cfg.checkpoint_dir, exist_ok=True)
-        self.policy.save_adapter(os.path.join(cfg.checkpoint_dir, "adapter"))
+        adapter_name = f"adapter_step_{self.step_idx}"
+        self.policy.save_adapter(os.path.join(cfg.checkpoint_dir, adapter_name))
         state: dict[str, Any] = {
             "step": self.step_idx,
+            "adapter_name": adapter_name,
             "optimizer": self.optimizer.state_dict(),
             "torch_rng": torch.get_rng_state(),
         }
@@ -247,20 +279,46 @@ class GRPOTrainingLoop:
         tmp = os.path.join(cfg.checkpoint_dir, "trainer_state.pt.tmp")
         torch.save(state, tmp)
         os.replace(tmp, os.path.join(cfg.checkpoint_dir, "trainer_state.pt"))
+        self._prune_adapters(keep=adapter_name)
 
     def load_trainer_state(self) -> bool:
         """Restore step/optimizer/RNG if a checkpoint exists. Adapter weights
-        are restored separately via ``HFPolicy.from_pretrained(adapter_path=...)``."""
+        are restored separately via ``HFPolicy.from_pretrained(adapter_path=
+        latest_adapter_path(...))``."""
         path = os.path.join(self.config.checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return False
-        state = torch.load(path, weights_only=False)
+        state = torch.load(path, map_location="cpu", weights_only=False)
         self.step_idx = int(state["step"])
         self.optimizer.load_state_dict(state["optimizer"])
         torch.set_rng_state(state["torch_rng"])
         if torch.cuda.is_available() and "cuda_rng" in state:
             torch.cuda.set_rng_state_all(state["cuda_rng"])
         return True
+
+    @staticmethod
+    def latest_adapter_path(checkpoint_dir: str) -> str | None:
+        """The adapter dir named by the committed trainer state, if any."""
+        path = os.path.join(checkpoint_dir, "trainer_state.pt")
+        if not os.path.exists(path):
+            return None
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        name = state.get("adapter_name")
+        if not name:
+            return None
+        adapter = os.path.join(checkpoint_dir, str(name))
+        return adapter if os.path.isdir(adapter) else None
+
+    def _prune_adapters(self, *, keep: str) -> None:
+        prefix = "adapter_step_"
+        stamped = sorted(
+            (d for d in os.listdir(self.config.checkpoint_dir) if d.startswith(prefix)),
+            key=lambda d: int(d.removeprefix(prefix)),
+        )
+        # The committed one plus its predecessor (paranoia margin for spot).
+        for name in stamped[:-2]:
+            if name != keep:
+                shutil.rmtree(os.path.join(self.config.checkpoint_dir, name), ignore_errors=True)
 
     def _append_jsonl(self, name: str, rows: list[dict[str, Any]]) -> None:
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)

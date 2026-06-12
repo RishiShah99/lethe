@@ -15,7 +15,18 @@ Design constraints this module encodes:
   sequence. Completions round-trip through strings (the verifier consumes
   source text), so all three streams retokenize identically via
   :meth:`HFPolicy.completion_log_probs` — at the first optimizer step
-  new == old exactly and the importance ratio starts at 1.
+  new == old exactly and the importance ratio starts at 1. Retokenization
+  may drift from the sampled token ids (non-canonical BPE splits) —
+  accepted by convention since all streams drift together.
+- Log-probs are computed under the *sampling* distribution: logits are
+  divided by the sampling temperature before the softmax (the behaviour
+  policy is the tempered one; scoring the untempered distribution would
+  make the policy gradient a biased estimator). ``top_p`` truncation is
+  ignored by the usual GRPO convention.
+- EOS is appended to a completion's token sequence only when generation
+  terminated naturally (the policy actually chose to stop); for
+  length-truncated samples training on a fabricated EOS would push the
+  policy toward stopping at the truncation point.
 - The KL reference policy is the base model with the LoRA adapter
   disabled (``peft``'s ``disable_adapter``), exposed as
   :class:`ReferencePolicyView` — one set of base weights in memory, two
@@ -24,7 +35,7 @@ Design constraints this module encodes:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,6 +80,7 @@ class HFPolicy:
         self._model = model
         self._tokenizer = tokenizer
         self.sampling = sampling if sampling is not None else SamplingSettings()
+        self.last_terminated: list[bool] = []
 
     @classmethod
     def from_pretrained(
@@ -122,15 +134,24 @@ class HFPolicy:
     # ------------------------------------------------------------------
 
     def generate(self, prompt: str, n: int) -> list[str]:
-        """Sample ``n`` completions of ``prompt`` (chat-templated, batched)."""
+        """Sample ``n`` completions of ``prompt`` (chat-templated, batched).
+
+        Sets ``self.last_terminated`` (one bool per completion): True iff
+        the sequence emitted EOS before ``max_new_tokens`` — early-finished
+        sequences are padded with EOS by ``generate``, so any EOS in the
+        generated tail means natural termination.
+        """
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")
         if n == 0:
+            self.last_terminated = []
             return []
         input_ids, attention_mask = self._encode_prompt(prompt)
         prompt_len = input_ids.shape[1]
         s = self.sampling
+        eos = self._tokenizer.eos_token_id
         completions: list[str] = []
+        terminated: list[bool] = []
         remaining = n
         while remaining > 0:
             k = min(s.batch_size, remaining)
@@ -143,13 +164,14 @@ class HFPolicy:
                     top_p=s.top_p,
                     max_new_tokens=s.max_new_tokens,
                     num_return_sequences=k,
-                    pad_token_id=self._tokenizer.eos_token_id,
+                    pad_token_id=eos,
                 )
             for seq in out:
-                completions.append(
-                    self._tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
-                )
+                tail = seq[prompt_len:]
+                completions.append(self._tokenizer.decode(tail, skip_special_tokens=True))
+                terminated.append(bool((tail == eos).any().item()))
             remaining -= k
+        self.last_terminated = terminated
         return completions
 
     def log_probs(self, prompt: str, completion: str) -> list[float]:
@@ -168,27 +190,35 @@ class HFPolicy:
         completions: list[str],
         *,
         use_adapter: bool = True,
+        append_eos: bool | Sequence[bool] = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Batched per-token log-probs of each completion given ``prompt``.
 
-        Returns ``(log_probs, mask)``, both ``(K, T_max)`` with ``T_max`` the
-        longest completion's token count (+1 for the appended EOS — the
-        policy is graded on choosing to stop). ``mask`` is True at valid
-        completion positions. Differentiable: wrap in ``torch.no_grad()``
-        for old/ref streams. ``use_adapter=False`` computes under the
-        frozen base model via peft's ``disable_adapter``.
+        Returns ``(log_probs, mask)``, both ``(K, T_max)``. ``mask`` is True
+        at valid completion positions. Logits are divided by the sampling
+        temperature before the softmax — these are the *behaviour* policy's
+        log-probs. Differentiable: wrap in ``torch.no_grad()`` for old/ref
+        streams. ``use_adapter=False`` computes under the frozen base model
+        via peft's ``disable_adapter``. ``append_eos`` (scalar or one bool
+        per completion, e.g. ``last_terminated`` from ``generate``) controls
+        whether the stop decision is part of the scored trajectory — pass
+        the same value to every stream.
         """
         if not completions:
             raise ValueError("completions must be non-empty")
+        if isinstance(append_eos, bool):
+            append_eos = [append_eos] * len(completions)
+        if len(append_eos) != len(completions):
+            raise ValueError("append_eos length must match completions")
         prompt_ids, _ = self._encode_prompt(prompt)
         prompt_len = prompt_ids.shape[1]
         device = prompt_ids.device
         eos = self._tokenizer.eos_token_id
 
         comp_token_lists: list[list[int]] = []
-        for completion in completions:
+        for completion, add_eos in zip(completions, append_eos, strict=True):
             ids = list(self._tokenizer(completion, add_special_tokens=False)["input_ids"])
-            comp_token_lists.append([*ids, eos])
+            comp_token_lists.append([*ids, eos] if add_eos else ids)
         t_max = max(len(ids) for ids in comp_token_lists)
 
         k = len(completions)
@@ -214,7 +244,7 @@ class HFPolicy:
         # absolute positions [prompt_len, prompt_len + t_max).
         pred = logits[:, prompt_len - 1 : prompt_len + t_max - 1, :]
         targets = full[:, prompt_len : prompt_len + t_max]
-        log_probs = torch.log_softmax(pred.float(), dim=-1)
+        log_probs = torch.log_softmax(pred.float() / self.sampling.temperature, dim=-1)
         gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
         return gathered * mask, mask
 
@@ -276,7 +306,13 @@ class ReferencePolicyView:
         return [float(x) for x in lp[0][mask[0]].tolist()]
 
     def completion_log_probs(
-        self, prompt: str, completions: list[str]
+        self,
+        prompt: str,
+        completions: list[str],
+        *,
+        append_eos: bool | Sequence[bool] = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
-            return self._policy.completion_log_probs(prompt, completions, use_adapter=False)
+            return self._policy.completion_log_probs(
+                prompt, completions, use_adapter=False, append_eos=append_eos
+            )
