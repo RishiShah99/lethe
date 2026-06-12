@@ -7,7 +7,7 @@ pass teaches nothing.
 
 Usage (box):
     uv run python scratch/sft_validate.py [--device cuda] [--ops op1,op2]
-    uv run python scratch/sft_validate.py --out sft_validation.json
+    uv run python scratch/sft_validate.py --variants triton --out sft_validation.json
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import argparse
 import json
 import sys
 
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source
+from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
 from flash_mamba_rl.verifier.candidate_scoring import (
     DEFAULT_EXCLUDE_GATES,
     score_candidate_source,
@@ -38,15 +38,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--ops", default="", help="comma-separated subset (default: all)")
+    parser.add_argument("--variants", default="", help="comma-separated subset (default: all)")
     parser.add_argument("--out", default="", help="write the summary JSON here")
     args = parser.parse_args()
 
     ops = [o for o in args.ops.split(",") if o] or list(available_targets())
+    want_variants = [v for v in args.variants.split(",") if v]
+    pairs = [
+        (op, variant)
+        for op in ops
+        for variant in target_variants(op)
+        if not want_variants or variant in want_variants
+    ]
     summary: dict[str, dict[str, object]] = {}
     all_passed = True
-    for op in ops:
+    for op, variant in pairs:
         result = score_candidate_source(
-            target_source(op),
+            target_source(op, variant),
             op=op,
             device=args.device,
             timeout_s=TIMEOUT_S.get(op, 1200.0),
@@ -60,7 +68,7 @@ def main() -> int:
             for g, r in result["gates"].items()
             if not r["passed"] and g.rsplit("/", 1)[-1] not in DEFAULT_EXCLUDE_GATES
         }
-        summary[op] = {
+        summary[f"{op}[{variant}]"] = {
             "contracts_passed": passed,
             "reward": result["reward"],
             "status": result["status"],
@@ -68,7 +76,9 @@ def main() -> int:
             "error": result["error"],
             "failed_gates": failed_gates,
         }
-        print(f"{op}: passed={passed} reward={result['reward']} status={result['status']}")
+        print(
+            f"{op}[{variant}]: passed={passed} reward={result['reward']} status={result['status']}"
+        )
         if failed_gates:
             for g, reason in failed_gates.items():
                 print(f"  FAIL {g}: {reason}")

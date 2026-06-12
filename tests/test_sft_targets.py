@@ -21,7 +21,7 @@ from flash_mamba_rl.kernels.references.forward_chunked_scan import reference_for
 from flash_mamba_rl.kernels.references.fused_block_backward import reference_fused_block_backward
 from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source
+from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
 from flash_mamba_rl.rl.sft_targets.backward_selective_scan import backward_selective_scan
 from flash_mamba_rl.rl.sft_targets.complex_scan_rope import complex_scan_rope
 from flash_mamba_rl.rl.sft_targets.forward_chunked_scan import forward_chunked_scan
@@ -72,14 +72,34 @@ def test_registry_covers_curriculum_ops() -> None:
     expected = set(scoreable_ops()) - {"elementwise_silu"}
     assert set(available_targets()) == expected
     for op in available_targets():
-        assert f"def {op}(" in target_source(op)
+        assert target_variants(op) == ("eager", "triton")
+        for variant in target_variants(op):
+            assert f"def {op}(" in target_source(op, variant)
 
 
 def test_no_forbidden_tokens() -> None:
     for op in available_targets():
-        source = target_source(op)
-        hits = [tok for tok in FORBIDDEN_SOURCE_TOKENS if tok in source]
-        assert not hits, f"{op}: {hits}"
+        for variant in target_variants(op):
+            source = target_source(op, variant)
+            hits = [tok for tok in FORBIDDEN_SOURCE_TOKENS if tok in source]
+            assert not hits, f"{op}[{variant}]: {hits}"
+
+
+def test_triton_variants_parse_and_self_contained() -> None:
+    # Triton is absent on the dev box, so the CUDA targets are pinned at the
+    # source level here: they must parse and import only torch/triton/math.
+    import ast
+
+    for op in available_targets():
+        source = target_source(op, "triton")
+        tree = ast.parse(source)
+        roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                roots.add(node.module.split(".")[0])
+        assert roots <= {"torch", "triton", "math", "__future__"}, f"{op}: {roots}"
 
 
 def test_c1_matches_reference_bitwise() -> None:

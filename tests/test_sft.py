@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from flash_mamba_rl.rl.sft import SFTConfig, SFTExample, SFTTrainingLoop, build_sft_examples
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source
+from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
 from flash_mamba_rl.rl.train import _OP_ENTRY_POINTS, GRPOTrainingLoop, extract_code
 
 
@@ -71,22 +71,27 @@ def make_loop(tmp_path: Any, **overrides: Any) -> tuple[SFTTrainingLoop, StubSFT
 
 
 class TestBuildExamples:
-    def test_one_example_per_target_with_exact_roundtrip(self) -> None:
+    def test_one_example_per_variant_with_exact_roundtrip(self) -> None:
         examples = build_sft_examples()
         assert {e.op for e in examples} == set(available_targets())
+        assert len(examples) == sum(len(target_variants(op)) for op in available_targets())
         for e in examples:
             extracted = extract_code(e.completion, _OP_ENTRY_POINTS[e.op])
-            assert extracted == target_source(e.op)
+            assert extracted == target_source(e.op, e.variant)
             assert f"def {e.op}(" in e.completion
             assert e.prompt  # the real op prompt rides along
 
     def test_subset_selection(self) -> None:
-        examples = build_sft_examples(["mimo_backward"])
-        assert [e.op for e in examples] == ["mimo_backward"]
+        examples = build_sft_examples(["mimo_backward"], ["eager"])
+        assert [(e.op, e.variant) for e in examples] == [("mimo_backward", "eager")]
 
     def test_unknown_op_raises(self) -> None:
         with pytest.raises(KeyError):
             build_sft_examples(["not_an_op"])
+
+    def test_unknown_variant_raises(self) -> None:
+        with pytest.raises(KeyError):
+            build_sft_examples(["mimo_backward"], ["cuda_cpp"])
 
 
 class TestLoop:

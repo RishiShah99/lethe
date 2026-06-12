@@ -24,6 +24,7 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--ops", default="", help="comma-separated subset (default: all six)")
+    ap.add_argument("--variants", default="", help="comma-separated subset (default: all)")
     ap.add_argument("--train-gpu", type=int, default=0)
     ap.add_argument("--save-every", type=int, default=10)
     ap.add_argument("--ckpt-dir", default="sft_out")
@@ -49,8 +50,9 @@ def main() -> None:
     )
 
     ops = [o for o in args.ops.split(",") if o] or None
-    examples = build_sft_examples(ops)
-    print(f"examples: {[e.op for e in examples]}", flush=True)
+    variants = [v for v in args.variants.split(",") if v] or None
+    examples = build_sft_examples(ops, variants)
+    print(f"examples: {[f'{e.op}[{e.variant}]' for e in examples]}", flush=True)
 
     config = SFTConfig(
         total_steps=args.steps,

@@ -19,20 +19,38 @@ correctness argument.
 
 from pathlib import Path
 
-_TARGETS: dict[str, str] = {
-    "forward_chunked_scan": "forward_chunked_scan.py",
-    "backward_selective_scan": "backward_selective_scan.py",
-    "mimo_backward": "mimo_backward.py",
-    "complex_scan_rope": "complex_scan_rope.py",
-    "fused_block_forward": "fused_block_forward.py",
-    "fused_block_backward": "fused_block_backward.py",
-}
+# Two variants per op: "eager" (Option A — correct torch, lands the 0.5
+# contract floor) and "triton" (Option B — the hand-written kernels made
+# self-contained, the neighborhood the speedup term explores from).
+_OPS: tuple[str, ...] = (
+    "forward_chunked_scan",
+    "backward_selective_scan",
+    "mimo_backward",
+    "complex_scan_rope",
+    "fused_block_forward",
+    "fused_block_backward",
+)
+
+_VARIANT_SUFFIX: dict[str, str] = {"eager": "", "triton": "_triton"}
 
 
 def available_targets() -> tuple[str, ...]:
-    return tuple(_TARGETS)
+    return _OPS
 
 
-def target_source(op_name: str) -> str:
-    """Return the verified candidate source for *op_name* (KeyError if unknown)."""
-    return (Path(__file__).parent / _TARGETS[op_name]).read_text(encoding="utf-8")
+def target_variants(op_name: str) -> tuple[str, ...]:
+    if op_name not in _OPS:
+        raise KeyError(op_name)
+    return tuple(
+        v
+        for v, suffix in _VARIANT_SUFFIX.items()
+        if (Path(__file__).parent / f"{op_name}{suffix}.py").exists()
+    )
+
+
+def target_source(op_name: str, variant: str = "eager") -> str:
+    """Return the verified candidate source for *(op_name, variant)*."""
+    if op_name not in _OPS:
+        raise KeyError(op_name)
+    path = Path(__file__).parent / f"{op_name}{_VARIANT_SUFFIX[variant]}.py"
+    return path.read_text(encoding="utf-8")

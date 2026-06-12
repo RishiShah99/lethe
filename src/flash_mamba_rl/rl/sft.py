@@ -35,7 +35,7 @@ from typing import Any, Protocol
 import torch
 
 from flash_mamba_rl.rl.prompts import build_op_prompt
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source
+from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
 
 
 class SFTPolicy(Protocol):
@@ -62,18 +62,30 @@ class SFTExample:
     op: str
     prompt: str
     completion: str
+    variant: str = "eager"
 
 
-def build_sft_examples(ops: Sequence[str] | None = None) -> list[SFTExample]:
-    """One example per op: the op prompt paired with its fenced verified target."""
+def build_sft_examples(
+    ops: Sequence[str] | None = None, variants: Sequence[str] | None = None
+) -> list[SFTExample]:
+    """One example per (op, available variant): op prompt → fenced verified target."""
     examples = []
     for op in ops if ops is not None else available_targets():
-        source = target_source(op)
-        if not source.endswith("\n"):
-            source += "\n"
-        examples.append(
-            SFTExample(op=op, prompt=build_op_prompt(op), completion=f"```python\n{source}```")
-        )
+        present = target_variants(op)
+        for variant in variants if variants is not None else present:
+            if variant not in present:
+                raise KeyError(f"{op} has no {variant!r} target")
+            source = target_source(op, variant)
+            if not source.endswith("\n"):
+                source += "\n"
+            examples.append(
+                SFTExample(
+                    op=op,
+                    prompt=build_op_prompt(op),
+                    completion=f"```python\n{source}```",
+                    variant=variant,
+                )
+            )
     return examples
 
 
@@ -93,6 +105,7 @@ class SFTStepMetrics:
 
     step: int
     op: str
+    variant: str
     loss: float
     tokens: int
     grad_norm: float
@@ -143,6 +156,7 @@ class SFTTrainingLoop:
         metrics = SFTStepMetrics(
             step=self.step_idx,
             op=example.op,
+            variant=example.variant,
             loss=float(loss.item()),
             tokens=tokens,
             grad_norm=float(total_norm.item()),
@@ -156,7 +170,8 @@ class SFTTrainingLoop:
             metrics = self.step()
             history.append(metrics)
             print(
-                f"step {metrics.step}/{self.config.total_steps} op={metrics.op} "
+                f"step {metrics.step}/{self.config.total_steps} "
+                f"op={metrics.op}[{metrics.variant}] "
                 f"loss={metrics.loss:.4f} tokens={metrics.tokens} "
                 f"grad_norm={metrics.grad_norm:.3f}",
                 flush=True,
