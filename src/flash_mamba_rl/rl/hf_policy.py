@@ -1,0 +1,282 @@
+"""HF causal-LM + LoRA policy behind ``PolicyInterface``.
+
+Design constraints this module encodes:
+
+- ``transformers``/``peft`` live in the ``rl`` extra and are absent from
+  some dev environments, so every heavy import is deferred into
+  :meth:`HFPolicy.from_pretrained`. The class body is duck-typed against
+  the small model/tokenizer surface it actually uses (``apply_chat_template``,
+  ``generate``, forward logits, ``device``), which lets CPU tests drive the
+  full logic with stubs.
+- ``apply_chat_template(..., return_dict=True)`` returns a ``BatchEncoding``
+  on the box's transformers — ``input_ids`` and ``attention_mask`` are
+  extracted and passed to ``generate`` explicitly.
+- GRPO needs new/old/ref per-token log-probs over the *same* token
+  sequence. Completions round-trip through strings (the verifier consumes
+  source text), so all three streams retokenize identically via
+  :meth:`HFPolicy.completion_log_probs` — at the first optimizer step
+  new == old exactly and the importance ratio starts at 1.
+- The KL reference policy is the base model with the LoRA adapter
+  disabled (``peft``'s ``disable_adapter``), exposed as
+  :class:`ReferencePolicyView` — one set of base weights in memory, two
+  ``PolicyInterface`` objects.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+
+DEFAULT_LORA_TARGET_MODULES: tuple[str, ...] = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+
+
+@dataclass(frozen=True)
+class SamplingSettings:
+    """Generation hyperparameters (defaults match the Phase D bakeoff)."""
+
+    temperature: float = 0.8
+    top_p: float = 0.95
+    max_new_tokens: int = 4096
+    batch_size: int = 4
+
+
+class HFPolicy:
+    """A trainable HF causal LM (optionally LoRA-wrapped) kernel-generation policy.
+
+    Satisfies ``PolicyInterface`` (``generate`` / ``log_probs``) and adds the
+    batched, differentiable :meth:`completion_log_probs` the GRPO update
+    consumes, plus adapter checkpointing hooks.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        tokenizer: Any,
+        *,
+        sampling: SamplingSettings | None = None,
+    ) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        self.sampling = sampling if sampling is not None else SamplingSettings()
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_name: str,
+        *,
+        lora: bool = True,
+        lora_r: int = 16,
+        lora_alpha: int = 32,
+        # Dropout breaks GRPO's step-0 ratio identity (sampled vs scored
+        # log-probs diverge under different dropout masks) — default off.
+        lora_dropout: float = 0.0,
+        lora_target_modules: tuple[str, ...] = DEFAULT_LORA_TARGET_MODULES,
+        adapter_path: str | None = None,
+        torch_dtype: str = "bfloat16",
+        device_map: str = "auto",
+        sampling: SamplingSettings | None = None,
+    ) -> HFPolicy:
+        """Load a real HF model (+ fresh or checkpointed LoRA adapter).
+
+        Requires the ``rl`` extra (transformers, peft). ``adapter_path``
+        resumes a saved adapter; otherwise a fresh adapter is attached when
+        ``lora=True``.
+        """
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=getattr(torch, torch_dtype),
+            device_map=device_map,
+        )
+        if lora:
+            from peft import LoraConfig, PeftModel, get_peft_model
+
+            if adapter_path is not None:
+                model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
+            else:
+                config = LoraConfig(
+                    r=lora_r,
+                    lora_alpha=lora_alpha,
+                    lora_dropout=lora_dropout,
+                    target_modules=list(lora_target_modules),
+                    task_type="CAUSAL_LM",
+                )
+                model = get_peft_model(model, config)
+        return cls(model, tokenizer, sampling=sampling)
+
+    # ------------------------------------------------------------------
+    # PolicyInterface
+    # ------------------------------------------------------------------
+
+    def generate(self, prompt: str, n: int) -> list[str]:
+        """Sample ``n`` completions of ``prompt`` (chat-templated, batched)."""
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if n == 0:
+            return []
+        input_ids, attention_mask = self._encode_prompt(prompt)
+        prompt_len = input_ids.shape[1]
+        s = self.sampling
+        completions: list[str] = []
+        remaining = n
+        while remaining > 0:
+            k = min(s.batch_size, remaining)
+            with torch.no_grad():
+                out = self._model.generate(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    do_sample=True,
+                    temperature=s.temperature,
+                    top_p=s.top_p,
+                    max_new_tokens=s.max_new_tokens,
+                    num_return_sequences=k,
+                    pad_token_id=self._tokenizer.eos_token_id,
+                )
+            for seq in out:
+                completions.append(
+                    self._tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
+                )
+            remaining -= k
+        return completions
+
+    def log_probs(self, prompt: str, completion: str) -> list[float]:
+        """Per-token log-probs of ``completion`` (model-tokenised, + EOS)."""
+        with torch.no_grad():
+            lp, mask = self.completion_log_probs(prompt, [completion])
+        return [float(x) for x in lp[0][mask[0]].tolist()]
+
+    # ------------------------------------------------------------------
+    # Trainer surface
+    # ------------------------------------------------------------------
+
+    def completion_log_probs(
+        self,
+        prompt: str,
+        completions: list[str],
+        *,
+        use_adapter: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Batched per-token log-probs of each completion given ``prompt``.
+
+        Returns ``(log_probs, mask)``, both ``(K, T_max)`` with ``T_max`` the
+        longest completion's token count (+1 for the appended EOS — the
+        policy is graded on choosing to stop). ``mask`` is True at valid
+        completion positions. Differentiable: wrap in ``torch.no_grad()``
+        for old/ref streams. ``use_adapter=False`` computes under the
+        frozen base model via peft's ``disable_adapter``.
+        """
+        if not completions:
+            raise ValueError("completions must be non-empty")
+        prompt_ids, _ = self._encode_prompt(prompt)
+        prompt_len = prompt_ids.shape[1]
+        device = prompt_ids.device
+        eos = self._tokenizer.eos_token_id
+
+        comp_token_lists: list[list[int]] = []
+        for completion in completions:
+            ids = list(self._tokenizer(completion, add_special_tokens=False)["input_ids"])
+            comp_token_lists.append([*ids, eos])
+        t_max = max(len(ids) for ids in comp_token_lists)
+
+        k = len(completions)
+        full = torch.full((k, prompt_len + t_max), eos, dtype=torch.long, device=device)
+        attention = torch.zeros((k, prompt_len + t_max), dtype=torch.long, device=device)
+        mask = torch.zeros((k, t_max), dtype=torch.bool, device=device)
+        full[:, :prompt_len] = prompt_ids
+        attention[:, :prompt_len] = 1
+        for i, ids in enumerate(comp_token_lists):
+            full[i, prompt_len : prompt_len + len(ids)] = torch.tensor(
+                ids, dtype=torch.long, device=device
+            )
+            attention[i, prompt_len : prompt_len + len(ids)] = 1
+            mask[i, : len(ids)] = True
+
+        if use_adapter:
+            logits = self._model(input_ids=full, attention_mask=attention).logits
+        else:
+            with self._disabled_adapter():
+                logits = self._model(input_ids=full, attention_mask=attention).logits
+
+        # Logits at position j predict token j+1: completion tokens occupy
+        # absolute positions [prompt_len, prompt_len + t_max).
+        pred = logits[:, prompt_len - 1 : prompt_len + t_max - 1, :]
+        targets = full[:, prompt_len : prompt_len + t_max]
+        log_probs = torch.log_softmax(pred.float(), dim=-1)
+        gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+        return gathered * mask, mask
+
+    def trainable_parameters(self) -> Iterator[torch.nn.Parameter]:
+        params: Iterator[torch.nn.Parameter] = (
+            p for p in self._model.parameters() if p.requires_grad
+        )
+        return params
+
+    def save_adapter(self, path: str) -> None:
+        """Persist the LoRA adapter weights (peft ``save_pretrained``)."""
+        self._model.save_pretrained(path)
+
+    def train_mode(self) -> None:
+        self._model.train()
+
+    def eval_mode(self) -> None:
+        self._model.eval()
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _encode_prompt(self, prompt: str) -> tuple[torch.Tensor, torch.Tensor]:
+        enc = self._tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        )
+        device = self._model.device
+        return enc["input_ids"].to(device), enc["attention_mask"].to(device)
+
+    def _disabled_adapter(self) -> Any:
+        disable = getattr(self._model, "disable_adapter", None)
+        if disable is None:
+            raise RuntimeError(
+                "model has no disable_adapter — reference log-probs require a peft-wrapped model"
+            )
+        return disable()
+
+
+class ReferencePolicyView:
+    """``PolicyInterface`` view of an :class:`HFPolicy` with the adapter off.
+
+    The KL reference for LoRA training is the base model itself; this view
+    shares the policy's weights instead of loading a second copy.
+    """
+
+    def __init__(self, policy: HFPolicy) -> None:
+        self._policy = policy
+
+    def generate(self, prompt: str, n: int) -> list[str]:
+        raise NotImplementedError("the reference policy only scores, never samples")
+
+    def log_probs(self, prompt: str, completion: str) -> list[float]:
+        with torch.no_grad():
+            lp, mask = self._policy.completion_log_probs(prompt, [completion], use_adapter=False)
+        return [float(x) for x in lp[0][mask[0]].tolist()]
+
+    def completion_log_probs(
+        self, prompt: str, completions: list[str]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            return self._policy.completion_log_probs(prompt, completions, use_adapter=False)

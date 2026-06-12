@@ -23,6 +23,7 @@ rl = [
     "transformers>=4.45",
     "accelerate>=0.34",
     "tokenizers>=0.20",
+    "peft>=0.13",
 ]
 medical = [
     "wfdb>=4.1",
@@ -89,5 +90,5 @@ no_implicit_optional = true
 files = ["src/flash_mamba_rl"]
 
 [[tool.mypy.overrides]]
-module = ["triton.*", "wfdb.*", "mamba_ssm.*", "causal_conv1d.*"]
+module = ["triton.*", "wfdb.*", "mamba_ssm.*", "causal_conv1d.*", "transformers.*", "peft.*"]
 ignore_missing_imports = true
