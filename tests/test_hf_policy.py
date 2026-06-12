@@ -63,7 +63,12 @@ class StubModel(torch.nn.Module):
     def device(self) -> torch.device:
         return torch.device("cpu")
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> Any:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        use_cache: bool | None = None,
+    ) -> Any:
         logits = self.head(self.emb(input_ids)) + self.ref_logit_shift
         return SimpleNamespace(logits=logits)
 

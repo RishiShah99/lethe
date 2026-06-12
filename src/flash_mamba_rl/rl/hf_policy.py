@@ -31,6 +31,17 @@ Design constraints this module encodes:
   disabled (``peft``'s ``disable_adapter``), exposed as
   :class:`ReferencePolicyView` — one set of base weights in memory, two
   ``PolicyInterface`` objects.
+- The differentiable log-prob pass stores activations for the whole
+  K x (P + T) batch; at 32B that exceeds a single B200 without gradient
+  checkpointing (measured: OOM at 177 GiB). ``gradient_checkpointing=True``
+  enables HF non-reentrant checkpointing — which only engages in train
+  mode, so :meth:`completion_log_probs` toggles ``train()`` around the
+  grad-enabled forward only. Every dropout in the stack is 0.0 (LoRA
+  dropout off by policy default, Qwen2.5 attention dropout 0.0), so the
+  train-mode forward stays deterministic and the step-0 ratio identity
+  holds. Scoring forwards always pass ``use_cache=False`` — a KV cache
+  is pure waste on a full-sequence pass and incompatible with
+  checkpointing.
 """
 
 from __future__ import annotations
@@ -76,11 +87,13 @@ class HFPolicy:
         tokenizer: Any,
         *,
         sampling: SamplingSettings | None = None,
+        gradient_checkpointing: bool = False,
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
         self.sampling = sampling if sampling is not None else SamplingSettings()
         self.last_terminated: list[bool] = []
+        self._gradient_checkpointing = gradient_checkpointing
 
     @classmethod
     def from_pretrained(
@@ -98,12 +111,15 @@ class HFPolicy:
         torch_dtype: str = "bfloat16",
         device_map: str = "auto",
         sampling: SamplingSettings | None = None,
+        gradient_checkpointing: bool = False,
     ) -> HFPolicy:
         """Load a real HF model (+ fresh or checkpointed LoRA adapter).
 
         Requires the ``rl`` extra (transformers, peft). ``adapter_path``
         resumes a saved adapter; otherwise a fresh adapter is attached when
-        ``lora=True``.
+        ``lora=True``. ``gradient_checkpointing`` trades ~30% step time for
+        the activation memory of the differentiable log-prob pass —
+        required for 32B-class models on a single device.
         """
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -113,6 +129,13 @@ class HFPolicy:
             torch_dtype=getattr(torch, torch_dtype),
             device_map=device_map,
         )
+        if gradient_checkpointing:
+            # Non-reentrant variant recomputes unconditionally; the input
+            # require-grads hook covers peft's frozen-embedding edge anyway.
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            model.enable_input_require_grads()
         if lora:
             from peft import LoraConfig, PeftModel, get_peft_model
 
@@ -127,7 +150,9 @@ class HFPolicy:
                     task_type="CAUSAL_LM",
                 )
                 model = get_peft_model(model, config)
-        return cls(model, tokenizer, sampling=sampling)
+        return cls(
+            model, tokenizer, sampling=sampling, gradient_checkpointing=gradient_checkpointing
+        )
 
     # ------------------------------------------------------------------
     # PolicyInterface
@@ -234,11 +259,25 @@ class HFPolicy:
             attention[i, prompt_len : prompt_len + len(ids)] = 1
             mask[i, : len(ids)] = True
 
-        if use_adapter:
-            logits = self._model(input_ids=full, attention_mask=attention).logits
-        else:
-            with self._disabled_adapter():
-                logits = self._model(input_ids=full, attention_mask=attention).logits
+        # Checkpointing only engages in train mode; the toggle is scoped to
+        # the grad-enabled pass (no_grad streams store no activations, and
+        # eval elsewhere keeps the policy's documented sampling behaviour).
+        toggle_train = self._gradient_checkpointing and use_adapter and torch.is_grad_enabled()
+        if toggle_train:
+            self._model.train()
+        try:
+            if use_adapter:
+                logits = self._model(
+                    input_ids=full, attention_mask=attention, use_cache=False
+                ).logits
+            else:
+                with self._disabled_adapter():
+                    logits = self._model(
+                        input_ids=full, attention_mask=attention, use_cache=False
+                    ).logits
+        finally:
+            if toggle_train:
+                self._model.eval()
 
         # Logits at position j predict token j+1: completion tokens occupy
         # absolute positions [prompt_len, prompt_len + t_max).

@@ -77,6 +77,9 @@ def main() -> None:
     ap.add_argument("--score-gpus", default="1,2,3,4,5,6,7")
     ap.add_argument("--ckpt-dir", default="phase_e_out")
     ap.add_argument("--resume", action="store_true")
+    # 32B differentiable log-prob pass OOMs a single B200 without it
+    # (measured 177 GiB); off only for small bring-up models.
+    ap.add_argument("--no-grad-ckpt", action="store_true")
     args = ap.parse_args()
 
     from flash_mamba_rl.rl.curriculum import (
@@ -116,6 +119,7 @@ def main() -> None:
             temperature=args.temperature,
             max_new_tokens=args.max_new_tokens,
         ),
+        gradient_checkpointing=not args.no_grad_ckpt,
     )
 
     base = TrainLoopConfig(
