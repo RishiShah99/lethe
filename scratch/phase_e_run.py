@@ -94,6 +94,10 @@ def main() -> None:
     ap.add_argument("--score-gpus", default="1,2,3,4,5,6,7")
     ap.add_argument("--ckpt-dir", default="phase_e_out")
     ap.add_argument("--resume", action="store_true")
+    # Warm start (the cold-start fix): seed the run from an SFT adapter dir
+    # (e.g. GRPOTrainingLoop.latest_adapter_path("sft_out")). A run's own
+    # resume state always wins so spot preemption keeps RL progress.
+    ap.add_argument("--init-adapter", default="")
     # 32B differentiable log-prob pass OOMs a single B200 without it
     # (measured 177 GiB); off only for small bring-up models.
     ap.add_argument("--no-grad-ckpt", action="store_true")
@@ -132,6 +136,8 @@ def main() -> None:
         )
     else:
         adapter_path = None
+    if adapter_path is None and args.init_adapter:
+        adapter_path = args.init_adapter
     print(f"adapter: {adapter_path or 'fresh'}", flush=True)
     sampling = SamplingSettings(
         temperature=args.temperature,
