@@ -1,0 +1,50 @@
+{
+  "forward_chunked_scan": {
+    "contracts_passed": true,
+    "reward": 0.5,
+    "status": "scored",
+    "views": "1/1",
+    "error": "",
+    "failed_gates": {}
+  },
+  "backward_selective_scan": {
+    "contracts_passed": true,
+    "reward": 0.5,
+    "status": "scored",
+    "views": "6/6",
+    "error": "",
+    "failed_gates": {}
+  },
+  "mimo_backward": {
+    "contracts_passed": true,
+    "reward": 0.5,
+    "status": "scored",
+    "views": "7/7",
+    "error": "",
+    "failed_gates": {}
+  },
+  "complex_scan_rope": {
+    "contracts_passed": true,
+    "reward": 0.5,
+    "status": "scored",
+    "views": "1/1",
+    "error": "",
+    "failed_gates": {}
+  },
+  "fused_block_forward": {
+    "contracts_passed": true,
+    "reward": 0.5,
+    "status": "scored",
+    "views": "1/1",
+    "error": "",
+    "failed_gates": {}
+  },
+  "fused_block_backward": {
+    "contracts_passed": true,
+    "reward": 0.5,
+    "status": "scored",
+    "views": "9/9",
+    "error": "",
+    "failed_gates": {}
+  }
+}
