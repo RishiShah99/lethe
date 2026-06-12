@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from flash_mamba_rl.rl.prompts import available_ops, build_op_prompt
-from flash_mamba_rl.verifier.candidate_scoring import score_candidate_source
+from flash_mamba_rl.rl.train import _OP_ENTRY_POINTS
+from flash_mamba_rl.verifier import op_harness
+from flash_mamba_rl.verifier.candidate_scoring import (
+    _OP_VERIFIERS,
+    OpSpec,
+    _score_source_body,
+    score_candidate_source,
+    scoreable_ops,
+)
+from flash_mamba_rl.verifier.contracts import GateResult
 
 # A correct eager candidate: mirrors the reference math exactly.
 CORRECT_EAGER = """
@@ -82,3 +95,109 @@ def test_prompt_exists_for_scored_op() -> None:
     assert "def forward_chunked_scan(" in prompt
     assert "softplus" in prompt
     assert "atomics" in prompt
+
+
+def test_curriculum_registry_consistent() -> None:
+    """Every scoreable op has a prompt, an entry point, and a real verify driver."""
+    for op in scoreable_ops():
+        assert op in available_ops()
+        assert op in _OP_ENTRY_POINTS
+        spec = _OP_VERIFIERS[op]
+        assert _OP_ENTRY_POINTS[op] == spec.entry_point
+        assert f"def {spec.entry_point}(" in build_op_prompt(op)
+        assert callable(getattr(op_harness, spec.verify_name))
+        if spec.view_fields_attr is not None:
+            fields = getattr(op_harness, spec.view_fields_attr)
+            assert len(fields) > 1
+
+
+def test_forbidden_import_rejected() -> None:
+    wrapper = (
+        "from flash_mamba_rl.kernels.references.forward_chunked_scan "
+        "import reference_forward_chunked_scan as forward_chunked_scan\n"
+    )
+    result = _score_source_body(wrapper, {"op": "forward_chunked_scan"})
+    assert result["status"] == "forbidden_import"
+    assert result["reward"] == 0.0
+    dynamic = "import importlib\nforward_chunked_scan = None\n"
+    assert _score_source_body(dynamic, {})["status"] == "forbidden_import"
+
+
+# ---------------------------------------------------------------------------
+# Multi-view aggregation (fake driver, in-process)
+# ---------------------------------------------------------------------------
+
+FAKE_FIELDS = ("grad_p", "grad_q", "grad_r")
+
+FAKE_SOURCE = "def fake_bwd(dy):\n    return dy\n"
+
+_PASS = GateResult(passed=True, reason="")
+_FAIL = GateResult(passed=False, reason="boom")
+
+
+def _fake_battery(ok: bool) -> dict[str, GateResult]:
+    return {
+        "gate_cmp_01_input_variation": _PASS if ok else _FAIL,
+        "gate_cmp_02_gradient_correctness": _FAIL,  # excluded by default
+        "gate_ord_02_determinism": _PASS,
+    }
+
+
+@pytest.fixture()
+def fake_bwd_op(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    calls: dict[str, Any] = {"fields": [], "passing": set(FAKE_FIELDS)}
+
+    def verify_fake(fn: Any, *, grad_field: str, device: str = "cpu") -> dict[str, GateResult]:
+        calls["fields"].append(grad_field)
+        return _fake_battery(grad_field in calls["passing"])
+
+    monkeypatch.setattr(op_harness, "FAKE_FIELDS", FAKE_FIELDS, raising=False)
+    monkeypatch.setattr(op_harness, "verify_fake", verify_fake, raising=False)
+    monkeypatch.setitem(
+        _OP_VERIFIERS, "fake_bwd_op", OpSpec("fake_bwd", "verify_fake", "FAKE_FIELDS")
+    )
+    return calls
+
+
+class TestMultiView:
+    def test_all_views_pass_is_contract_pass(self, fake_bwd_op: dict[str, Any]) -> None:
+        result = _score_source_body(FAKE_SOURCE, {"op": "fake_bwd_op"})
+        assert result["contracts_passed"] is True
+        assert result["views_passed"] == 3
+        assert result["views_total"] == 3
+        assert result["reward"] == 0.5
+        assert "grad_p/gate_cmp_01_input_variation" in result["gates"]
+
+    def test_one_failing_view_fails_contract(self, fake_bwd_op: dict[str, Any]) -> None:
+        fake_bwd_op["passing"] = {"grad_p", "grad_r"}
+        result = _score_source_body(FAKE_SOURCE, {"op": "fake_bwd_op", "fail_fast": False})
+        assert result["contracts_passed"] is False
+        assert result["views_passed"] == 2
+        assert result["first_failed_view"] == "grad_q"
+        assert result["reward"] == 0.1
+
+    def test_fail_fast_stops_at_first_failing_view(self, fake_bwd_op: dict[str, Any]) -> None:
+        fake_bwd_op["passing"] = set()
+        result = _score_source_body(FAKE_SOURCE, {"op": "fake_bwd_op", "fail_fast": True})
+        assert fake_bwd_op["fields"] == ["grad_p"]
+        assert result["views_passed"] == 0
+        assert result["first_failed_view"] == "grad_p"
+
+    def test_view_fraction_shaping_stays_below_full_pass(self, fake_bwd_op: dict[str, Any]) -> None:
+        fake_bwd_op["passing"] = {"grad_p", "grad_q"}
+        result = _score_source_body(
+            FAKE_SOURCE,
+            {"op": "fake_bwd_op", "fail_fast": False, "reward_shaping": "view_fraction"},
+        )
+        assert result["reward"] == pytest.approx(0.1 + 0.35 * 2 / 3)
+        assert result["reward"] < 0.5
+        fake_bwd_op["passing"] = set(FAKE_FIELDS)
+        full = _score_source_body(
+            FAKE_SOURCE, {"op": "fake_bwd_op", "reward_shaping": "view_fraction"}
+        )
+        assert full["reward"] == 0.5
+
+    def test_excluded_gate_failure_does_not_charge_view(self, fake_bwd_op: dict[str, Any]) -> None:
+        # CMP-02 fails in every fake battery; default exclusion keeps views green.
+        result = _score_source_body(FAKE_SOURCE, {"op": "fake_bwd_op"})
+        assert result["contracts_passed"] is True

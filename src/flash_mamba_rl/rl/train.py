@@ -43,6 +43,11 @@ _CODE_BLOCK = re.compile(r"```(?:python)?\s*\n(.*?)```", re.DOTALL)
 _OP_ENTRY_POINTS: dict[str, str] = {
     "forward_chunked_scan": "forward_chunked_scan",
     "elementwise_silu": "elementwise_silu",
+    "backward_selective_scan": "backward_selective_scan",
+    "mimo_backward": "mimo_backward",
+    "complex_scan_rope": "complex_scan_rope",
+    "fused_block_forward": "fused_block_forward",
+    "fused_block_backward": "fused_block_backward",
 }
 
 
@@ -89,6 +94,8 @@ class TrainLoopConfig:
     max_grad_norm: float = 1.0
     device: str = "cuda"
     score_timeout_s: float = 420.0
+    score_fail_fast: bool = True
+    reward_shaping: str = "none"
     checkpoint_dir: str = "checkpoints/grpo"
     save_every: int = 1
 
@@ -137,6 +144,8 @@ class GRPOTrainingLoop:
             op=self.config.op,
             device=self.config.device,
             timeout_s=self.config.score_timeout_s,
+            fail_fast=self.config.score_fail_fast,
+            reward_shaping=self.config.reward_shaping,
         )
 
     def step(self) -> TrainStepMetrics:
