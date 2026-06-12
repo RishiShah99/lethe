@@ -1490,3 +1490,43 @@ def verify_fused_bwd_op_all_grads(
         )
         for grad_field in FUSED_BWD_GRAD_FIELDS
     }
+
+
+# ---------------------------------------------------------------------------
+# Elementwise SiLU: the GRPO trainer's toy validation op
+# ---------------------------------------------------------------------------
+
+ELEMENTWISE_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
+    # Bitwise identity vs torch eager is unachievable for a hardware kernel
+    # (libdevice exp vs torch's sigmoid differ at ULP level); a near-ULP
+    # budget keeps the gate discriminative — wrong math errs > 1e-2 here.
+    "gate_ord_03_noncommutative_reduction": {"atol": 1e-6, "rtol": 1e-6},
+}
+
+
+def elementwise_silu_reference(x: Tensor) -> Tensor:
+    """fp32 eager SiLU oracle under the op-harness mixed-precision contract."""
+    if x.dtype in (torch.float32, torch.float64):
+        return x * torch.sigmoid(x)
+    x32 = x.to(torch.float32)
+    return (x32 * torch.sigmoid(x32)).to(x.dtype)
+
+
+def verify_elementwise_op(
+    fn: Callable[[Tensor], Tensor],
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+) -> dict[str, GateResult]:
+    """All 12 contract gates over an elementwise single-tensor callable.
+
+    Candidates already match the gates' single-tensor interface, so no
+    adapter closure or saturation re-run is needed and the gate defaults
+    apply unchanged (no accumulation axis to re-point).
+    """
+    overrides: dict[str, dict[str, Any]] = {
+        k: dict(v) for k, v in ELEMENTWISE_GATE_OVERRIDES.items()
+    }
+    if resource_meta is not None:
+        overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
+    return run_all_gates(fn, elementwise_silu_reference, device=device, gate_overrides=overrides)

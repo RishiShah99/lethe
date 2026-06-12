@@ -32,6 +32,7 @@ DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 # op name -> (entry-point callable, op_harness verify driver)
 _OP_VERIFIERS: dict[str, tuple[str, str]] = {
     "forward_chunked_scan": ("forward_chunked_scan", "verify_scan_op"),
+    "elementwise_silu": ("elementwise_silu", "verify_elementwise_op"),
 }
 
 

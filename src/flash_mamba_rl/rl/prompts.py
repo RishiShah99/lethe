@@ -75,8 +75,45 @@ self-contained module (imports, kernels, the forward_chunked_scan
 function). No prose after the code block.
 """
 
+_ELEMENTWISE_SILU_PROMPT = """\
+Write a high-performance Triton kernel implementing elementwise SiLU
+(x * sigmoid(x)) for CUDA GPUs.
+
+Define exactly this Python function (plus any @triton.jit kernels and
+helpers it needs):
+
+```python
+def elementwise_silu(x):  # x: [B, L, D] float32/float16/bfloat16 CUDA tensor
+    ...                   # returns [B, L, D], same dtype and device as x
+```
+
+The output must satisfy a 12-gate contract verifier, graded against a
+float32 eager reference computing x * sigmoid(x):
+
+- Value parity on random and adversarial inputs (zeros, +/-1e6, 1e-6,
+  subnormals, 4x longer sequences) within near-ULP tolerance.
+- Shape polymorphism: any batch, any sequence length, any model dim.
+- Byte-identical determinism across repeated calls.
+- NaN and signed-Inf positions in the output must match the reference
+  exactly (SiLU(-inf) = -inf * 0 = NaN; do not mask, clamp, or
+  nan_to_num).
+- Mixed precision: fp16/bf16 inputs must be computed in float32
+  internally, rounding once at the output.
+- Subnormal inputs must not be flushed to zero (avoid ftz exp
+  approximations).
+- Output device/dtype must match the input.
+
+Performance is rewarded only after every gate passes. Compile failures
+and contract failures earn near-zero reward, so correctness comes first.
+
+Reply with ONE fenced ```python code block containing the complete,
+self-contained module (imports, kernels, the elementwise_silu function).
+No prose after the code block.
+"""
+
 _OP_PROMPTS: dict[str, str] = {
     "forward_chunked_scan": _C1_PROMPT,
+    "elementwise_silu": _ELEMENTWISE_SILU_PROMPT,
 }
 
 
