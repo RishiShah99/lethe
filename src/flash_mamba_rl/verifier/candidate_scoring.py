@@ -259,7 +259,8 @@ def _gate_and_reward(
             if all(results[name].passed for name in required):
                 views_passed += 1
             else:
-                first_failed_view = field
+                if first_failed_view is None:
+                    first_failed_view = field
                 if fail_fast:
                     break
         contracts_passed = views_passed == views_total
