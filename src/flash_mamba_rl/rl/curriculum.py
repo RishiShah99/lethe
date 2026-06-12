@@ -4,9 +4,13 @@ Level order is forward ops first (single gate view, densest reward
 signal), then backward ops by view count — the dependency structure of
 the kernels themselves, not their Phase C build order.
 
-Promotion: mean group reward >= ``promote_threshold`` for
-``promote_window`` consecutive steps. A level that exhausts
-``max_steps_per_level`` without promotion advances anyway with
+Promotion: the group's contract-pass rate >= ``promote_contract_rate``
+for ``promote_window`` consecutive steps. The gate deliberately reads
+contract passes, not rewards: with ``view_fraction`` shaping a backward
+group can sit at mean reward ~0.39 without a single fully-passing
+kernel, and a reward threshold would call that "promoted" while the
+same number means >60% full passes on a forward level. A level that
+exhausts ``max_steps_per_level`` without promotion advances anyway with
 ``promoted=False`` recorded: the kill criterion is evaluated per-op over
 the whole run, and a stuck level must not starve later levels of
 training signal — the honest negative stays in the level record.
@@ -43,7 +47,7 @@ DEFAULT_CURRICULUM: tuple[str, ...] = (
 @dataclass(frozen=True)
 class CurriculumConfig:
     ops: tuple[str, ...] = DEFAULT_CURRICULUM
-    promote_threshold: float = 0.35
+    promote_contract_rate: float = 0.5
     promote_window: int = 8
     max_steps_per_level: int = 200
 
@@ -59,6 +63,7 @@ class LevelState:
     closed: bool = False
     best_mean_reward: float = 0.0
     best_max_reward: float = 0.0
+    best_contract_rate: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -84,14 +89,17 @@ class CurriculumSchedule:
     def current_op(self) -> str:
         return self.current_level.op
 
-    def record_step(self, mean_reward: float, max_reward: float = 0.0) -> bool:
+    def record_step(
+        self, mean_reward: float, max_reward: float = 0.0, contract_rate: float = 0.0
+    ) -> bool:
         """Record one training step's group stats; True when the level closed."""
         cfg = self.config
         level = self.current_level
         level.steps += 1
         level.best_mean_reward = max(level.best_mean_reward, mean_reward)
         level.best_max_reward = max(level.best_max_reward, max_reward)
-        if mean_reward >= cfg.promote_threshold:
+        level.best_contract_rate = max(level.best_contract_rate, contract_rate)
+        if contract_rate >= cfg.promote_contract_rate:
             level.consecutive_at_threshold += 1
         else:
             level.consecutive_at_threshold = 0
@@ -188,18 +196,29 @@ class CurriculumRunner:
         """Train through the curriculum; returns the per-level summary."""
         while not self.schedule.done:
             idx = self.schedule.level_idx
-            loop = self._make_loop(idx)
             level = self.schedule.current_level
+            # A restored state can point at an already-closed level (e.g.
+            # the op list changed between resumes) — advance instead of
+            # spinning on a level whose inner loop can never run.
+            if level.closed:
+                self.schedule.level_idx += 1
+                self._write_state()
+                continue
+            loop = self._make_loop(idx)
             # A resumed level replays its already-recorded steps inside
             # trainer_state; the schedule only counts new ones.
             while not level.closed and loop.step_idx < loop.config.total_steps:
                 metrics = loop.step()
-                closed = self.schedule.record_step(metrics.mean_reward, metrics.max_reward)
+                contract_rate = metrics.n_contracts_passed / loop.config.n_per_prompt
+                closed = self.schedule.record_step(
+                    metrics.mean_reward, metrics.max_reward, contract_rate
+                )
                 loop.save_checkpoint()
                 self._write_state()
                 print(
                     f"[curriculum] level {idx} ({level.op}) step {level.steps} "
                     f"mean_r={metrics.mean_reward:.3f} "
+                    f"contracts={metrics.n_contracts_passed}/{loop.config.n_per_prompt} "
                     f"consec={level.consecutive_at_threshold} "
                     f"promoted={level.promoted}",
                     flush=True,

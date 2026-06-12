@@ -38,21 +38,24 @@ SCORE_TIMEOUT_S: dict[str, float] = {
 
 
 def latest_adapter_anywhere(ckpt_dir: str) -> str | None:
-    """Newest committed adapter across curriculum level dirs (or the root)."""
+    """Newest committed adapter across curriculum level dirs.
+
+    Curriculum mode only — direct mode resolves its adapter from its own
+    ``direct_<op>`` dir so the curriculum-off arm can never resume from
+    (or contaminate itself with) curriculum-trained weights.
+    """
     from flash_mamba_rl.rl.train import GRPOTrainingLoop
 
     candidates: list[tuple[float, str]] = []
-    roots = [ckpt_dir]
     if os.path.isdir(ckpt_dir):
-        roots += [
-            os.path.join(ckpt_dir, d)
-            for d in os.listdir(ckpt_dir)
-            if d.startswith("level") and os.path.isdir(os.path.join(ckpt_dir, d))
-        ]
-    for root in roots:
-        path = GRPOTrainingLoop.latest_adapter_path(root)
-        if path is not None:
-            candidates.append((os.path.getmtime(os.path.join(root, "trainer_state.pt")), path))
+        for d in os.listdir(ckpt_dir):
+            root = os.path.join(ckpt_dir, d)
+            if d.startswith("level") and os.path.isdir(root):
+                path = GRPOTrainingLoop.latest_adapter_path(root)
+                if path is not None:
+                    candidates.append(
+                        (os.path.getmtime(os.path.join(root, "trainer_state.pt")), path)
+                    )
     return max(candidates)[1] if candidates else None
 
 
@@ -67,7 +70,7 @@ def main() -> None:
     ap.add_argument("--kl-coef", type=float, default=0.04)
     ap.add_argument("--max-new-tokens", type=int, default=2048)
     ap.add_argument("--temperature", type=float, default=1.0)
-    ap.add_argument("--promote-threshold", type=float, default=0.35)
+    ap.add_argument("--promote-rate", type=float, default=0.5, help="contract-pass rate gate")
     ap.add_argument("--promote-window", type=int, default=8)
     ap.add_argument("--reward-shaping", choices=("none", "view_fraction"), default="view_fraction")
     ap.add_argument("--no-speedup", action="store_true", help="skip the timing stage")
@@ -96,7 +99,15 @@ def main() -> None:
             measure_speedup=not args.no_speedup,
         )
 
-    adapter_path = latest_adapter_anywhere(args.ckpt_dir) if args.resume else None
+    direct_dir = os.path.join(args.ckpt_dir, f"direct_{args.op}")
+    if args.resume:
+        adapter_path = (
+            GRPOTrainingLoop.latest_adapter_path(direct_dir)
+            if args.mode == "direct"
+            else latest_adapter_anywhere(args.ckpt_dir)
+        )
+    else:
+        adapter_path = None
     print(f"adapter: {adapter_path or 'fresh'}", flush=True)
     policy = HFPolicy.from_pretrained(
         args.model,
@@ -126,7 +137,7 @@ def main() -> None:
             base,
             op=args.op,
             score_timeout_s=SCORE_TIMEOUT_S.get(args.op, 600.0),
-            checkpoint_dir=os.path.join(args.ckpt_dir, f"direct_{args.op}"),
+            checkpoint_dir=direct_dir,
         )
         loop = GRPOTrainingLoop(config, policy, batch_scorer=batch_scorer_factory(args.op))
         if args.resume:
@@ -140,7 +151,7 @@ def main() -> None:
         policy=policy,
         curriculum=CurriculumConfig(
             ops=DEFAULT_CURRICULUM,
-            promote_threshold=args.promote_threshold,
+            promote_contract_rate=args.promote_rate,
             promote_window=args.promote_window,
             max_steps_per_level=args.steps,
         ),

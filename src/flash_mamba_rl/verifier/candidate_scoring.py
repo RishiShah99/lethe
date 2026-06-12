@@ -18,7 +18,8 @@ bad candidates (the common case) pay for one view, near-passing ones pay
 for all. Optional ``view_fraction`` shaping redistributes the
 contract-fail band as 0.1 + 0.35 * views_passed/views_total, strictly
 below the 0.5 full-pass floor — the speedup term still pays only after
-every view passes.
+every view passes. Shaping disables fail-fast: a prefix count would
+zero the signal for improving later views whenever an early one fails.
 
 Candidate sources that mention the project package, the official Mamba
 kernels, or dynamic-import machinery are rejected before exec
@@ -35,22 +36,55 @@ Override via ``config["exclude_gates"]``.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 from flash_mamba_rl.verifier.sandbox import run_in_subprocess
 
+
+@contextlib.contextmanager
+def _hidden_project_modules() -> Iterator[None]:
+    """Hide already-imported project modules from sys.modules.
+
+    The worker imports op_harness (and transitively the references)
+    before the candidate's module body runs; without this, a candidate
+    could fish the oracle out of sys.modules with a string-built key and
+    wrap it. Local references held by the worker stay valid; the entries
+    are restored afterwards so in-process callers (tests) see identical
+    module objects.
+    """
+    prefixes = ("flash_mamba_rl", "mamba_ssm", "causal_conv1d", "selective_scan_cuda")
+    hidden = {
+        name: sys.modules.pop(name)
+        for name in list(sys.modules)
+        if name in prefixes or name.startswith(tuple(p + "." for p in prefixes))
+    }
+    try:
+        yield
+    finally:
+        sys.modules.update(hidden)
+
+
 DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 
 # Substring screen, not a security boundary: it stops the realistic RL
 # reward hacks (importing the reference/official kernels, dynamic-import
-# or exec evasion) for sources the policy emits. "selective_scan_cuda" is
+# or exec evasion, reaching already-imported project modules through
+# sys.modules) for sources the policy emits. "selective_scan_cuda" is
 # the official extension module; the bare entry-point name
-# "backward_selective_scan" does not contain it.
+# "backward_selective_scan" does not contain it. A kernel module never
+# needs sys at all, so plain sys imports are screened too; the
+# already-imported project modules are additionally hidden from
+# sys.modules while the candidate's module body executes (see
+# ``_hidden_project_modules``). Residual evasions (string-built names
+# via getattr chains at call time) stay possible by construction —
+# documented arms-race boundary, not a contract.
 FORBIDDEN_SOURCE_TOKENS: tuple[str, ...] = (
     "flash_mamba_rl",
     "mamba_ssm",
@@ -60,6 +94,9 @@ FORBIDDEN_SOURCE_TOKENS: tuple[str, ...] = (
     "__import__",
     "exec(",
     "eval(",
+    "sys.modules",
+    "import sys",
+    "from sys",
 )
 
 
@@ -134,14 +171,17 @@ def _failure(status: str, error: str) -> dict[str, Any]:
 
 
 def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
-    from flash_mamba_rl.verifier import op_harness
-    from flash_mamba_rl.verifier.reward import compute_reward
-
     op_name = str(config.get("op", "forward_chunked_scan"))
     device = str(config.get("device", "cpu"))
     exclude = set(config.get("exclude_gates", DEFAULT_EXCLUDE_GATES))
     fail_fast = bool(config.get("fail_fast", True))
     reward_shaping = str(config.get("reward_shaping", "none"))
+    # Under fail-fast, views_passed is the longest passing prefix, not the
+    # pass count — shaping over a prefix would zero the gradient signal for
+    # improving later views whenever an early one fails. Shaping therefore
+    # always runs the full battery.
+    if reward_shaping == "view_fraction":
+        fail_fast = False
     spec = _OP_VERIFIERS[op_name]
 
     hits = [tok for tok in FORBIDDEN_SOURCE_TOKENS if tok in source]
@@ -149,22 +189,45 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
         return _failure("forbidden_import", f"forbidden tokens: {hits}")
 
     # Real temp file: @triton.jit refuses exec'd pseudo-modules and the lazy
-    # PTX compile re-reads the source during gating.
+    # PTX compile re-reads the source during gating. The file is removed by
+    # the caller's lifecycle only after scoring completes (the subprocess
+    # exits; in-process callers rely on the finally below).
     fd, path = tempfile.mkstemp(suffix=".py", prefix="cand_")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(source)
-    mod_spec = importlib.util.spec_from_file_location("_scored_candidate", path)
-    assert mod_spec is not None and mod_spec.loader is not None
-    mod = importlib.util.module_from_spec(mod_spec)
-    sys.modules["_scored_candidate"] = mod
     try:
-        mod_spec.loader.exec_module(mod)
-    except Exception as exc:
-        return _failure("exec_fail", f"{type(exc).__name__}: {_trunc(exc)}")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(source)
+        mod_spec = importlib.util.spec_from_file_location("_scored_candidate", path)
+        assert mod_spec is not None and mod_spec.loader is not None
+        mod = importlib.util.module_from_spec(mod_spec)
+        sys.modules["_scored_candidate"] = mod
+        try:
+            with _hidden_project_modules():
+                mod_spec.loader.exec_module(mod)
+        except Exception as exc:
+            return _failure("exec_fail", f"{type(exc).__name__}: {_trunc(exc)}")
 
-    fn = getattr(mod, spec.entry_point, None)
-    if fn is None or not callable(fn):
-        return _failure("no_entrypoint", f"module defines no callable {spec.entry_point}")
+        fn = getattr(mod, spec.entry_point, None)
+        if fn is None or not callable(fn):
+            return _failure("no_entrypoint", f"module defines no callable {spec.entry_point}")
+        return _gate_and_reward(fn, spec, config, op_name, device, exclude, fail_fast)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def _gate_and_reward(
+    fn: Any,
+    spec: OpSpec,
+    config: dict[str, Any],
+    op_name: str,
+    device: str,
+    exclude: set[str],
+    fail_fast: bool,
+) -> dict[str, Any]:
+    from flash_mamba_rl.verifier import op_harness
+    from flash_mamba_rl.verifier.reward import compute_reward
+
+    reward_shaping = str(config.get("reward_shaping", "none"))
 
     verify = getattr(op_harness, spec.verify_name)
     gates: dict[str, dict[str, Any]] = {}

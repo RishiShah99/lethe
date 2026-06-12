@@ -121,6 +121,23 @@ def test_forbidden_import_rejected() -> None:
     assert result["reward"] == 0.0
     dynamic = "import importlib\nforward_chunked_scan = None\n"
     assert _score_source_body(dynamic, {})["status"] == "forbidden_import"
+    sys_fishing = "import sys as s\nforward_chunked_scan = None\n"
+    assert _score_source_body(sys_fishing, {})["status"] == "forbidden_import"
+    modules_fishing = 'm = __builtins__\nx = "sys.modules"\nforward_chunked_scan = None\n'
+    assert _score_source_body(modules_fishing, {})["status"] == "forbidden_import"
+
+
+def test_project_modules_hidden_during_candidate_exec() -> None:
+    import sys
+
+    from flash_mamba_rl.verifier.candidate_scoring import _hidden_project_modules
+
+    before = {k: v for k, v in sys.modules.items() if k.startswith("flash_mamba_rl")}
+    assert before  # the package is imported in this test process
+    with _hidden_project_modules():
+        assert not any(k.startswith("flash_mamba_rl") for k in sys.modules)
+    after = {k: v for k, v in sys.modules.items() if k.startswith("flash_mamba_rl")}
+    assert after == before  # identical module objects restored
 
 
 # ---------------------------------------------------------------------------
@@ -201,3 +218,14 @@ class TestMultiView:
         # CMP-02 fails in every fake battery; default exclusion keeps views green.
         result = _score_source_body(FAKE_SOURCE, {"op": "fake_bwd_op"})
         assert result["contracts_passed"] is True
+
+    def test_shaping_forces_full_battery(self, fake_bwd_op: dict[str, Any]) -> None:
+        """view_fraction must count passes, not a fail-fast prefix."""
+        fake_bwd_op["passing"] = {"grad_q", "grad_r"}  # first view fails
+        result = _score_source_body(
+            FAKE_SOURCE,
+            {"op": "fake_bwd_op", "fail_fast": True, "reward_shaping": "view_fraction"},
+        )
+        assert fake_bwd_op["fields"] == list(FAKE_FIELDS)  # no early stop
+        assert result["views_passed"] == 2
+        assert result["reward"] == pytest.approx(0.1 + 0.35 * 2 / 3)
