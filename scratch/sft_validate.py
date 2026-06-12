@@ -17,7 +17,10 @@ import json
 import sys
 
 from flash_mamba_rl.rl.sft_targets import available_targets, target_source
-from flash_mamba_rl.verifier.candidate_scoring import score_candidate_source
+from flash_mamba_rl.verifier.candidate_scoring import (
+    DEFAULT_EXCLUDE_GATES,
+    score_candidate_source,
+)
 
 # Mirrors phase_e_run.SCORE_TIMEOUT_S, doubled: the eager target pays the
 # reference's own autograd cost a second time on the candidate side.
@@ -50,7 +53,13 @@ def main() -> int:
         )
         passed = bool(result["contracts_passed"])
         all_passed &= passed
-        failed_gates = {g: r["reason"] for g, r in result["gates"].items() if not r["passed"]}
+        # Default-excluded gates (CMP-02) fail by construction on backward
+        # views and never charge the verdict — keep them out of the log.
+        failed_gates = {
+            g: r["reason"]
+            for g, r in result["gates"].items()
+            if not r["passed"] and g.rsplit("/", 1)[-1] not in DEFAULT_EXCLUDE_GATES
+        }
         summary[op] = {
             "contracts_passed": passed,
             "reward": result["reward"],
