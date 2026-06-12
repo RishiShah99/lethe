@@ -128,14 +128,16 @@ class CurriculumRunner:
     """Drives one GRPO loop per curriculum level over a shared policy.
 
     ``scorer_factory`` (op name -> scorer callable) replaces the default
-    sandboxed scorer in tests and in multi-GPU runs where scoring is
-    farmed out per device.
+    sandboxed scorer in tests; ``batch_scorer_factory`` (op name -> batch
+    scorer, e.g. a :class:`~flash_mamba_rl.rl.parallel_scoring.ParallelScorer`)
+    farms a step's candidates across scoring GPUs.
     """
 
     base_config: TrainLoopConfig
     policy: TrainablePolicy
     curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
     scorer_factory: Any = None
+    batch_scorer_factory: Any = None
 
     def __post_init__(self) -> None:
         self.schedule = CurriculumSchedule(self.curriculum)
@@ -175,7 +177,10 @@ class CurriculumRunner:
     def _make_loop(self, idx: int) -> GRPOTrainingLoop:
         config = self.level_config(idx)
         scorer = self.scorer_factory(config.op) if self.scorer_factory is not None else None
-        loop = GRPOTrainingLoop(config, self.policy, scorer=scorer)
+        batch_scorer = (
+            self.batch_scorer_factory(config.op) if self.batch_scorer_factory is not None else None
+        )
+        loop = GRPOTrainingLoop(config, self.policy, scorer=scorer, batch_scorer=batch_scorer)
         loop.load_trainer_state()
         return loop
 

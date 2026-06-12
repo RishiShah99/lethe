@@ -132,6 +132,7 @@ def run_in_subprocess(
     *,
     timeout_s: float = 60.0,
     memory_limit_mb: int = 8192,
+    extra_env: dict[str, str] | None = None,
 ) -> SubprocessResult:
     """Run ``<callable_module>.<callable_name>(*inputs)`` in an isolated subprocess.
 
@@ -153,6 +154,10 @@ def run_in_subprocess(
         practical RLIMIT_AS (multi-GPU unified addressing), so GPU-executing
         candidates must run with ``memory_limit_mb=0`` — rely on the timeout
         and process isolation instead. The default suits CPU-only work.
+    extra_env:
+        Environment overrides for the child (e.g. ``CUDA_VISIBLE_DEVICES``
+        to pin a scoring worker to one GPU). Values replace any inherited
+        ones, so device ids are absolute regardless of the parent's mask.
 
     Returns
     -------
@@ -183,6 +188,8 @@ def run_in_subprocess(
     if env.get("PYTHONPATH"):
         parent_paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(parent_paths)
+    if extra_env:
+        env.update(extra_env)
 
     proc: subprocess.Popen[bytes] | None = None
     try:

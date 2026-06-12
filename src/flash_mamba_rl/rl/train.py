@@ -126,11 +126,13 @@ class GRPOTrainingLoop:
         *,
         prompt: str | None = None,
         scorer: Callable[[str], dict[str, Any]] | None = None,
+        batch_scorer: Callable[[list[str]], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
         self.prompt = prompt if prompt is not None else build_op_prompt(config.op)
         self._scorer = scorer if scorer is not None else self._default_scorer
+        self._batch_scorer = batch_scorer
         self._entry_point = _OP_ENTRY_POINTS[config.op]
         self.optimizer = torch.optim.AdamW(
             list(policy.trainable_parameters()), lr=config.learning_rate
@@ -157,9 +159,16 @@ class GRPOTrainingLoop:
         self.policy.eval_mode()
         completions = self.policy.generate(self.prompt, cfg.n_per_prompt)
 
+        sources = [extract_code(c, self._entry_point) for c in completions]
+        to_score = [(idx, src) for idx, src in enumerate(sources) if src is not None]
+        if self._batch_scorer is not None and to_score:
+            scored = self._batch_scorer([src for _, src in to_score])
+        else:
+            scored = [self._scorer(src) for _, src in to_score]
+        score_by_idx = {idx: score for (idx, _), score in zip(to_score, scored, strict=True)}
+
         rows: list[dict[str, Any]] = []
-        for idx, completion in enumerate(completions):
-            source = extract_code(completion, self._entry_point)
+        for idx, source in enumerate(sources):
             if source is None:
                 rows.append(
                     {
@@ -172,13 +181,12 @@ class GRPOTrainingLoop:
                     }
                 )
             else:
-                score = self._scorer(source)
                 rows.append(
                     {
                         "step": self.step_idx + 1,
                         "idx": idx,
                         "source": source,
-                        **score,
+                        **score_by_idx[idx],
                     }
                 )
         self._append_jsonl("rollouts.jsonl", rows)

@@ -10,3 +10,10 @@ def alloc_8_gib() -> int:
     """Allocate an 8 GiB buffer; under a smaller RLIMIT_AS this raises MemoryError."""
     buf = bytearray(8 * 1024**3)
     return len(buf)
+
+
+def env_echo(name: str) -> str | None:
+    """Return the child process's value of environment variable *name*."""
+    import os
+
+    return os.environ.get(name)

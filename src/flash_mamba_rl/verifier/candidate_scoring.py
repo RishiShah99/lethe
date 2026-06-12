@@ -249,12 +249,14 @@ def score_candidate_source(
     fail_fast: bool = True,
     reward_shaping: str = "none",
     measure_speedup: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Score one candidate source in an isolated subprocess (parent-side API).
 
     Sandbox-level failures (hangs, segfaults, CUDA context kills) normalize
     to reward 0.0 — a kernel that takes the process down cannot earn the
-    contract-failure floor.
+    contract-failure floor. ``extra_env`` pins the sandbox (e.g.
+    ``CUDA_VISIBLE_DEVICES``) for multi-GPU scoring workers.
     """
     res = run_in_subprocess(
         "flash_mamba_rl.verifier.candidate_scoring",
@@ -272,6 +274,7 @@ def score_candidate_source(
         ),
         timeout_s=timeout_s,
         memory_limit_mb=0,
+        extra_env=extra_env,
     )
     if res.success and isinstance(res.output, dict):
         return dict(res.output)
