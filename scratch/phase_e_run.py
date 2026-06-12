@@ -81,12 +81,17 @@ def main() -> None:
     ap.add_argument("--reward-shaping", choices=("none", "view_fraction"), default="view_fraction")
     ap.add_argument("--no-speedup", action="store_true", help="skip the timing stage")
     ap.add_argument("--train-gpu", type=int, default=0, help="absolute id for the trainer policy")
+    # Default OFF: a threaded data-parallel pool is GIL-bound for HF
+    # generate, and at K=8 decode is weight-bandwidth-bound so batched
+    # single-GPU generation is already near-optimal (smoke: pool 487 s/step
+    # vs single-GPU 271 s). Set e.g. --gen-gpus 1,2,3,4 only if K is large
+    # enough to make a replica's batch compute-bound. "none" = inline.
     ap.add_argument(
         "--gen-gpus",
-        default="1,2,3,4",
-        help="data-parallel generation replica GPUs; empty = trainer generates inline",
+        default="none",
+        help="data-parallel generation replica GPUs; 'none' = trainer generates inline",
     )
-    ap.add_argument("--score-gpus", default="5,6,7")
+    ap.add_argument("--score-gpus", default="1,2,3,4,5,6,7")
     ap.add_argument("--ckpt-dir", default="phase_e_out")
     ap.add_argument("--resume", action="store_true")
     # 32B differentiable log-prob pass OOMs a single B200 without it
@@ -105,7 +110,9 @@ def main() -> None:
     from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     gpu_ids = tuple(int(g) for g in args.score_gpus.split(","))
-    gen_gpus = [int(g) for g in args.gen_gpus.split(",") if g.strip() != ""]
+    gen_gpus = [
+        int(g) for g in args.gen_gpus.split(",") if g.strip() and g.strip().lower() != "none"
+    ]
 
     def batch_scorer_factory(op: str) -> ParallelScorer:
         return ParallelScorer(
