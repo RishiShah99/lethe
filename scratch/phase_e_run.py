@@ -1,9 +1,15 @@
 """Phase E driver: curriculum GRPO over the six-op suite on the 8x B200 box.
 
-Topology: the policy (Qwen2.5-Coder-32B + LoRA, bf16 ~64 GB) lives on one
-B200 — launch with CUDA_VISIBLE_DEVICES=0 — and scoring sandboxes are
-pinned per candidate to the remaining GPUs (absolute ids via extra_env
-override, so the trainer's mask does not leak into the workers).
+Topology (launch WITHOUT a CUDA_VISIBLE_DEVICES mask so all 8 B200s are
+visible — the driver places everything by absolute id):
+  - trainer policy (Qwen2.5-Coder-32B + LoRA, optimizer) on --train-gpu
+  - generation replicas on --gen-gpus (a data-parallel GenerationPool;
+    the K candidates split across them, sampled concurrently). Generation
+    is the 32B bottleneck, so most GPUs go here.
+  - scoring sandboxes pinned per candidate to --score-gpus (absolute ids
+    via extra_env, so the trainer's device choice does not leak in).
+Default 8-GPU split: train 0 · generate 1,2,3,4 · score 5,6,7. With
+--gen-gpus "" the trainer policy generates inline (single-GPU fallback).
 
 Modes:
   curriculum  — six-level CurriculumRunner with promotion gates (default)
@@ -74,7 +80,13 @@ def main() -> None:
     ap.add_argument("--promote-window", type=int, default=8)
     ap.add_argument("--reward-shaping", choices=("none", "view_fraction"), default="view_fraction")
     ap.add_argument("--no-speedup", action="store_true", help="skip the timing stage")
-    ap.add_argument("--score-gpus", default="1,2,3,4,5,6,7")
+    ap.add_argument("--train-gpu", type=int, default=0, help="absolute id for the trainer policy")
+    ap.add_argument(
+        "--gen-gpus",
+        default="1,2,3,4",
+        help="data-parallel generation replica GPUs; empty = trainer generates inline",
+    )
+    ap.add_argument("--score-gpus", default="5,6,7")
     ap.add_argument("--ckpt-dir", default="phase_e_out")
     ap.add_argument("--resume", action="store_true")
     # 32B differentiable log-prob pass OOMs a single B200 without it
@@ -87,11 +99,13 @@ def main() -> None:
         CurriculumConfig,
         CurriculumRunner,
     )
+    from flash_mamba_rl.rl.gen_pool import GenerationPool
     from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
     from flash_mamba_rl.rl.parallel_scoring import ParallelScorer
     from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     gpu_ids = tuple(int(g) for g in args.score_gpus.split(","))
+    gen_gpus = [int(g) for g in args.gen_gpus.split(",") if g.strip() != ""]
 
     def batch_scorer_factory(op: str) -> ParallelScorer:
         return ParallelScorer(
@@ -112,15 +126,29 @@ def main() -> None:
     else:
         adapter_path = None
     print(f"adapter: {adapter_path or 'fresh'}", flush=True)
+    sampling = SamplingSettings(
+        temperature=args.temperature,
+        max_new_tokens=args.max_new_tokens,
+        batch_size=args.k,
+    )
     policy = HFPolicy.from_pretrained(
         args.model,
         adapter_path=adapter_path,
-        sampling=SamplingSettings(
-            temperature=args.temperature,
-            max_new_tokens=args.max_new_tokens,
-        ),
+        device_map={"": f"cuda:{args.train_gpu}"},
+        sampling=sampling,
         gradient_checkpointing=not args.no_grad_ckpt,
     )
+
+    gen_pool = None
+    if gen_gpus:
+        print(f"generation pool on cuda {gen_gpus}", flush=True)
+        gen_pool = GenerationPool.from_pretrained(
+            args.model,
+            gen_gpus,
+            sampling=sampling,
+            lora=True,
+        )
+        gen_pool.refresh_from(policy)
 
     base = TrainLoopConfig(
         n_per_prompt=args.k,
@@ -143,7 +171,9 @@ def main() -> None:
             score_timeout_s=SCORE_TIMEOUT_S.get(args.op, 600.0),
             checkpoint_dir=direct_dir,
         )
-        loop = GRPOTrainingLoop(config, policy, batch_scorer=batch_scorer_factory(args.op))
+        loop = GRPOTrainingLoop(
+            config, policy, batch_scorer=batch_scorer_factory(args.op), gen_pool=gen_pool
+        )
         if args.resume:
             resumed = loop.load_trainer_state()
             print(f"resume: {'step ' + str(loop.step_idx) if resumed else 'no state'}", flush=True)
@@ -160,6 +190,7 @@ def main() -> None:
             max_steps_per_level=args.steps,
         ),
         batch_scorer_factory=batch_scorer_factory,
+        gen_pool=gen_pool,
     )
     if args.resume and runner.resume():
         print(f"resume: level {runner.schedule.level_idx}", flush=True)

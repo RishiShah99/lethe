@@ -109,7 +109,7 @@ class HFPolicy:
         lora_target_modules: tuple[str, ...] = DEFAULT_LORA_TARGET_MODULES,
         adapter_path: str | None = None,
         torch_dtype: str = "bfloat16",
-        device_map: str = "auto",
+        device_map: str | dict[str, str] = "auto",
         sampling: SamplingSettings | None = None,
         gradient_checkpointing: bool = False,
     ) -> HFPolicy:
@@ -296,6 +296,30 @@ class HFPolicy:
     def save_adapter(self, path: str) -> None:
         """Persist the LoRA adapter weights (peft ``save_pretrained``)."""
         self._model.save_pretrained(path)
+
+    @property
+    def device(self) -> torch.device:
+        dev: torch.device = self._model.device
+        return dev
+
+    def adapter_state_dict(self) -> dict[str, torch.Tensor]:
+        """The current LoRA tensors (detached, CPU) for broadcast to replicas.
+
+        CPU-resident so a generation-pool replica on another device loads
+        them without a cross-device peer copy from the trainer.
+        """
+        from peft import get_peft_model_state_dict
+
+        sd = get_peft_model_state_dict(self._model)
+        return {k: v.detach().to("cpu") for k, v in sd.items()}
+
+    def load_adapter_state_dict(self, state: dict[str, torch.Tensor]) -> None:
+        """Overwrite this policy's LoRA tensors (generation-replica refresh)."""
+        from peft import set_peft_model_state_dict
+
+        device = self._model.device
+        moved = {k: v.to(device) for k, v in state.items()}
+        set_peft_model_state_dict(self._model, moved)
 
     def train_mode(self) -> None:
         self._model.train()

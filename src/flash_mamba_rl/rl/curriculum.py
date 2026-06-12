@@ -146,6 +146,7 @@ class CurriculumRunner:
     curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
     scorer_factory: Any = None
     batch_scorer_factory: Any = None
+    gen_pool: Any = None
 
     def __post_init__(self) -> None:
         self.schedule = CurriculumSchedule(self.curriculum)
@@ -188,7 +189,13 @@ class CurriculumRunner:
         batch_scorer = (
             self.batch_scorer_factory(config.op) if self.batch_scorer_factory is not None else None
         )
-        loop = GRPOTrainingLoop(config, self.policy, scorer=scorer, batch_scorer=batch_scorer)
+        loop = GRPOTrainingLoop(
+            config,
+            self.policy,
+            scorer=scorer,
+            batch_scorer=batch_scorer,
+            gen_pool=self.gen_pool,
+        )
         loop.load_trainer_state()
         return loop
 

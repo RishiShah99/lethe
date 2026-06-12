@@ -127,9 +127,16 @@ class GRPOTrainingLoop:
         prompt: str | None = None,
         scorer: Callable[[str], dict[str, Any]] | None = None,
         batch_scorer: Callable[[list[str]], list[dict[str, Any]]] | None = None,
+        gen_pool: Any = None,
     ) -> None:
         self.config = config
         self.policy = policy
+        # Generation is the bottleneck at 32B; an optional data-parallel
+        # GenerationPool samples across replica GPUs. The trainer policy
+        # still owns the log-prob streams and the update — only sampling is
+        # pooled, and the pool's LoRA is refreshed from this policy each
+        # step so the sampled distribution is the current behaviour policy.
+        self._gen_pool = gen_pool
         self.prompt = prompt if prompt is not None else build_op_prompt(config.op)
         self._scorer = scorer if scorer is not None else self._default_scorer
         self._batch_scorer = batch_scorer
@@ -157,7 +164,12 @@ class GRPOTrainingLoop:
         log-probs must agree at step 0 (ratio identity)."""
         cfg = self.config
         self.policy.eval_mode()
-        completions = self.policy.generate(self.prompt, cfg.n_per_prompt)
+        if self._gen_pool is not None:
+            self._gen_pool.refresh_from(self.policy)
+            generator = self._gen_pool
+        else:
+            generator = self.policy
+        completions = generator.generate(self.prompt, cfg.n_per_prompt)
 
         sources = [extract_code(c, self._entry_point) for c in completions]
         to_score = [(idx, src) for idx, src in enumerate(sources) if src is not None]
@@ -202,8 +214,9 @@ class GRPOTrainingLoop:
         if rewards.max().item() != rewards.min().item():
             advantages = compute_group_advantages(rewards)
             # EOS joins the scored trajectory only where the policy actually
-            # stopped (HFPolicy.last_terminated); stubs without it score all.
-            terminated = getattr(self.policy, "last_terminated", None)
+            # stopped (last_terminated, from whichever sampled — pool or
+            # policy); stubs without it score all.
+            terminated = getattr(generator, "last_terminated", None)
             append_eos: bool | list[bool] = (
                 list(terminated) if terminated and len(terminated) == len(completions) else True
             )

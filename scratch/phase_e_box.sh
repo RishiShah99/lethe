@@ -13,7 +13,9 @@ export PATH="$HOME/.local/bin:$PATH"
 # (mamba_ssm / causal_conv1d live outside pyproject by design).
 uv sync --inexact --extra gpu --extra rl --group dev 2>&1 | tail -3
 
-CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+# No CUDA_VISIBLE_DEVICES mask: the driver places trainer / generation
+# replicas / scoring across all 8 B200s by absolute id.
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     nohup uv run python scratch/phase_e_run.py \
     --resume "$@" \
     >> train.log 2>&1 &
