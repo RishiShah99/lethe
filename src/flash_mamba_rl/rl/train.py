@@ -96,6 +96,7 @@ class TrainLoopConfig:
     score_timeout_s: float = 420.0
     score_fail_fast: bool = True
     reward_shaping: str = "none"
+    measure_speedup: bool = False
     checkpoint_dir: str = "checkpoints/grpo"
     save_every: int = 1
 
@@ -146,6 +147,7 @@ class GRPOTrainingLoop:
             timeout_s=self.config.score_timeout_s,
             fail_fast=self.config.score_fail_fast,
             reward_shaping=self.config.reward_shaping,
+            measure_speedup=self.config.measure_speedup,
         )
 
     def step(self) -> TrainStepMetrics:

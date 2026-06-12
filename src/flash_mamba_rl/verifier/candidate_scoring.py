@@ -201,10 +201,25 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
                     break
         contracts_passed = views_passed == views_total
 
+    speedup: float | None = None
+    bench: dict[str, float] = {}
+    bug_routing = False
+    if (
+        contracts_passed
+        and bool(config.get("measure_speedup", False))
+        and device.startswith("cuda")
+    ):
+        from flash_mamba_rl.verifier import op_bench
+
+        bench = op_bench.measure_speedup(fn, op_name, device)
+        speedup = bench["speedup"]
+        bug_routing = op_bench.bug_routing_active(op_name, device)
+
     reward = compute_reward(
         compiled=True,
         contracts_passed=contracts_passed,
-        speedup_vs_handwritten=None,
+        speedup_vs_handwritten=speedup,
+        bug_routing=bug_routing,
     )
     if reward_shaping == "view_fraction" and not contracts_passed and views_total > 1:
         reward = 0.1 + 0.35 * (views_passed / views_total)
@@ -218,6 +233,9 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
         "views_passed": views_passed,
         "views_total": views_total,
         "first_failed_view": first_failed_view,
+        "speedup": speedup,
+        "bench": bench,
+        "bug_routing": bug_routing,
     }
 
 
@@ -230,6 +248,7 @@ def score_candidate_source(
     exclude_gates: tuple[str, ...] = DEFAULT_EXCLUDE_GATES,
     fail_fast: bool = True,
     reward_shaping: str = "none",
+    measure_speedup: bool = False,
 ) -> dict[str, Any]:
     """Score one candidate source in an isolated subprocess (parent-side API).
 
@@ -248,6 +267,7 @@ def score_candidate_source(
                 "exclude_gates": list(exclude_gates),
                 "fail_fast": fail_fast,
                 "reward_shaping": reward_shaping,
+                "measure_speedup": measure_speedup,
             },
         ),
         timeout_s=timeout_s,
