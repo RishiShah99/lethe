@@ -294,6 +294,42 @@ def launch_backward_scan(
     return grad_u, grad_delta, grad_a, grad_b, grad_c, grad_d
 
 
+def _scan_forward_eager(
+    u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor
+) -> Tensor:
+    batch, seq_len, d_model = u.shape
+    n_state = A.shape[1]
+    delta_bar = torch.nn.functional.softplus(delta)
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * B.unsqueeze(2)
+    y = torch.empty_like(u)
+    h = torch.zeros(batch, d_model, n_state, dtype=u.dtype, device=u.device)
+    for t in range(seq_len):
+        h = a_bar[:, t, :, :] * h + b_bar[:, t, :, :] * u[:, t, :].unsqueeze(-1)
+        y[:, t, :] = (h * C[:, t, :].unsqueeze(1)).sum(-1) + D * u[:, t, :]
+    return y
+
+
+def _backward_eager(
+    u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor, dy: Tensor
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    out_dtype = u.dtype
+    if out_dtype in (torch.float16, torch.bfloat16):
+        u, delta, A, B, C, D, dy = (t.to(torch.float32) for t in (u, delta, A, B, C, D, dy))
+    leaves = [t.detach().requires_grad_(True) for t in (u, delta, A, B, C, D)]
+    y = _scan_forward_eager(*leaves)
+    grads = torch.autograd.grad(outputs=y, inputs=leaves, grad_outputs=dy)
+    g_u, g_delta, g_a, g_b, g_c, g_d = grads
+    return (
+        g_u.to(out_dtype),
+        g_delta.to(out_dtype),
+        g_a.to(out_dtype),
+        g_b.to(out_dtype),
+        g_c.to(out_dtype),
+        g_d.to(out_dtype),
+    )
+
+
 def backward_selective_scan(
     u: Tensor,
     delta: Tensor,
@@ -312,4 +348,7 @@ def backward_selective_scan(
     ``(grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)`` whose elements
     match the corresponding input shapes and dtypes.
     """
+    # Device residency: non-CUDA (and fp64) inputs take the eager path.
+    if not (u.is_cuda and u.dtype in (torch.float32, torch.float16, torch.bfloat16)):
+        return _backward_eager(u, delta, A, B, C, D, dy)
     return launch_backward_scan(u, delta, A, B, C, D, dy)

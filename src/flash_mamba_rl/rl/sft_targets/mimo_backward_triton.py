@@ -357,6 +357,68 @@ def launch_mimo_backward(
     return grad_x, grad_b, grad_c, grad_dt, grad_alpha, grad_mimo_x, grad_mimo_o
 
 
+def _mimo_forward_eager(
+    x: Tensor,
+    B: Tensor,
+    C: Tensor,
+    dt: Tensor,
+    alpha: Tensor,
+    mimo_x: Tensor,
+    mimo_o: Tensor,
+) -> Tensor:
+    batch, seqlen, nheads, headdim = x.shape
+    rank = B.shape[2]
+    d_state = B.shape[4]
+
+    mimo_x_bc = mimo_x.permute(1, 0, 2).unsqueeze(0).unsqueeze(0)
+    x_r = x.unsqueeze(2) * mimo_x_bc
+
+    h = torch.zeros(batch, rank, nheads, headdim, d_state, dtype=x.dtype, device=x.device)
+    y = torch.empty_like(x)
+    for t in range(seqlen):
+        alpha_t = alpha[:, t, :].unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+        dt_t = dt[:, t, :].unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+        B_t = B[:, t, :, :, :].unsqueeze(3)
+        x_r_t = x_r[:, t, :, :, :].unsqueeze(-1)
+        h = alpha_t * h + dt_t * B_t * x_r_t
+        h_agg = h.sum(dim=1)
+        C_t = C[:, t, :, :, :].unsqueeze(3)
+        y_raw = (h_agg.unsqueeze(1) * C_t).sum(-1)
+        mimo_o_bc = mimo_o.permute(1, 0, 2).unsqueeze(0)
+        y[:, t, :, :] = (y_raw * mimo_o_bc).sum(1)
+    return y
+
+
+def _mimo_backward_eager(
+    x: Tensor,
+    B: Tensor,
+    C: Tensor,
+    dt: Tensor,
+    alpha: Tensor,
+    mimo_x: Tensor,
+    mimo_o: Tensor,
+    dy: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    out_dtype = x.dtype
+    if out_dtype in (torch.float16, torch.bfloat16):
+        x, B, C, dt, alpha, mimo_x, mimo_o, dy = (
+            t.to(torch.float32) for t in (x, B, C, dt, alpha, mimo_x, mimo_o, dy)
+        )
+    leaves = [t.detach().requires_grad_(True) for t in (x, B, C, dt, alpha, mimo_x, mimo_o)]
+    y = _mimo_forward_eager(*leaves)
+    grads = torch.autograd.grad(outputs=y, inputs=leaves, grad_outputs=dy)
+    g_x, g_b, g_c, g_dt, g_alpha, g_mx, g_mo = grads
+    return (
+        g_x.to(out_dtype),
+        g_b.to(out_dtype),
+        g_c.to(out_dtype),
+        g_dt.to(out_dtype),
+        g_alpha.to(out_dtype),
+        g_mx.to(out_dtype),
+        g_mo.to(out_dtype),
+    )
+
+
 def mimo_backward(
     x: Tensor,
     B: Tensor,
@@ -367,11 +429,14 @@ def mimo_backward(
     mimo_o: Tensor,
     dy: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Mamba-3 MIMO SSM backward pass (Triton path).
+    """Mamba-3 MIMO SSM backward pass.
 
     Args/shapes: ``x``/``dy`` [B, L, H, P], ``B``/``C`` [B, L, R, H, N],
     ``dt``/``alpha`` [B, L, H], ``mimo_x``/``mimo_o`` [H, R, P].
     Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
     grad_mimo_o)`` matching corresponding input shapes and dtypes.
     """
+    # Device residency: non-CUDA (and fp64) inputs take the eager path.
+    if not (x.is_cuda and x.dtype in (torch.float32, torch.float16, torch.bfloat16)):
+        return _mimo_backward_eager(x, B, C, dt, alpha, mimo_x, mimo_o, dy)
     return launch_mimo_backward(x, B, C, dt, alpha, mimo_x, mimo_o, dy)

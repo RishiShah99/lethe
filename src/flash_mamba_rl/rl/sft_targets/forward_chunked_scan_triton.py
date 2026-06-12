@@ -84,6 +84,23 @@ def _fwd_scan_kernel(  # type: ignore[no-untyped-def]
         bln_off += n_state
 
 
+def _forward_eager(u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor) -> Tensor:
+    out_dtype = u.dtype
+    if out_dtype in (torch.float16, torch.bfloat16):
+        u, delta, A, B, C, D = (t.to(torch.float32) for t in (u, delta, A, B, C, D))
+    batch, seq_len, d_model = u.shape
+    n_state = A.shape[1]
+    delta_bar = torch.nn.functional.softplus(delta)
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * B.unsqueeze(2)
+    y = torch.empty_like(u)
+    h = torch.zeros(batch, d_model, n_state, dtype=u.dtype, device=u.device)
+    for t in range(seq_len):
+        h = a_bar[:, t, :, :] * h + b_bar[:, t, :, :] * u[:, t, :].unsqueeze(-1)
+        y[:, t, :] = (h * C[:, t, :].unsqueeze(1)).sum(-1) + D * u[:, t, :]
+    return y.to(out_dtype)
+
+
 def forward_chunked_scan(
     u: Tensor,
     delta: Tensor,
@@ -94,6 +111,9 @@ def forward_chunked_scan(
     *,
     chunk_size: int = 64,
 ) -> Tensor:
+    # Device residency: non-CUDA (and fp64) inputs take the eager path.
+    if not (u.is_cuda and u.dtype in (torch.float32, torch.float16, torch.bfloat16)):
+        return _forward_eager(u, delta, A, B, C, D)
     batch, seq_len, d_model = u.shape
     n_state = A.shape[1]
 

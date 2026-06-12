@@ -268,6 +268,49 @@ def fused_block_forward(
     l_out = x.shape[1] - (conv_k - 1)
     if l_out % chunk_size != 0:
         raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")
+    # Device residency: non-CUDA (and fp64) inputs take the eager path.
+    if not (x.is_cuda and x.dtype in (torch.float32, torch.float16, torch.bfloat16)):
+        return _fused_forward_eager(x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps)
     return launch_fused_block_forward(
         x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps
     )
+
+
+def _fused_forward_eager(
+    x: Tensor,
+    conv_weight: Tensor,
+    conv_bias: Tensor,
+    delta: Tensor,
+    A: Tensor,
+    B: Tensor,
+    C: Tensor,
+    D: Tensor,
+    norm_weight: Tensor,
+    eps: float,
+) -> Tensor:
+    out_dtype = x.dtype
+    if out_dtype in (torch.float16, torch.bfloat16):
+        x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight = (
+            t.to(torch.float32) for t in (x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight)
+        )
+    batch, _seq_len, d_model = x.shape
+    n_state = A.shape[1]
+
+    conv_out = torch.nn.functional.conv1d(
+        x.transpose(1, 2), conv_weight, conv_bias, groups=d_model
+    ).transpose(1, 2)
+    z = torch.nn.functional.silu(conv_out)
+
+    l_out = z.shape[1]
+    delta_bar = torch.nn.functional.softplus(delta)
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * B.unsqueeze(2)
+
+    y_scan = torch.empty_like(z)
+    h = torch.zeros(batch, d_model, n_state, dtype=z.dtype, device=z.device)
+    for t in range(l_out):
+        h = a_bar[:, t, :, :] * h + b_bar[:, t, :, :] * z[:, t, :].unsqueeze(-1)
+        y_scan[:, t, :] = (h * C[:, t, :].unsqueeze(1)).sum(-1) + D * z[:, t, :]
+
+    rms = y_scan.pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt()
+    return (y_scan / rms * norm_weight).to(out_dtype)

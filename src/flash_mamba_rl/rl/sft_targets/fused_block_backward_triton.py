@@ -643,6 +643,11 @@ def fused_block_backward(
     l_out = x.shape[1] - (conv_k - 1)
     if l_out % chunk_size != 0:
         raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")
+    # Device residency: non-CUDA (and fp64) inputs take the eager path.
+    if not (x.is_cuda and x.dtype in (torch.float32, torch.float16, torch.bfloat16)):
+        return _fused_backward_eager(
+            x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy, conv_k, eps
+        )
     result = launch_fused_block_backward(
         x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy, eps
     )
@@ -656,4 +661,83 @@ def fused_block_backward(
         result[6],
         result[7],
         result[8],
+    )
+
+
+def _fused_forward_eager(
+    x: Tensor,
+    conv_weight: Tensor,
+    conv_bias: Tensor,
+    delta: Tensor,
+    A: Tensor,
+    B: Tensor,
+    C: Tensor,
+    D: Tensor,
+    norm_weight: Tensor,
+    conv_k: int,
+    eps: float,
+) -> Tensor:
+    batch, seq_len, d_model = x.shape
+    n_state = A.shape[1]
+    l_out = seq_len - (conv_k - 1)
+
+    # Explicit shifted-sum conv: its autograd decomposes into deterministic
+    # slice/sum backwards (a conv primitive's weight gradient may not be).
+    conv_out = x[:, 0:l_out, :] * conv_weight[:, 0, 0]
+    for k in range(1, conv_k):
+        conv_out = conv_out + x[:, k : k + l_out, :] * conv_weight[:, 0, k]
+    conv_out = conv_out + conv_bias
+    z = torch.nn.functional.silu(conv_out)
+
+    delta_bar = torch.nn.functional.softplus(delta)
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * B.unsqueeze(2)
+
+    y_scan = torch.empty_like(z)
+    h = torch.zeros(batch, d_model, n_state, dtype=z.dtype, device=z.device)
+    for t in range(l_out):
+        h = a_bar[:, t, :, :] * h + b_bar[:, t, :, :] * z[:, t, :].unsqueeze(-1)
+        y_scan[:, t, :] = (h * C[:, t, :].unsqueeze(1)).sum(-1) + D * z[:, t, :]
+
+    rms = y_scan.pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt()
+    return y_scan / rms * norm_weight
+
+
+def _fused_backward_eager(
+    x: Tensor,
+    conv_weight: Tensor,
+    conv_bias: Tensor,
+    delta: Tensor,
+    A: Tensor,
+    B: Tensor,
+    C: Tensor,
+    D: Tensor,
+    norm_weight: Tensor,
+    dy: Tensor,
+    conv_k: int,
+    eps: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    out_dtype = x.dtype
+    if out_dtype in (torch.float16, torch.bfloat16):
+        x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy = (
+            t.to(torch.float32)
+            for t in (x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy)
+        )
+    leaves = [
+        t.detach().requires_grad_(True)
+        for t in (x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight)
+    ]
+    x_l, cw_l, cb_l, delta_l, a_l, b_l, c_l, d_l, nw_l = leaves
+    y = _fused_forward_eager(x_l, cw_l, cb_l, delta_l, a_l, b_l, c_l, d_l, nw_l, conv_k, eps)
+    grads = torch.autograd.grad(outputs=y, inputs=leaves, grad_outputs=dy)
+    return (
+        grads[0].to(out_dtype),
+        grads[1].to(out_dtype),
+        grads[2].to(out_dtype),
+        grads[3].to(out_dtype),
+        grads[4].to(out_dtype),
+        grads[5].to(out_dtype),
+        grads[6].to(out_dtype),
+        grads[7].to(out_dtype),
+        grads[8].to(out_dtype),
     )

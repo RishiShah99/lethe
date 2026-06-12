@@ -11,6 +11,14 @@ before any SFT step consumes them.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+import types
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
 import torch
 
 from flash_mamba_rl.kernels.references.backward_selective_scan import (
@@ -83,6 +91,115 @@ def test_no_forbidden_tokens() -> None:
             source = target_source(op, variant)
             hits = [tok for tok in FORBIDDEN_SOURCE_TOKENS if tok in source]
             assert not hits, f"{op}[{variant}]: {hits}"
+
+
+@pytest.fixture()
+def stub_triton() -> Iterator[None]:
+    """Importable stand-in for triton so the CUDA targets load on CPU.
+
+    Only module-level surface is needed: @triton.jit wraps (never runs),
+    tl.constexpr is called once for a module constant, libdevice is an
+    attribute. Annotations stay strings (future import in every target).
+    Stubs are removed afterwards so the kernels' find_spec dispatch is
+    unaffected for the rest of the session.
+    """
+    if importlib.util.find_spec("triton") is not None:
+        yield
+        return
+    triton_mod = types.ModuleType("triton")
+    tl_mod = types.ModuleType("triton.language")
+    extra_mod = types.ModuleType("triton.language.extra")
+    extra_mod.libdevice = types.SimpleNamespace()  # type: ignore[attr-defined]
+    tl_mod.constexpr = lambda v: v  # type: ignore[attr-defined]
+    tl_mod.extra = extra_mod  # type: ignore[attr-defined]
+    triton_mod.jit = lambda fn=None, **kw: fn if fn is not None else (lambda f: f)  # type: ignore[attr-defined]
+    triton_mod.cdiv = lambda a, b: -(-a // b)  # type: ignore[attr-defined]
+    triton_mod.next_power_of_2 = lambda n: 1 << max(0, (int(n) - 1).bit_length())  # type: ignore[attr-defined]
+    triton_mod.language = tl_mod  # type: ignore[attr-defined]
+    sys.modules["triton"] = triton_mod
+    sys.modules["triton.language"] = tl_mod
+    sys.modules["triton.language.extra"] = extra_mod
+    try:
+        yield
+    finally:
+        for name in ("triton", "triton.language", "triton.language.extra"):
+            sys.modules.pop(name, None)
+
+
+def _load_triton_target(op: str) -> Any:
+    import flash_mamba_rl.rl.sft_targets as pkg
+
+    path = Path(pkg.__file__).parent / f"{op}_triton.py"
+    spec = importlib.util.spec_from_file_location(f"_sft_tgt_{op}_triton", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestTritonVariantCpuFallback:
+    """RES-01 always probes a CPU leg; the CUDA targets must dispatch to
+    their eager fallback there and match the reference."""
+
+    def test_c1_cpu_fallback_bitwise(self, stub_triton: None) -> None:
+        mod = _load_triton_target("forward_chunked_scan")
+        inputs = _scan_inputs()
+        want = reference_forward_chunked_scan(*inputs, chunk_size=64)
+        assert torch.equal(mod.forward_chunked_scan(*inputs), want)
+
+    def test_c2_cpu_fallback_bitwise(self, stub_triton: None) -> None:
+        mod = _load_triton_target("backward_selective_scan")
+        inputs = _scan_inputs()
+        dy = torch.randn(2, 64, 8, generator=torch.Generator().manual_seed(29))
+        want = reference_backward_selective_scan(*inputs, dy, chunk_size=64)
+        got = mod.backward_selective_scan(*inputs, dy)
+        for g, w in zip(got, want, strict=True):
+            torch.testing.assert_close(g, w, rtol=0.0, atol=0.0)
+
+    def test_c3_cpu_fallback_bitwise(self, stub_triton: None) -> None:
+        mod = _load_triton_target("mimo_backward")
+        gen = torch.Generator().manual_seed(17)
+        x = torch.randn(2, 8, 2, 3, generator=gen)
+        b = torch.randn(2, 8, 2, 2, 4, generator=gen)
+        c = torch.randn(2, 8, 2, 2, 4, generator=gen)
+        dt = torch.rand(2, 8, 2, generator=gen) * 0.1 + 1e-3
+        alpha = torch.exp(dt * -torch.rand(2, generator=gen))
+        mimo_x = 0.5 + torch.randn(2, 2, 3, generator=gen) * 0.1
+        mimo_o = 0.5 + torch.randn(2, 2, 3, generator=gen) * 0.1
+        dy = torch.randn(2, 8, 2, 3, generator=gen)
+        want = reference_mimo_backward(x, b, c, dt, alpha, mimo_x, mimo_o, dy)
+        got = mod.mimo_backward(x, b, c, dt, alpha, mimo_x, mimo_o, dy)
+        for g, w in zip(got, want, strict=True):
+            torch.testing.assert_close(g, w, rtol=0.0, atol=0.0)
+
+    def test_c4_cpu_fallback_bitwise(self, stub_triton: None) -> None:
+        mod = _load_triton_target("complex_scan_rope")
+        gen = torch.Generator().manual_seed(19)
+        x = torch.randn(2, 12, 2, 4, generator=gen)
+        b = torch.randn(2, 12, 2, 8, generator=gen)
+        c = torch.randn(2, 12, 2, 8, generator=gen)
+        dt = torch.rand(2, 12, 2, generator=gen) * 0.1 + 1e-3
+        a = -torch.rand(2, generator=gen)
+        angle_proj = torch.randn(2, 12, 2, 3, generator=gen)
+        want = reference_complex_scan_rope(x, b, c, dt, a, angle_proj)
+        assert torch.equal(mod.complex_scan_rope(x, b, c, dt, a, angle_proj), want)
+
+    def test_c5_cpu_fallback_bitwise(self, stub_triton: None) -> None:
+        mod = _load_triton_target("fused_block_forward")
+        inputs = _fused_inputs()
+        want = reference_fused_block_forward(*inputs, conv_kernel_size=4, chunk_size=16)
+        got = mod.fused_block_forward(*inputs, conv_kernel_size=4, chunk_size=16)
+        assert torch.equal(got, want)
+
+    def test_c6_cpu_fallback_close(self, stub_triton: None) -> None:
+        mod = _load_triton_target("fused_block_backward")
+        inputs = _fused_inputs()
+        dy = torch.randn(2, 32, 8, generator=torch.Generator().manual_seed(31))
+        want = reference_fused_block_backward(*inputs, dy, conv_kernel_size=4, chunk_size=16)
+        got = mod.fused_block_backward(*inputs, dy, conv_kernel_size=4, chunk_size=16)
+        assert len(got) == 9
+        for g, w in zip(got, want, strict=True):
+            torch.testing.assert_close(g, w, rtol=1e-5, atol=1e-6)
 
 
 def test_triton_variants_parse_and_self_contained() -> None:
