@@ -21,6 +21,7 @@ from torch import Tensor
 
 from flash_mamba_rl.verifier.contracts import GateResult, run_all_gates
 from tests.cheating_kernels import (
+    buffer_aliasing,
     device_silent_move,
     dropout_in_disguise,
     fp16_accumulator,
@@ -72,6 +73,7 @@ def _real_rejections(results: dict[str, GateResult]) -> dict[str, GateResult]:
 def _reset_module_caches() -> None:
     """Clear any module-level memoisation in stateful cheating kernels."""
     memoizes_first_input._cache.clear()
+    buffer_aliasing._buffer.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -165,6 +167,16 @@ class TestNondeterministic:
     def test_caught(self) -> None:
         _assert_caught_by_some_gate(
             nondeterministic.cheating_op,
+            expected_gates=("gate_ord_02_atomic_determinism",),
+        )
+
+
+class TestBufferAliasing:
+    def test_caught(self) -> None:
+        # Value-correct everywhere; the only violation is returning one aliased
+        # buffer across calls, so ORD-02 must be the rejector.
+        _assert_caught_by_some_gate(
+            buffer_aliasing.cheating_op,
             expected_gates=("gate_ord_02_atomic_determinism",),
         )
 

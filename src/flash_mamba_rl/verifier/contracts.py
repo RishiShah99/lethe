@@ -254,9 +254,23 @@ def gate_ord_02_atomic_determinism(
     n_runs: int = 5,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-02: Atomic determinism — repeated calls with identical input must be byte-identical."""
+    """ORD-02: Atomic determinism — repeated calls with identical input must be
+    byte-identical, and must not hand back one aliased output buffer.
+
+    Two hazards, one gate. Determinism is checked on *cloned* snapshots, so a
+    candidate that recomputes in place into a returned buffer is compared
+    snapshot-to-snapshot, not against a live tensor a later call overwrites.
+    Aliasing is checked by holding every raw output alive at once and
+    requiring distinct ``data_ptr``s: a candidate that returns the same
+    storage across calls (one cached buffer handed back — the cross-call
+    aliasing the audit found, where holding two results corrupts the first)
+    is rejected. Keeping the outputs live is what makes the check sound on
+    CUDA — the caching allocator would otherwise recycle a freed output's
+    address and make independent correct buffers look aliased.
+    """
     t = torch.randn(shape, dtype=dtype, device=device)
-    outputs: list[torch.Tensor] = []
+    raw_outputs: list[torch.Tensor] = []
+    snapshots: list[torch.Tensor] = []
     for _ in range(n_runs):
         try:
             out = candidate(t.clone())
@@ -266,18 +280,27 @@ def gate_ord_02_atomic_determinism(
                 reason=f"exception during run: {exc}",
                 details={"n_runs": n_runs},
             )
-        outputs.append(out)
+        raw_outputs.append(out)  # kept alive so the allocator can't reuse an address
+        snapshots.append(out.clone())
 
     for i in range(1, n_runs):
-        if not torch.equal(outputs[0], outputs[i]):
+        if not torch.equal(snapshots[0], snapshots[i]):
             return GateResult(
                 passed=False,
                 reason=f"run 0 and run {i} differ (non-deterministic)",
                 details={"n_runs": n_runs},
             )
+
+    data_ptrs = [o.data_ptr() for o in raw_outputs]
+    if n_runs > 1 and len(set(data_ptrs)) < n_runs:
+        return GateResult(
+            passed=False,
+            reason="cross-call output-buffer aliasing (a cached buffer reused across calls)",
+            details={"n_runs": n_runs, "distinct_buffers": len(set(data_ptrs))},
+        )
     return GateResult(
         passed=True,
-        reason=f"all {n_runs} runs byte-identical",
+        reason=f"all {n_runs} runs byte-identical, distinct output buffers",
         details={"n_runs": n_runs},
     )
 
