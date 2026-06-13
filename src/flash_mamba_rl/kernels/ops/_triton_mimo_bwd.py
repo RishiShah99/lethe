@@ -133,7 +133,7 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
     s_step = nheads
 
     for c in range(n_chunks):
-        tl.store(ckpt_prog + c * BLOCK_P * BLOCK_N, h)
+        tl.store(ckpt_prog + c.to(tl.int64) * BLOCK_P * BLOCK_N, h)  # type: ignore[attr-defined]
         for _j in range(CHUNK_K):
             x_t = tl.load(x_ptr + xrow, mask=mask_p, other=0.0).to(tl.float32)
             dt_t = tl.load(dt_ptr + srow).to(tl.float32)
@@ -164,7 +164,7 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
         c = n_chunks - 1 - ci
         t0 = c * CHUNK_K
 
-        h_prev = tl.load(ckpt_prog + c * BLOCK_P * BLOCK_N)
+        h_prev = tl.load(ckpt_prog + c.to(tl.int64) * BLOCK_P * BLOCK_N)
         xbase = ((pid_b.to(tl.int64) * seq_len + t0) * nheads + pid_h) * headdim + offs_p
         bbase = ((pid_b.to(tl.int64) * seq_len + t0) * R * nheads + pid_h) * n_state + offs_n
         sbase = (pid_b.to(tl.int64) * seq_len + t0) * nheads + pid_h
