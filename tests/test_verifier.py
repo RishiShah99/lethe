@@ -584,13 +584,14 @@ class TestRewardBranches:
         )
         assert r == pytest.approx(0.1)
 
-    def test_compiled_passed_no_speedup(self) -> None:
+    def test_compiled_passed_below_parity_ramps(self) -> None:
+        # M2: the sub-parity band is a continuous ramp, not a flat 0.5.
         r = compute_reward(
             compiled=True,
             contracts_passed=True,
             speedup_vs_handwritten=0.8,
         )
-        assert r == pytest.approx(0.5)
+        assert r == pytest.approx(1.0 + math.log(0.8))
 
     def test_compiled_passed_no_speedup_none(self) -> None:
         r = compute_reward(
@@ -641,10 +642,40 @@ class TestRewardBranches:
         )
         assert r == pytest.approx(2.0 + 3.0)
 
-    def test_speedup_exactly_one_gives_half(self) -> None:
+    def test_speedup_exactly_one_gives_parity_anchor(self) -> None:
+        # M2: parity scores 1.0 (the cliff at s=1 is gone), not 0.5.
         r = compute_reward(
             compiled=True,
             contracts_passed=True,
             speedup_vs_handwritten=1.0,
         )
-        assert r == pytest.approx(0.5)
+        assert r == pytest.approx(1.0)
+
+    def test_sub_parity_continuous_and_monotone(self) -> None:
+        rs = [
+            compute_reward(compiled=True, contracts_passed=True, speedup_vs_handwritten=s)
+            for s in (0.7, 0.8, 0.9, 0.95, 0.999)
+        ]
+        assert rs == sorted(rs)  # monotone increasing toward parity
+        assert all(0.5 < r < 1.0 for r in rs)  # above the floor, below parity
+        # Continuous across parity: no 0.5-wide cliff at s=1.
+        below = compute_reward(compiled=True, contracts_passed=True, speedup_vs_handwritten=0.999)
+        above = compute_reward(compiled=True, contracts_passed=True, speedup_vs_handwritten=1.001)
+        assert above - below == pytest.approx(math.log(1.001) - math.log(0.999), abs=1e-6)
+
+    def test_very_slow_hits_floor(self) -> None:
+        # Below e**-0.5 ≈ 0.61 the ramp saturates at the 0.5 floor — a correct
+        # kernel always clears the 0.1 contract-fail level by a clear margin.
+        for s in (0.6, 0.1, 0.007, 1e-9):
+            r = compute_reward(compiled=True, contracts_passed=True, speedup_vs_handwritten=s)
+            assert r == pytest.approx(0.5)
+
+    def test_bug_routing_below_parity_pays_no_bonus(self) -> None:
+        # The routing bonus is a genuine-beat signal: it only fires when faster.
+        r = compute_reward(
+            compiled=True,
+            contracts_passed=True,
+            speedup_vs_handwritten=0.9,
+            bug_routing=True,
+        )
+        assert r == pytest.approx(1.0 + math.log(0.9))
