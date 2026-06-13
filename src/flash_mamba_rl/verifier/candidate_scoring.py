@@ -21,11 +21,13 @@ below the 0.5 full-pass floor — the speedup term still pays only after
 every view passes. Shaping disables fail-fast: a prefix count would
 zero the signal for improving later views whenever an early one fails.
 
-Candidate sources that mention the project package, the official Mamba
-kernels, or dynamic-import machinery are rejected before exec
-(``forbidden_import``, reward 0.0): wrapping the reference or the
-hand-written ops would otherwise pass every gate without writing a
-kernel — a 0.5-reward fixed point the policy must not be able to reach.
+Candidate sources that import the project package or the official Mamba
+kernels, or reach for the dynamic-import / builtins-reflection machinery a
+wrap needs, are rejected before exec (``forbidden_import``, reward 0.0) by
+an AST screen plus a resolved-name import guard active during exec (see
+``_ast_screen`` / ``_import_guard``): wrapping the reference or the
+hand-written ops would otherwise pass every gate without writing a kernel —
+the 0.5-reward fixed point the policy must not be able to reach.
 
 CMP-02 (gradcheck) is excluded by default for generated kernels: forward
 tasks ask for a forward op, backward tasks ARE the gradient computation
@@ -36,6 +38,8 @@ Override via ``config["exclude_gates"]``.
 
 from __future__ import annotations
 
+import ast
+import builtins
 import contextlib
 import importlib.util
 import os
@@ -73,31 +77,99 @@ def _hidden_project_modules() -> Iterator[None]:
 
 DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 
-# Substring screen, not a security boundary: it stops the realistic RL
-# reward hacks (importing the reference/official kernels, dynamic-import
-# or exec evasion, reaching already-imported project modules through
-# sys.modules) for sources the policy emits. "selective_scan_cuda" is
-# the official extension module; the bare entry-point name
-# "backward_selective_scan" does not contain it. A kernel module never
-# needs sys at all, so plain sys imports are screened too; the
-# already-imported project modules are additionally hidden from
-# sys.modules while the candidate's module body executes (see
-# ``_hidden_project_modules``). Residual evasions (string-built names
-# via getattr chains at call time) stay possible by construction —
-# documented arms-race boundary, not a contract.
-FORBIDDEN_SOURCE_TOKENS: tuple[str, ...] = (
-    "flash_mamba_rl",
-    "mamba_ssm",
-    "causal_conv1d",
-    "selective_scan_cuda",
-    "importlib",
-    "__import__",
-    "exec(",
-    "eval(",
-    "sys.modules",
-    "import sys",
-    "from sys",
+# Candidate sources may not reach the oracle. The realistic RL reward-hack is
+# wrapping the reference (or the official kernels) so every gate passes without
+# a kernel — the 0.5 fixed point. Two layers stop it. (1) An AST screen rejects
+# the package imports, the dynamic-import machinery (importlib/__import__), and
+# the builtins reflection a wrap needs: a name built at runtime
+# (``"flash"+"_mamba_rl"``, ``__builtins__["__im"+"port__"]``) still leaves an
+# ``__import__``/``__builtins__``/``importlib`` reference in the parse tree,
+# which substring scanning could not see — and substring scanning also
+# false-matched ``eval(`` inside ``retrieval(``, so it is gone. (2) An import
+# guard active during candidate exec blocks the oracle packages by resolved
+# root name, catching anything that slipped the screen at the point the import
+# actually resolves. Project modules are additionally hidden from sys.modules
+# during exec (see ``_hidden_project_modules``). Object-graph gadget chains
+# (gc-walking to the already-imported reference) stay possible by construction —
+# a documented arms-race boundary, not a contract.
+_FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset(
+    {
+        "flash_mamba_rl",
+        "mamba_ssm",
+        "causal_conv1d",
+        "selective_scan_cuda",
+        "importlib",
+        "sys",
+        "builtins",
+    }
 )
+
+# Reflection / eval entry points a wrap reaches for once direct imports screen.
+_FORBIDDEN_NAMES: frozenset[str] = frozenset(
+    {"__import__", "__builtins__", "importlib", "builtins", "eval", "exec"}
+)
+
+# The exec-time guard only needs the packages whose fresh disk re-import a wrap
+# depends on: sys/builtins are always cached, so re-importing them is a no-op
+# (the AST screen handles their source-level use).
+_GUARDED_IMPORT_ROOTS: frozenset[str] = frozenset(
+    {"flash_mamba_rl", "mamba_ssm", "causal_conv1d", "selective_scan_cuda", "importlib"}
+)
+
+
+def _ast_screen(source: str) -> list[str]:
+    """Forbidden import / reflection constructs in *source*, parse-tree level.
+
+    A syntactically invalid source returns no violations — exec surfaces the
+    SyntaxError and it scores as a non-compile (0.0), not a screen rejection.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    violations: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".", 1)[0] in _FORBIDDEN_IMPORT_ROOTS:
+                    violations.add(f"import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.split(".", 1)[0] in _FORBIDDEN_IMPORT_ROOTS:
+                violations.add(f"from {module} import ...")
+        elif isinstance(node, ast.Name) and node.id in _FORBIDDEN_NAMES:
+            violations.add(node.id)
+    return sorted(violations)
+
+
+@contextlib.contextmanager
+def _import_guard() -> Iterator[None]:
+    """Block fresh imports of the oracle packages at resolved-name level.
+
+    Belt to the AST screen's suspenders: a name assembled at runtime can slip
+    the parse tree, but the import it ultimately drives passes through this
+    patched ``builtins.__import__`` and is rejected by its resolved root.
+    Process-isolated in the scoring worker, so patching builtins is safe; the
+    verifier's own project imports happen outside this window.
+    """
+    real_import = builtins.__import__
+
+    def guarded(
+        name: str,
+        globals: Any = None,
+        locals: Any = None,
+        fromlist: Any = (),
+        level: int = 0,
+    ) -> Any:
+        if name.split(".", 1)[0] in _GUARDED_IMPORT_ROOTS:
+            raise ImportError(f"import of {name!r} blocked: candidate may not reach the oracle")
+        return real_import(name, globals, locals, fromlist, level)
+
+    builtins.__import__ = guarded
+    try:
+        yield
+    finally:
+        builtins.__import__ = real_import
 
 
 @dataclass(frozen=True)
@@ -184,9 +256,9 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
         fail_fast = False
     spec = _OP_VERIFIERS[op_name]
 
-    hits = [tok for tok in FORBIDDEN_SOURCE_TOKENS if tok in source]
-    if hits:
-        return _failure("forbidden_import", f"forbidden tokens: {hits}")
+    violations = _ast_screen(source)
+    if violations:
+        return _failure("forbidden_import", f"forbidden constructs: {violations}")
 
     # Real temp file: @triton.jit refuses exec'd pseudo-modules and the lazy
     # PTX compile re-reads the source during gating. The file is removed by
@@ -201,7 +273,7 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
         mod = importlib.util.module_from_spec(mod_spec)
         sys.modules["_scored_candidate"] = mod
         try:
-            with _hidden_project_modules():
+            with _hidden_project_modules(), _import_guard():
                 mod_spec.loader.exec_module(mod)
         except Exception as exc:
             return _failure("exec_fail", f"{type(exc).__name__}: {_trunc(exc)}")

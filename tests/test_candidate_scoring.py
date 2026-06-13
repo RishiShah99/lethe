@@ -127,6 +127,49 @@ def test_forbidden_import_rejected() -> None:
     assert _score_source_body(modules_fishing, {})["status"] == "forbidden_import"
 
 
+# The exact reward-hack the AST screen + import guard exist to kill: build the
+# oracle import name from split strings so a substring screen never sees it,
+# reach it through __builtins__, and bind the reference as the entry point.
+REFERENCE_WRAP_EXPLOIT = (
+    'forward_chunked_scan = __builtins__["__im" + "port__"](\n'
+    '    "flash" + "_mamba_rl.kernels.references.forward_chunked_scan",\n'
+    '    fromlist=["reference_forward_chunked_scan"],\n'
+    ").reference_forward_chunked_scan\n"
+)
+
+
+def test_reference_wrap_via_builtins_is_rejected() -> None:
+    result = _score_source_body(REFERENCE_WRAP_EXPLOIT, {"op": "forward_chunked_scan"})
+    assert result["status"] == "forbidden_import", result
+    assert result["reward"] == 0.0
+
+
+def test_import_guard_blocks_oracle_reimport() -> None:
+    """Belt-and-suspenders: a runtime-built name still resolves through the
+    guarded __import__ and is rejected, while honest imports pass."""
+    import builtins
+    import math
+
+    from flash_mamba_rl.verifier.candidate_scoring import _import_guard
+
+    real = builtins.__import__
+    with _import_guard():
+        with pytest.raises(ImportError):
+            builtins.__import__("flash_mamba_rl.kernels.references.forward_chunked_scan")
+        with pytest.raises(ImportError):
+            builtins.__import__("importlib")
+        assert builtins.__import__("math") is math
+    assert builtins.__import__ is real  # restored on exit
+
+
+def test_ast_screen_passes_clean_candidate() -> None:
+    from flash_mamba_rl.verifier.candidate_scoring import _ast_screen
+
+    assert _ast_screen(CORRECT_EAGER) == []
+    # A syntactically broken source is not a screen hit — exec classifies it.
+    assert _ast_screen(SYNTAX_ERROR) == []
+
+
 def test_project_modules_hidden_during_candidate_exec() -> None:
     import sys
 

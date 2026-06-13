@@ -10,11 +10,10 @@ take over from a live gradient.
 
 Sources are consumed as *text*, never imported by the trainer — the SFT
 completion is exactly the bytes the verifier scored. Every target must
-stay free of ``candidate_scoring.FORBIDDEN_SOURCE_TOKENS`` (no package /
-official-kernel / dynamic-import references) and must mirror the
-reference math statement-for-statement: the gates compare against
-autograd through the references, so replication fidelity IS the
-correctness argument.
+clear ``candidate_scoring._ast_screen`` (no package / official-kernel /
+dynamic-import references) and must mirror the reference math
+statement-for-statement: the gates compare against autograd through the
+references, so replication fidelity IS the correctness argument.
 """
 
 from pathlib import Path

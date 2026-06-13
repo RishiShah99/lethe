@@ -37,7 +37,7 @@ from flash_mamba_rl.rl.sft_targets.fused_block_backward import fused_block_backw
 from flash_mamba_rl.rl.sft_targets.fused_block_forward import fused_block_forward
 from flash_mamba_rl.rl.sft_targets.mimo_backward import mimo_backward
 from flash_mamba_rl.verifier.candidate_scoring import (
-    FORBIDDEN_SOURCE_TOKENS,
+    _ast_screen,
     score_candidate_source,
     scoreable_ops,
 )
@@ -85,12 +85,13 @@ def test_registry_covers_curriculum_ops() -> None:
             assert f"def {op}(" in target_source(op, variant)
 
 
-def test_no_forbidden_tokens() -> None:
+def test_targets_pass_the_candidate_screen() -> None:
+    # Every target must clear the same AST screen candidates face: no package
+    # imports, no dynamic-import / builtins-reflection machinery.
     for op in available_targets():
         for variant in target_variants(op):
-            source = target_source(op, variant)
-            hits = [tok for tok in FORBIDDEN_SOURCE_TOKENS if tok in source]
-            assert not hits, f"{op}[{variant}]: {hits}"
+            violations = _ast_screen(target_source(op, variant))
+            assert not violations, f"{op}[{variant}]: {violations}"
 
 
 @pytest.fixture()
