@@ -216,18 +216,22 @@ class HFPolicy:
         *,
         use_adapter: bool = True,
         append_eos: bool | Sequence[bool] = True,
+        temperature: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Batched per-token log-probs of each completion given ``prompt``.
 
         Returns ``(log_probs, mask)``, both ``(K, T_max)``. ``mask`` is True
-        at valid completion positions. Logits are divided by the sampling
-        temperature before the softmax — these are the *behaviour* policy's
-        log-probs. Differentiable: wrap in ``torch.no_grad()`` for old/ref
-        streams. ``use_adapter=False`` computes under the frozen base model
-        via peft's ``disable_adapter``. ``append_eos`` (scalar or one bool
-        per completion, e.g. ``last_terminated`` from ``generate``) controls
-        whether the stop decision is part of the scored trajectory — pass
-        the same value to every stream.
+        at valid completion positions. Logits are divided by ``temperature``
+        before the softmax; ``None`` (the GRPO default) uses the sampling
+        temperature, so these are the *behaviour* policy's log-probs. SFT
+        passes ``temperature=1.0`` to get standard cross-entropy regardless
+        of the policy's sampling setting — minimizing ``-log softmax(logits)``,
+        not a tempered surrogate. Differentiable: wrap in ``torch.no_grad()``
+        for old/ref streams. ``use_adapter=False`` computes under the frozen
+        base model via peft's ``disable_adapter``. ``append_eos`` (scalar or
+        one bool per completion, e.g. ``last_terminated`` from ``generate``)
+        controls whether the stop decision is part of the scored trajectory —
+        pass the same value to every stream.
         """
         if not completions:
             raise ValueError("completions must be non-empty")
@@ -283,7 +287,8 @@ class HFPolicy:
         # absolute positions [prompt_len, prompt_len + t_max).
         pred = logits[:, prompt_len - 1 : prompt_len + t_max - 1, :]
         targets = full[:, prompt_len : prompt_len + t_max]
-        log_probs = torch.log_softmax(pred.float() / self.sampling.temperature, dim=-1)
+        temp = self.sampling.temperature if temperature is None else temperature
+        log_probs = torch.log_softmax(pred.float() / temp, dim=-1)
         gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
         return gathered * mask, mask
 
@@ -374,8 +379,13 @@ class ReferencePolicyView:
         completions: list[str],
         *,
         append_eos: bool | Sequence[bool] = True,
+        temperature: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             return self._policy.completion_log_probs(
-                prompt, completions, use_adapter=False, append_eos=append_eos
+                prompt,
+                completions,
+                use_adapter=False,
+                append_eos=append_eos,
+                temperature=temperature,
             )

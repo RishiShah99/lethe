@@ -27,6 +27,7 @@ class StubSFTPolicy:
         self.theta = torch.nn.Parameter(torch.ones(4))
         self.eval_calls = 0
         self.seen_prompts: list[str] = []
+        self.seen_temperatures: list[float | None] = []
         self.saved_paths: list[str] = []
 
     def completion_log_probs(
@@ -36,8 +37,10 @@ class StubSFTPolicy:
         *,
         use_adapter: bool = True,
         append_eos: bool | Sequence[bool] = True,
+        temperature: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         self.seen_prompts.append(prompt)
+        self.seen_temperatures.append(temperature)
         k, t = len(completions), self.theta.shape[0]
         lp = -torch.nn.functional.softplus(self.theta).expand(k, t)
         mask = torch.ones(k, t, dtype=torch.bool)
@@ -143,3 +146,19 @@ class TestLoop:
     def test_empty_examples_rejected(self, tmp_path: Any) -> None:
         with pytest.raises(ValueError):
             SFTTrainingLoop(SFTConfig(checkpoint_dir=str(tmp_path)), StubSFTPolicy(), [])
+
+    def test_scores_at_unit_temperature(self, tmp_path: Any) -> None:
+        # The NLL must be exact cross-entropy: every step scores at T=1.0,
+        # not the policy's sampling temperature.
+        loop, policy = make_loop(tmp_path, total_steps=3)
+        loop.run()
+        assert policy.seen_temperatures == [1.0, 1.0, 1.0]
+
+    def test_nonpositive_temperature_rejected(self, tmp_path: Any) -> None:
+        examples = [SFTExample(op="o", prompt="p", completion="```python\nx = 1\n```")]
+        with pytest.raises(ValueError, match="temperature"):
+            SFTTrainingLoop(
+                SFTConfig(checkpoint_dir=str(tmp_path), temperature=0.0),
+                StubSFTPolicy(),
+                examples,
+            )

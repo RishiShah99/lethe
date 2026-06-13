@@ -213,6 +213,15 @@ class TestLogProbs:
         raw = manual_log_probs(model, "p", "abc", temperature=1.0)
         assert not torch.allclose(want, raw)
 
+    def test_temperature_override_ignores_sampling_temp(self) -> None:
+        # SFT passes temperature=1.0 to get exact cross-entropy regardless of
+        # the policy's sampling temperature.
+        model = StubModel()
+        policy = make_policy(model, temperature=2.0)
+        lp, mask = policy.completion_log_probs("p", ["abc"], temperature=1.0)
+        want = manual_log_probs(model, "p", "abc", temperature=1.0)
+        torch.testing.assert_close(lp[0][mask[0]], want)
+
     def test_append_eos_false_drops_stop_token(self) -> None:
         model = StubModel()
         policy = make_policy(model)

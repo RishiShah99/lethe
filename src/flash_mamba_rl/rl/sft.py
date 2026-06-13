@@ -9,9 +9,13 @@ same ``completion_log_probs`` path that scores GRPO's streams — the
 SFT'd distribution is exactly the behaviour policy the curriculum
 resumes from.
 
-Run with sampling temperature 1.0: ``completion_log_probs`` tempers
-logits by design (the behaviour-policy convention), so T=1 is what makes
-this objective standard cross-entropy.
+The loop scores each target with ``completion_log_probs(temperature=1.0)``
+so the objective is standard cross-entropy by construction — minimizing
+``-log softmax(logits)``, not the tempered surrogate the policy's sampling
+temperature would otherwise impose (``completion_log_probs`` divides logits
+by its temperature; the GRPO behaviour streams want the sampling value, SFT
+wants 1.0). Correctness no longer rides on the driver setting
+``SamplingSettings(temperature=1.0)``.
 
 Targets are consumed as the exact bytes the verifier scored, fenced the
 way the prompt instructs and ``extract_code`` parses — the SFT example
@@ -48,6 +52,7 @@ class SFTPolicy(Protocol):
         *,
         use_adapter: bool = True,
         append_eos: bool | Sequence[bool] = True,
+        temperature: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
     def trainable_parameters(self) -> Iterator[torch.nn.Parameter]: ...
@@ -97,6 +102,10 @@ class SFTConfig:
     checkpoint_dir: str = "checkpoints/sft"
     save_every: int = 10
     seed: int = 0
+    # 1.0 ⇒ the NLL is exact cross-entropy (see module docstring); the loop
+    # passes this to completion_log_probs so the objective is correct
+    # independent of the policy's sampling temperature.
+    temperature: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -117,6 +126,8 @@ class SFTTrainingLoop:
     def __init__(self, config: SFTConfig, policy: SFTPolicy, examples: list[SFTExample]) -> None:
         if not examples:
             raise ValueError("examples must be non-empty")
+        if config.temperature <= 0.0:
+            raise ValueError(f"SFT temperature must be positive, got {config.temperature}")
         self.config = config
         self.policy = policy
         self.examples = examples
@@ -139,9 +150,10 @@ class SFTTrainingLoop:
         self.policy.eval_mode()
         example = self._example_for_step(self.step_idx)
         # The target ends at the closing fence by choice — append_eos trains
-        # the stop decision along with the code.
+        # the stop decision along with the code. temperature=1.0 makes the NLL
+        # exact cross-entropy regardless of the policy's sampling temperature.
         log_probs, mask = self.policy.completion_log_probs(
-            example.prompt, [example.completion], append_eos=True
+            example.prompt, [example.completion], append_eos=True, temperature=cfg.temperature
         )
         tokens = int(mask.sum().item())
         loss = -(log_probs * mask).sum() / mask.sum().clamp(min=1)
