@@ -20,10 +20,11 @@ class TimingResult:
 
 def benchmark(
     callable: Callable[..., Any],
-    inputs: tuple[Any, ...],
+    inputs: tuple[Any, ...] = (),
     *,
     warmup: int = 10,
     trials: int = 100,
+    inputs_factory: Callable[[int], tuple[Any, ...]] | None = None,
 ) -> TimingResult:
     """Benchmark *callable* with positional *inputs*.
 
@@ -35,11 +36,20 @@ def benchmark(
     callable:
         The function to benchmark.  Called as ``callable(*inputs)``.
     inputs:
-        Positional arguments forwarded to *callable* on every call.
+        Positional arguments forwarded to *callable* on every call. Ignored
+        when ``inputs_factory`` is given.
     warmup:
         Number of warm-up calls before timing begins.
     trials:
         Number of timed calls.  Median (not best-of) is reported.
+    inputs_factory:
+        When supplied, fresh inputs are built per call via
+        ``inputs_factory(i)`` *outside* the timed window — distinct content
+        per trial. A fixed input tuple lets a candidate that memoizes on an
+        input fingerprint, or mutates a shared buffer in place, fabricate a
+        speedup by serving cache hits after the first trial; rebuilding with
+        varying content forces an honest recompute every trial. Warm-up uses
+        negative indices so it never primes a cache the timed trials hit.
 
     Returns
     -------
@@ -50,27 +60,32 @@ def benchmark(
 
     use_cuda = torch.cuda.is_available()
 
+    def call_inputs(i: int) -> tuple[Any, ...]:
+        return inputs_factory(i) if inputs_factory is not None else inputs
+
     # ---- Warm-up ----
-    for _ in range(warmup):
-        callable(*inputs)
+    for w in range(warmup):
+        callable(*call_inputs(-1 - w))
 
     # ---- Timed trials ----
     times_ms: list[float] = []
 
     if use_cuda:
         torch.cuda.synchronize()
-        for _ in range(trials):
+        for i in range(trials):
+            args = call_inputs(i)  # built outside the timed window
             start_event = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
             end_event = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
             start_event.record()
-            callable(*inputs)
+            callable(*args)
             end_event.record()
             torch.cuda.synchronize()
             times_ms.append(start_event.elapsed_time(end_event))
     else:
-        for _ in range(trials):
+        for i in range(trials):
+            args = call_inputs(i)
             t0 = time.perf_counter_ns()
-            callable(*inputs)
+            callable(*args)
             t1 = time.perf_counter_ns()
             times_ms.append((t1 - t0) / 1_000_000.0)
 

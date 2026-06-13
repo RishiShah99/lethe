@@ -338,7 +338,7 @@ def _gate_and_reward(
         contracts_passed = views_passed == views_total
 
     speedup: float | None = None
-    bench: dict[str, float] = {}
+    bench: dict[str, Any] = {}
     bug_routing = False
     if (
         contracts_passed
@@ -348,8 +348,19 @@ def _gate_and_reward(
         from flash_mamba_rl.verifier import op_bench
 
         bench = op_bench.measure_speedup(fn, op_name, device)
-        speedup = bench["speedup"]
-        bug_routing = op_bench.bug_routing_active(op_name, device)
+        if bench.get("correct_at_bench", True):
+            speedup = float(bench["speedup"])
+            bug_routing = op_bench.bug_routing_active(op_name, device)
+        else:
+            # Value-incorrect at the bench width the gates don't reach (they cap
+            # d_model at 64): a real correctness failure, not "not faster" — demote
+            # to the contract-fail reward so no speedup credit is paid.
+            contracts_passed = False
+            first_failed_view = "bench_shape_correctness"
+            gates["bench_shape_correctness"] = {
+                "passed": False,
+                "reason": "candidate diverges from the hand-written baseline at the bench shape",
+            }
 
     reward = compute_reward(
         compiled=True,
@@ -357,7 +368,12 @@ def _gate_and_reward(
         speedup_vs_handwritten=speedup,
         bug_routing=bug_routing,
     )
-    if reward_shaping == "view_fraction" and not contracts_passed and views_total > 1:
+    if (
+        reward_shaping == "view_fraction"
+        and not contracts_passed
+        and views_total > 1
+        and bench.get("correct_at_bench", True)
+    ):
         reward = 0.1 + 0.35 * (views_passed / views_total)
     return {
         "status": "scored",

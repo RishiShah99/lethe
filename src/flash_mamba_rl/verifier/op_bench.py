@@ -8,9 +8,19 @@ softplus entries probe value correctness, not throughput) at a fixed
 training-ish bench shape; the baseline is the op's public hand-written
 entry point, which dispatches to the Phase C Triton kernel on CUDA.
 
-Inputs are rebuilt between the candidate and baseline timings: the gate
-battery regenerates aux per call, so an input-mutating candidate could
-pass every gate and then poison a shared bench buffer.
+Inputs are rebuilt with varying content on every timed trial (see
+``measure_speedup``): a fixed bench input lets a candidate that memoizes
+on an input fingerprint or mutates a shared buffer in place serve cache
+hits after the first trial and fabricate a speedup; per-trial rebuilds
+force an honest recompute each trial.
+
+Correctness is re-gated at the bench shape before any timing. The contract
+gates top out at d_model=64; a candidate correct there but no-op / wrong
+at the bench width (1024) would otherwise earn an unbounded fake speedup.
+``measure_speedup`` first checks candidate-vs-baseline output equality at
+the bench shape (scale-aware tolerance) and refuses to pay speedup on a
+mismatch — the scoring bridge demotes such a candidate to the
+contract-failure reward.
 
 Bug routing: the official Mamba-3 Triton backward is the #904 casualty
 on sm_100 (TMEM overflow at num_warps >= 4), so the backward-scan op
@@ -52,9 +62,9 @@ class BenchCase:
     baseline: Callable[..., Any]
 
 
-def _primary(shape: tuple[int, ...], device: str | torch.device) -> Tensor:
+def _primary(shape: tuple[int, ...], device: str | torch.device, seed: int = _BENCH_SEED) -> Tensor:
     gen = torch.Generator(device="cpu")
-    gen.manual_seed(_BENCH_SEED)
+    gen.manual_seed(seed)
     return torch.randn(*shape, generator=gen).to(device=device, dtype=torch.float32)
 
 
@@ -65,11 +75,15 @@ def build_bench_case(
     batch: int = DEFAULT_BATCH,
     seq_len: int = DEFAULT_SEQ_LEN,
     width: int = DEFAULT_WIDTH,
+    seed: int = _BENCH_SEED,
 ) -> BenchCase:
     """Deterministic fp32 bench inputs for *op* at a [batch, seq_len, width] primary.
 
     ``width`` is d_model; the head-structured ops view it as
-    (nheads, headdim) exactly as their gate views do.
+    (nheads, headdim) exactly as their gate views do. ``seed`` varies the
+    primary tensor's content (every build still allocates fresh buffers for
+    primary and aux): the timing loop sweeps it per trial so a memoizing or
+    in-place-mutating candidate cannot serve cache hits across trials.
     """
     from flash_mamba_rl.kernels import ops as hand_ops
     from flash_mamba_rl.verifier import op_harness as oh
@@ -79,12 +93,12 @@ def build_bench_case(
 
     if op == "elementwise_silu":
         return BenchCase(
-            args=(_primary((batch, seq_len, width), dev),),
+            args=(_primary((batch, seq_len, width), dev, seed),),
             kwargs={},
             baseline=lambda x: x * torch.sigmoid(x),
         )
     if op == "forward_chunked_scan":
-        u = _primary((batch, seq_len, width), dev)
+        u = _primary((batch, seq_len, width), dev, seed)
         aux = oh._scan_aux(batch, seq_len, width, oh.SCAN_N_STATE, dev, fp32, saturate=False)
         return BenchCase(
             args=(u, *aux),
@@ -93,7 +107,7 @@ def build_bench_case(
         )
     if op == "backward_selective_scan":
         inputs = oh._bwd_scan_aux(batch, seq_len, width, oh.SCAN_N_STATE, dev, fp32, saturate=False)
-        dy = _primary((batch, seq_len, width), dev)
+        dy = _primary((batch, seq_len, width), dev, seed)
         return BenchCase(
             args=(*inputs, dy),
             kwargs={"chunk_size": oh.SCAN_CHUNK_SIZE},
@@ -104,20 +118,20 @@ def build_bench_case(
         mimo_aux = oh._mimo_bwd_aux(
             batch, seq_len, nheads, oh.MIMO_HEADDIM, oh.MIMO_RANK, oh.MIMO_N_STATE, dev, fp32
         )
-        dy = _primary((batch, seq_len, nheads, oh.MIMO_HEADDIM), dev)
+        dy = _primary((batch, seq_len, nheads, oh.MIMO_HEADDIM), dev, seed)
         return BenchCase(args=(*mimo_aux, dy), kwargs={}, baseline=hand_ops.mimo_backward)
     if op == "complex_scan_rope":
         nheads = oh._mimo_nheads(width, oh.ROPE_HEADDIM)
         rope_aux = oh._rope_aux(
             batch, seq_len, nheads, oh.ROPE_N_STATE, oh.ROPE_NUM_ANGLES, dev, fp32
         )
-        x = _primary((batch, seq_len, nheads, oh.ROPE_HEADDIM), dev)
+        x = _primary((batch, seq_len, nheads, oh.ROPE_HEADDIM), dev, seed)
         return BenchCase(args=(x, *rope_aux), kwargs={}, baseline=hand_ops.complex_scan_rope)
     if op == "fused_block_forward":
         fused_aux = oh._fused_aux(
             batch, seq_len, width, oh.SCAN_N_STATE, oh.FUSED_CONV_K, dev, fp32, saturate=False
         )
-        x = _primary((batch, seq_len, width), dev)
+        x = _primary((batch, seq_len, width), dev, seed)
         x_pad = torch.nn.functional.pad(x, (0, 0, oh.FUSED_CONV_K - 1, 0))
         return BenchCase(
             args=(x_pad, *fused_aux),
@@ -129,13 +143,77 @@ def build_bench_case(
             batch, seq_len, width, oh.SCAN_N_STATE, oh.FUSED_CONV_K, dev, fp32, saturate=False
         )
         x_pad = torch.nn.functional.pad(x, (0, 0, oh.FUSED_CONV_K - 1, 0))
-        dy = _primary((batch, seq_len, width), dev)
+        dy = _primary((batch, seq_len, width), dev, seed)
         return BenchCase(
             args=(x_pad, *fused_bwd_aux, dy),
             kwargs={"conv_kernel_size": oh.FUSED_CONV_K, "chunk_size": oh.SCAN_CHUNK_SIZE},
             baseline=hand_ops.fused_block_backward,
         )
     raise KeyError(f"no bench case for op {op!r}")
+
+
+_CORRECTNESS_SEED_BASE = _BENCH_SEED + 90_001
+
+
+def _tensor_close(out: Any, ref: Tensor, *, atol: float, rtol: float) -> bool:
+    if not isinstance(out, Tensor) or out.shape != ref.shape:
+        return False
+    ref32 = ref.float()
+    finite = ref32[torch.isfinite(ref32)]
+    scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
+    return bool(torch.allclose(out.float(), ref32, atol=atol * scale, rtol=rtol, equal_nan=True))
+
+
+def _outputs_close(out: Any, ref: Any, *, atol: float, rtol: float) -> bool:
+    """Scale-aware equality for a tensor output or a gradient tuple."""
+    if isinstance(ref, Tensor):
+        return _tensor_close(out, ref, atol=atol, rtol=rtol)
+    try:
+        ref_seq = list(ref)
+        out_seq = list(out)
+    except TypeError:
+        return False
+    if len(out_seq) != len(ref_seq):
+        return False
+    return all(
+        _tensor_close(o, r, atol=atol, rtol=rtol) for o, r in zip(out_seq, ref_seq, strict=True)
+    )
+
+
+def correct_at_bench_shape(
+    candidate: Callable[..., Any],
+    op: str,
+    device: str | torch.device,
+    *,
+    batch: int = DEFAULT_BATCH,
+    seq_len: int = DEFAULT_SEQ_LEN,
+    width: int = DEFAULT_WIDTH,
+    n_checks: int = 2,
+    atol: float = 1e-2,
+    rtol: float = 1e-2,
+) -> bool:
+    """Candidate matches the hand-written baseline at the bench shape.
+
+    The contract gates cap d_model at 64; this re-checks value correctness
+    at the bench width (1024) the speedup is measured at, so a shape-keyed
+    no-op cannot bank a fake speedup. The tolerance is loose on purpose —
+    fine numerics are the gates' job at small shapes; this only has to
+    separate "actually computing the op" (error ~ eps*sqrt(L)*scale) from a
+    gross divergence (no-op / wrong scale ~ full output magnitude), so an
+    honest kernel clears it by orders of magnitude.
+    """
+    for i in range(n_checks):
+        case = build_bench_case(
+            op, device, batch=batch, seq_len=seq_len, width=width, seed=_CORRECTNESS_SEED_BASE + i
+        )
+        try:
+            ref = case.baseline(*case.args, **case.kwargs)
+            out = candidate(*case.args, **case.kwargs)
+        except Exception:
+            return False
+        if not _outputs_close(out, ref, atol=atol, rtol=rtol):
+            return False
+    return True
 
 
 def measure_speedup(
@@ -148,22 +226,44 @@ def measure_speedup(
     batch: int = DEFAULT_BATCH,
     seq_len: int = DEFAULT_SEQ_LEN,
     width: int = DEFAULT_WIDTH,
-) -> dict[str, float]:
-    """Median-timing speedup ``t_baseline / t_candidate`` at the bench shape."""
+) -> dict[str, float | bool]:
+    """Median-timing speedup ``t_baseline / t_candidate`` at the bench shape.
 
-    def timed(fn: Callable[..., Any], case: BenchCase) -> float:
-        call = (lambda *a: fn(*a, **case.kwargs)) if case.kwargs else fn
-        return benchmark(call, case.args, warmup=warmup, trials=trials).median_ms
+    Gates candidate correctness at the bench shape first (``correct_at_bench``
+    in the result): on a mismatch the speedup is not measured and the scoring
+    bridge withholds the speedup reward. Otherwise each timed trial draws
+    fresh-content inputs (``build_bench_case(seed=...)``) so memoization or
+    in-place mutation cannot fabricate the ratio; candidate and baseline see
+    the identical per-trial inputs for a fair comparison.
+    """
+    if not correct_at_bench_shape(candidate, op, device, batch=batch, seq_len=seq_len, width=width):
+        return {
+            "t_candidate_ms": float("nan"),
+            "t_baseline_ms": float("nan"),
+            "speedup": 0.0,
+            "correct_at_bench": False,
+        }
 
-    t_candidate = timed(
-        candidate, build_bench_case(op, device, batch=batch, seq_len=seq_len, width=width)
-    )
-    fresh = build_bench_case(op, device, batch=batch, seq_len=seq_len, width=width)
-    t_baseline = timed(fresh.baseline, fresh)
+    template = build_bench_case(op, device, batch=batch, seq_len=seq_len, width=width)
+    kwargs = template.kwargs
+    baseline = template.baseline
+
+    def factory(i: int) -> tuple[Any, ...]:
+        return build_bench_case(
+            op, device, batch=batch, seq_len=seq_len, width=width, seed=_BENCH_SEED + i
+        ).args
+
+    def timed(fn: Callable[..., Any]) -> float:
+        call = (lambda *a: fn(*a, **kwargs)) if kwargs else fn
+        return benchmark(call, warmup=warmup, trials=trials, inputs_factory=factory).median_ms
+
+    t_candidate = timed(candidate)
+    t_baseline = timed(baseline)
     return {
         "t_candidate_ms": t_candidate,
         "t_baseline_ms": t_baseline,
         "speedup": t_baseline / t_candidate,
+        "correct_at_bench": True,
     }
 
 
