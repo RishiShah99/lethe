@@ -9,11 +9,22 @@ hardware limits, and reports not-applicable when no metadata is supplied
 from __future__ import annotations
 
 import math
+import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+
+# Per-gate RNG seed base (M4): each gate reseeds the global RNG from
+# ``_GATE_RNG_SEED ^ crc32(gate_name)`` before drawing its probe inputs, so a
+# borderline candidate's verdict is a pure function of the candidate rather than
+# of cross-rollout RNG drift (unseeded draws flipped thin-margin verdicts and
+# fed the GRPO update noise). The value is fixed by box re-validation of the
+# discriminative floors — the thinnest is the grad_dt MIMO PRC-02 view; changing
+# it requires re-running scratch/c3_b200_floor.py to confirm the honest kernel
+# still lands inside tolerance and every cheat outside it.
+_GATE_RNG_SEED = 0x9E3779B9
 
 
 @dataclass(frozen=True)
@@ -887,6 +898,7 @@ def run_all_gates(
     *,
     gate_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     gate_names: Sequence[str] | None = None,
+    seed: int | None = _GATE_RNG_SEED,
     **kwargs: Any,
 ) -> dict[str, GateResult]:
     """Run Kernel Contract gates and return results keyed by gate name.
@@ -899,6 +911,14 @@ def run_all_gates(
     ``gate_names`` selects a subset (default: all 12). The audit harness uses
     this to exclude gates outside an audited corpus's claimed scope.
 
+    ``seed`` makes each gate's probe inputs deterministic: before every gate the
+    global RNG is reseeded from ``seed ^ crc32(gate_name)`` (per-gate so the
+    gates don't share one stream), and the caller's RNG state is saved and
+    restored around the loop. This pins a candidate's verdict to the candidate
+    alone — unseeded draws flipped thin-margin verdicts across rollouts and fed
+    the GRPO update noise. Pass ``seed=None`` to keep the legacy unseeded draws
+    (the closed audit artifact does its own ``AUDIT_SEED`` and opts out).
+
     Stubbed gates that raise ``NotImplementedError`` are recorded as
     ``passed=False`` with reason ``"not_implemented"``. Any other exception
     escaping a gate (e.g., a malformed candidate output crashes an internal
@@ -906,23 +926,37 @@ def run_all_gates(
     candidate must not crash the verifier loop.
     """
     results: dict[str, GateResult] = {}
-    for name in gate_names if gate_names is not None else _ALL_GATE_NAMES:
-        gate_fn = _GATE_MAP[name]
-        gate_kwargs = dict(kwargs)
-        if gate_overrides and name in gate_overrides:
-            gate_kwargs.update(gate_overrides[name])
-        try:
-            results[name] = gate_fn(candidate, reference, **gate_kwargs)
-        except NotImplementedError:
-            results[name] = GateResult(
-                passed=False,
-                reason="not_implemented",
-                details={"stub": True},
-            )
-        except Exception as exc:
-            results[name] = GateResult(
-                passed=False,
-                reason=f"gate crashed: {type(exc).__name__}: {exc}",
-                details={"exception_type": type(exc).__name__},
-            )
+    cpu_rng_state = torch.get_rng_state() if seed is not None else None
+    cuda_rng_states = (
+        torch.cuda.get_rng_state_all() if seed is not None and torch.cuda.is_available() else None
+    )
+    try:
+        for name in gate_names if gate_names is not None else _ALL_GATE_NAMES:
+            gate_fn = _GATE_MAP[name]
+            gate_kwargs = dict(kwargs)
+            if gate_overrides and name in gate_overrides:
+                gate_kwargs.update(gate_overrides[name])
+            if seed is not None:
+                # manual_seed reseeds CPU and every CUDA device, covering both
+                # gate draw paths from one call.
+                torch.manual_seed(seed ^ zlib.crc32(name.encode()))
+            try:
+                results[name] = gate_fn(candidate, reference, **gate_kwargs)
+            except NotImplementedError:
+                results[name] = GateResult(
+                    passed=False,
+                    reason="not_implemented",
+                    details={"stub": True},
+                )
+            except Exception as exc:
+                results[name] = GateResult(
+                    passed=False,
+                    reason=f"gate crashed: {type(exc).__name__}: {exc}",
+                    details={"exception_type": type(exc).__name__},
+                )
+    finally:
+        if cpu_rng_state is not None:
+            torch.set_rng_state(cpu_rng_state)
+        if cuda_rng_states is not None:
+            torch.cuda.set_rng_state_all(cuda_rng_states)
     return results

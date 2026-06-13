@@ -421,6 +421,7 @@ def _audit_worker_body(ref_source: str, cand_source: str, config: dict[str, Any]
         gate_overrides=gate_overrides,
         shape=shape,
         device=device,
+        seed=None,  # closed artifact: keep the legacy AUDIT_SEED-driven draws
     )
 
     n_checks: dict[str, int | None] = {

@@ -490,6 +490,33 @@ class TestRunAllGates:
         for name, result in results.items():
             assert result.passed is True, f"{name} should pass for identity"
 
+    def test_seeded_inputs_make_verdicts_deterministic(self) -> None:
+        """Default per-gate seeding pins input-dependent gate details across
+        independent runs, and the caller's global RNG state is restored."""
+
+        def _wrong(x: torch.Tensor) -> torch.Tensor:
+            return x + 0.1  # fails CMP-01's value comparison vs identity
+
+        torch.manual_seed(0)
+        before = torch.get_rng_state()
+        first = run_all_gates(_wrong, _identity)
+        after = torch.get_rng_state()
+        second = run_all_gates(_wrong, _identity)
+
+        assert torch.equal(before, after), "global RNG state must be restored"
+        cmp01 = "gate_cmp_01_input_variation"
+        assert not first[cmp01].passed
+        assert first[cmp01].details == second[cmp01].details, "seeded draws must repeat"
+
+    def test_seed_none_keeps_legacy_unseeded_draws(self) -> None:
+        """seed=None leaves the global RNG advancing (no reseed / no restore) —
+        the closed audit path's behavior is unchanged."""
+        torch.manual_seed(0)
+        before = torch.get_rng_state()
+        run_all_gates(_identity, _identity, seed=None)
+        after = torch.get_rng_state()
+        assert not torch.equal(before, after), "unseeded gates advance the global RNG"
+
 
 # ---------------------------------------------------------------------------
 # timing.py
