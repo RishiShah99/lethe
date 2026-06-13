@@ -23,11 +23,13 @@ zero the signal for improving later views whenever an early one fails.
 
 Candidate sources that import the project package or the official Mamba
 kernels, or reach for the dynamic-import / builtins-reflection machinery a
-wrap needs, are rejected before exec (``forbidden_import``, reward 0.0) by
-an AST screen plus a resolved-name import guard active during exec (see
-``_ast_screen`` / ``_import_guard``): wrapping the reference or the
-hand-written ops would otherwise pass every gate without writing a kernel —
-the 0.5-reward fixed point the policy must not be able to reach.
+wrap needs, are blocked by three layers (see ``_ast_screen`` / ``_import_guard``
+/ ``_OracleImportBlocker``): an AST screen rejects them before exec
+(``forbidden_import``, reward 0.0); a ``builtins.__import__`` guard and a
+``sys.meta_path`` finder block the oracle roots during exec across every import
+pathway. Wrapping the reference or the hand-written ops would otherwise pass
+every gate without writing a kernel — the 0.5-reward fixed point the policy
+must not be able to reach.
 
 CMP-02 (gradcheck) is excluded by default for generated kernels: forward
 tasks ask for a forward op, backward tasks ARE the gradient computation
@@ -79,19 +81,26 @@ DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 
 # Candidate sources may not reach the oracle. The realistic RL reward-hack is
 # wrapping the reference (or the official kernels) so every gate passes without
-# a kernel — the 0.5 fixed point. Two layers stop it. (1) An AST screen rejects
+# a kernel — the 0.5 fixed point. Three layers stop it. (1) An AST screen rejects
 # the package imports, the dynamic-import machinery (importlib/__import__), and
 # the builtins reflection a wrap needs: a name built at runtime
 # (``"flash"+"_mamba_rl"``, ``__builtins__["__im"+"port__"]``) still leaves an
 # ``__import__``/``__builtins__``/``importlib`` reference in the parse tree,
 # which substring scanning could not see — and substring scanning also
-# false-matched ``eval(`` inside ``retrieval(``, so it is gone. (2) An import
-# guard active during candidate exec blocks the oracle packages by resolved
-# root name, catching anything that slipped the screen at the point the import
-# actually resolves. Project modules are additionally hidden from sys.modules
-# during exec (see ``_hidden_project_modules``). Object-graph gadget chains
-# (gc-walking to the already-imported reference) stay possible by construction —
-# a documented arms-race boundary, not a contract.
+# false-matched ``eval(`` inside ``retrieval(``, so it is gone. (2) A
+# ``builtins.__import__`` guard active during candidate exec blocks the oracle
+# packages by resolved root name, catching the direct-import path at the point
+# it resolves. (3) An ``_OracleImportBlocker`` on ``sys.meta_path`` blocks the
+# same roots through EVERY import pathway — ``importlib.import_module`` and
+# ``_gcd_import`` bypass ``builtins.__import__``, so the guard alone could not
+# see them; the finder is also why importlib is no longer guard-blocked (doing
+# so scored every real Triton kernel as a non-compile, since Triton pulls in
+# importlib transitively at jit time — the finder closes the importlib-as-gadget
+# path without the false positive). Project modules are additionally hidden from
+# sys.modules during exec (see ``_hidden_project_modules``) so a candidate
+# import re-consults the finders. Object-graph gadget chains (gc-walking to the
+# already-imported reference) stay possible by construction — a documented
+# arms-race boundary, not a contract.
 _FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset(
     {
         "flash_mamba_rl",
@@ -109,11 +118,16 @@ _FORBIDDEN_NAMES: frozenset[str] = frozenset(
     {"__import__", "__builtins__", "importlib", "builtins", "eval", "exec"}
 )
 
-# The exec-time guard only needs the packages whose fresh disk re-import a wrap
-# depends on: sys/builtins are always cached, so re-importing them is a no-op
-# (the AST screen handles their source-level use).
+# Resolved-root oracle packages, blocked at every import pathway: the
+# ``builtins.__import__`` guard for the direct path and ``_OracleImportBlocker``
+# (a meta-path finder) for ``importlib.import_module`` / ``_gcd_import``.
+# importlib is deliberately NOT a member — a real Triton candidate pulls it in
+# transitively at jit time, so guard-blocking it scored every kernel as a
+# non-compile; the finder closes the importlib-as-gadget path instead. sys and
+# builtins are always cached, so a fresh re-import is a no-op (the AST screen
+# handles their source-level use).
 _GUARDED_IMPORT_ROOTS: frozenset[str] = frozenset(
-    {"flash_mamba_rl", "mamba_ssm", "causal_conv1d", "selective_scan_cuda", "importlib"}
+    {"flash_mamba_rl", "mamba_ssm", "causal_conv1d", "selective_scan_cuda"}
 )
 
 
@@ -170,6 +184,39 @@ def _import_guard() -> Iterator[None]:
         yield
     finally:
         builtins.__import__ = real_import
+
+
+class _OracleImportBlocker:
+    """meta-path finder that rejects the oracle packages by resolved root.
+
+    The ``_import_guard`` only sees imports routed through
+    ``builtins.__import__``; ``importlib.import_module`` and
+    ``importlib._bootstrap._gcd_import`` bypass it. Every import pathway,
+    those included, consults ``sys.meta_path``, so a finder that raises for the
+    oracle roots is the pathway-complete block — and the reason importlib need
+    not be guard-blocked (which broke real Triton candidates). With
+    ``_hidden_project_modules`` evicting the oracle from sys.modules, a candidate
+    import re-consults the finders and is rejected regardless of how it is
+    spelled; unrelated stdlib / third-party imports return None and fall through
+    to the real finders.
+    """
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> None:
+        if fullname.split(".", 1)[0] in _GUARDED_IMPORT_ROOTS:
+            raise ImportError(f"import of {fullname!r} blocked: candidate may not reach the oracle")
+        return None
+
+
+@contextlib.contextmanager
+def _oracle_import_blocker() -> Iterator[None]:
+    """Install ``_OracleImportBlocker`` at the front of sys.meta_path for exec."""
+    finder = _OracleImportBlocker()
+    sys.meta_path.insert(0, finder)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            sys.meta_path.remove(finder)
 
 
 @dataclass(frozen=True)
@@ -273,7 +320,7 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
         mod = importlib.util.module_from_spec(mod_spec)
         sys.modules["_scored_candidate"] = mod
         try:
-            with _hidden_project_modules(), _import_guard():
+            with _hidden_project_modules(), _import_guard(), _oracle_import_blocker():
                 mod_spec.loader.exec_module(mod)
         except Exception as exc:
             return _failure("exec_fail", f"{type(exc).__name__}: {_trunc(exc)}")

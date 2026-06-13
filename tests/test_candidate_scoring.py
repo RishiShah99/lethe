@@ -145,9 +145,12 @@ def test_reference_wrap_via_builtins_is_rejected() -> None:
 
 
 def test_import_guard_blocks_oracle_reimport() -> None:
-    """Belt-and-suspenders: a runtime-built name still resolves through the
-    guarded __import__ and is rejected, while honest imports pass."""
+    """Belt-and-suspenders: a runtime-built oracle name still resolves through
+    the guarded __import__ and is rejected, while honest imports pass —
+    importlib INCLUDED, because a real Triton candidate pulls it in transitively
+    at jit time and guard-blocking it scored every kernel as a non-compile."""
     import builtins
+    import importlib
     import math
 
     from flash_mamba_rl.verifier.candidate_scoring import _import_guard
@@ -156,10 +159,49 @@ def test_import_guard_blocks_oracle_reimport() -> None:
     with _import_guard():
         with pytest.raises(ImportError):
             builtins.__import__("flash_mamba_rl.kernels.references.forward_chunked_scan")
-        with pytest.raises(ImportError):
-            builtins.__import__("importlib")
+        assert builtins.__import__("importlib") is importlib  # NOT blocked
         assert builtins.__import__("math") is math
     assert builtins.__import__ is real  # restored on exit
+
+
+def test_oracle_import_blocker_covers_importlib_pathway() -> None:
+    """The meta-path finder blocks the oracle through importlib.import_module —
+    which bypasses builtins.__import__ — while non-oracle imports fall through.
+    With the oracle evicted from sys.modules, the re-import re-consults it."""
+    import importlib
+
+    from flash_mamba_rl.verifier.candidate_scoring import (
+        _hidden_project_modules,
+        _oracle_import_blocker,
+    )
+
+    with _hidden_project_modules(), _oracle_import_blocker():
+        with pytest.raises(ImportError):
+            importlib.import_module("flash_mamba_rl.kernels.references.forward_chunked_scan")
+        assert importlib.import_module("math").pi  # non-oracle passes through
+    assert importlib.import_module("flash_mamba_rl.verifier.reward") is not None  # removed on exit
+
+
+# Bypasses the AST screen (no forbidden Name nodes — __builtins__/__import__/
+# importlib appear only as string constants and attribute accesses), reaches a
+# live __import__ through globals()['__builtins__'], imports importlib (now
+# allowed past the guard), and tries importlib.import_module on the oracle. Only
+# the meta-path finder stops it — the test that the finder is load-bearing.
+ORACLE_GADGET_VIA_FINDER = (
+    "b = globals()['__builtins__']\n"
+    "imp = b['__import__'] if isinstance(b, dict) else b.__import__\n"
+    "il = imp('importlib')\n"
+    "forward_chunked_scan = il.import_module(\n"
+    "    'flash' + '_mamba_rl.kernels.references.forward_chunked_scan'\n"
+    ").reference_forward_chunked_scan\n"
+)
+
+
+def test_oracle_gadget_through_importlib_is_blocked_by_finder() -> None:
+    result = _score_source_body(ORACLE_GADGET_VIA_FINDER, {"op": "forward_chunked_scan"})
+    assert result["status"] == "exec_fail", result
+    assert result["reward"] == 0.0
+    assert "may not reach the oracle" in result["error"]
 
 
 def test_ast_screen_passes_clean_candidate() -> None:
