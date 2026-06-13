@@ -435,7 +435,23 @@ SCAN_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord01_reduction_elements=32 * 512 // 2, ord03_atol=3e-3, ord03_rtol=3e-3
     ),
     "grad_D": _bwd_view_overrides(
-        ord01_reduction_elements=4 * 512, ord03_atol=1e-3, ord03_rtol=1e-3
+        ord01_reduction_elements=4 * 512,
+        ord03_atol=1e-3,
+        ord03_rtol=1e-3,
+        # grad_D is a flat batch*L product sum: |out| ~ sqrt(B*L) ~ 100 at
+        # the gate shape, so the honest fp16 *input-rounding* floor and one
+        # fp16 output ULP both exceed the flat 2e-2 default — the gate could
+        # only pass by draw luck (surfaced by the SFT-target validation; the
+        # hand-written kernel itself failed). B200-measured over 8 draws
+        # (scratch/c2_gradd_floor.py, scale-normalised): honest kernel/eager
+        # <= 5.9e-4 vs fp16-sequential-accumulation cheat >= 3.8e-3; unit
+        # atol 1.5e-3 holds ~2.5x margin both ways.
+        prc02={
+            "shape": (2, 1024, 32),
+            "atol": 1.5e-3,
+            "rtol": 0.0,
+            "scale_atol_by_ref_inf": True,
+        },
     ),
 }
 

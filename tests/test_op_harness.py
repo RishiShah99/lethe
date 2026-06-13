@@ -492,6 +492,29 @@ class TestBackwardScanHarness:
         )
         assert not cheat.passed, "scale-aware PRC-02 lost its discriminative power on grad_A"
 
+    def test_grad_d_prc02_scale_aware_separates_honest_from_cheat(self) -> None:
+        # grad_D is a flat batch*L product sum (|out| ~ sqrt(B*L) ~ 100 at
+        # the gate shape): the flat 2e-2 atol sat below the honest fp16
+        # input-rounding floor, so the view runs scale-aware. B200-measured
+        # (scratch/c2_gradd_floor.py): honest <= 5.9e-4 of scale vs
+        # fp16-accumulation cheat >= 3.8e-3; this pins both sides of the
+        # 1.5e-3 unit atol on the eager path.
+        kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_D"]["gate_prc_02_mixed_precision_accumulation"])
+        honest = gate_prc_02_mixed_precision_accumulation(
+            bwd_scan_candidate_adapter(backward_selective_scan, "grad_D", saturate=False),
+            bwd_scan_reference_adapter("grad_D", saturate=False),
+            **kwargs,
+        )
+        assert honest.passed, f"honest fp32-accumulator grad_D rejected: {honest.reason}"
+        cheat = gate_prc_02_mixed_precision_accumulation(
+            bwd_scan_candidate_adapter(
+                _bwd_via_autograd(_fp16_accumulator_scan), "grad_D", saturate=False
+            ),
+            bwd_scan_reference_adapter("grad_D", saturate=False),
+            **kwargs,
+        )
+        assert not cheat.passed, "scale-aware PRC-02 lost its discriminative power on grad_D"
+
     def test_fp16_accumulator_bwd_cheat_caught_by_prc02(self) -> None:
         # Autograd through an fp16-state forward keeps the backward carry in
         # fp16 too; PRC-02 on the grad_u view must reject it while the honest
