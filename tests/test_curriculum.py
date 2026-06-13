@@ -137,6 +137,21 @@ class TestRunner:
         assert summary[1]["steps"] == 5
         assert runner.schedule.done is True
 
+    def test_on_level_start_fires_per_level_in_order(self, tmp_path: Any) -> None:
+        seen: list[str] = []
+        base = TrainLoopConfig(n_per_prompt=4, device="cpu", checkpoint_dir=str(tmp_path / "curr"))
+        runner = CurriculumRunner(
+            base_config=base,
+            policy=StubTrainablePolicy([GOOD, "no code here"]),
+            curriculum=two_level_config(),
+            scorer_factory=stub_scorer_factory(
+                {"forward_chunked_scan": 0.5, "backward_selective_scan": 0.5}
+            ),
+            on_level_start=seen.append,
+        )
+        runner.run()
+        assert seen == ["forward_chunked_scan", "backward_selective_scan"]
+
     def test_writes_level_dirs_and_state(self, tmp_path: Any) -> None:
         runner = self.make_runner(
             tmp_path,

@@ -147,6 +147,10 @@ class CurriculumRunner:
     scorer_factory: Any = None
     batch_scorer_factory: Any = None
     gen_pool: Any = None
+    # Called with the op name as each level opens (incl. on resume), before its
+    # loop is built — the hook retunes per-level generation (e.g. longer
+    # max_new_tokens for the backward ops, whose targets run thousands of tokens).
+    on_level_start: Any = None
 
     def __post_init__(self) -> None:
         self.schedule = CurriculumSchedule(self.curriculum)
@@ -211,6 +215,8 @@ class CurriculumRunner:
                 self.schedule.level_idx += 1
                 self._write_state()
                 continue
+            if self.on_level_start is not None:
+                self.on_level_start(level.op)
             loop = self._make_loop(idx)
             # A resumed level replays its already-recorded steps inside
             # trainer_state; the schedule only counts new ones.

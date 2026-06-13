@@ -75,6 +75,11 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--kl-coef", type=float, default=0.04)
     ap.add_argument("--max-new-tokens", type=int, default=2048)
+    # Backward ops emit far longer kernels (the fused_block_backward triton
+    # target is 8754 tokens); curriculum mode raises the cap to this for the
+    # backward levels only (forward levels keep --max-new-tokens, so their
+    # generation buffer is not sized for a length they never reach).
+    ap.add_argument("--max-new-tokens-bwd", type=int, default=9216)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--promote-rate", type=float, default=0.5, help="contract-pass rate gate")
     ap.add_argument("--promote-window", type=int, default=8)
@@ -193,6 +198,15 @@ def main() -> None:
         loop.run()
         return
 
+    import dataclasses as _dc
+
+    backward_ops = {"backward_selective_scan", "mimo_backward", "fused_block_backward"}
+
+    def on_level_start(op: str) -> None:
+        mnt = args.max_new_tokens_bwd if op in backward_ops else args.max_new_tokens
+        policy.sampling = _dc.replace(policy.sampling, max_new_tokens=mnt)
+        print(f"[curriculum] level {op}: max_new_tokens={mnt}", flush=True)
+
     runner = CurriculumRunner(
         base_config=base,
         policy=policy,
@@ -204,6 +218,7 @@ def main() -> None:
         ),
         batch_scorer_factory=batch_scorer_factory,
         gen_pool=gen_pool,
+        on_level_start=on_level_start,
     )
     if args.resume and runner.resume():
         print(f"resume: level {runner.schedule.level_idx}", flush=True)
