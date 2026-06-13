@@ -17,3 +17,20 @@ def env_echo(name: str) -> str | None:
     import os
 
     return os.environ.get(name)
+
+
+def noisy_identity(value: int) -> int:
+    """Write to fd 1 (Python print + raw os.write) then return ``value * 2``.
+
+    Stands in for a kernel/CUDA printf or any os-level write to stdout: the
+    raw bytes would corrupt the pickle channel if the result shared fd 1.
+    The sandbox marshals the result over a private fd and points fd 1 at
+    stderr, so the value must still round-trip.
+    """
+    import os
+    import sys
+
+    print("python-level stdout noise")
+    sys.stdout.flush()
+    os.write(1, b"raw fd-1 bytes that would corrupt a pickle channel\n")
+    return value * 2

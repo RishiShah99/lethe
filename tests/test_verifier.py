@@ -533,6 +533,18 @@ class TestTimingOnCpu:
 # ---------------------------------------------------------------------------
 
 
+class TestSandboxStdoutShield:
+    def test_candidate_stdout_does_not_corrupt_result(self) -> None:
+        # A kernel that prints (Python and raw fd-1 writes) must not poison the
+        # pickle channel — the result rides a private fd, fd 1 goes to stderr.
+        result = run_in_subprocess(
+            "tests._sandbox_helpers", "noisy_identity", (21,), timeout_s=30.0
+        )
+        assert result.success is True, result.stderr
+        assert result.output == 42
+        assert "raw fd-1 bytes" in result.stderr  # the noise was rerouted to stderr
+
+
 class TestSandboxTimeout:
     @pytest.mark.slow
     def test_timeout_is_detected(self) -> None:

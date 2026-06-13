@@ -21,7 +21,7 @@ import textwrap
 from dataclasses import dataclass
 from typing import Any
 
-from flash_mamba_rl.verifier.compile import ErrorClass
+from flash_mamba_rl.verifier.compile import ErrorClass, kill_process_tree
 
 # Return codes we care about
 _RC_TIMEOUT = -998  # synthetic sentinel
@@ -78,6 +78,16 @@ _WORKER_SCRIPT = textwrap.dedent(
     raw = sys.stdin.buffer.read()
     module_path, callable_name, inputs = pickle.loads(raw)
 
+    # The result is pickled to the parent over fd 1. Duplicate it to a private
+    # fd, then point fd 1 (and Python stdout) at stderr: a kernel printf, a
+    # CUDA printf, or any os.write(1) is a C-level write to fd 1 that the
+    # Python-level stdout swap cannot intercept, and even one stray byte
+    # corrupts the pickle channel. The candidate keeps a working stdout (now
+    # stderr); only the result travels the private fd.
+    sys.stdout.flush()
+    result_fd = os.dup(1)
+    os.dup2(2, 1)
+
     # Import the module containing the callable
     if module_path.endswith(".py"):
         import importlib.util
@@ -90,9 +100,11 @@ _WORKER_SCRIPT = textwrap.dedent(
     fn = getattr(mod, callable_name)
     result = fn(*inputs)
 
-    # Write result
-    sys.stdout.buffer.write(pickle.dumps(result))
-    sys.stdout.buffer.flush()
+    # Write result to the private channel (a pipe may take partial writes).
+    payload = memoryview(pickle.dumps(result))
+    while payload:
+        payload = payload[os.write(result_fd, payload):]
+    os.close(result_fd)
     """
 )
 
@@ -199,12 +211,12 @@ def run_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
+            start_new_session=True,
         )
         try:
             stdout_bytes, stderr_bytes = proc.communicate(input=task_bytes, timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            kill_process_tree(proc)
             return SubprocessResult(
                 success=False,
                 output=None,

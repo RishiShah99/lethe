@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,28 @@ import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
+
+
+def kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Kill *proc* and its descendants (e.g. ptxas / CUDA grandchildren).
+
+    POSIX children are spawned as session leaders (``start_new_session``), so
+    ``killpg`` reaps the whole group — ``proc.kill`` alone would orphan the
+    grandchildren, which over a long box campaign of routine compile timeouts
+    accumulate. Windows has no process group here; the direct kill is all
+    that is available.
+    """
+    # sys.platform (not os.name) so mypy narrows the POSIX-only calls away on
+    # Windows, where they don't exist.
+    if sys.platform != "win32":
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    proc.kill()
+    proc.wait()
 
 
 class ErrorClass(Enum):
@@ -221,12 +245,12 @@ def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
         try:
             _stdout_bytes, stderr_bytes = proc.communicate(input=source.encode(), timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            kill_process_tree(proc)
             compile_time = time.perf_counter() - t0
             return CompileResult(
                 success=False,
