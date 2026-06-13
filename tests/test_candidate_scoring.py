@@ -204,6 +204,54 @@ def test_oracle_gadget_through_importlib_is_blocked_by_finder() -> None:
     assert "may not reach the oracle" in result["error"]
 
 
+# The same wrap as ORACLE_GADGET_VIA_FINDER but DEFERRED into the entry-point
+# body: at module exec the def is inert (the exec-time guards see nothing), and
+# the gates invoke it later — outside exec. Unless the guards are re-armed around
+# each candidate call, this reaches the reference at call time and banks the 0.5
+# fixed point. The regression that pins that hole closed.
+DEFERRED_ORACLE_WRAP = (
+    "import torch\n"
+    "def forward_chunked_scan(u, *aux, chunk_size=64):\n"
+    "    b = globals()['__buil' + 'tins__']\n"
+    "    imp = b['__imp' + 'ort__'] if isinstance(b, dict) else getattr(b, '__imp' + 'ort__')\n"
+    "    mod = imp('imp' + 'ortlib').import_module(\n"
+    "        'flash' + '_mamba_rl.kernels.references.forward_chunked_scan')\n"
+    "    return mod.reference_forward_chunked_scan(u, *aux, chunk_size=chunk_size)\n"
+)
+
+
+def test_deferred_oracle_wrap_blocked_at_call_time() -> None:
+    # AST-clean and execs fine (the def is inert); the per-call eviction + finder
+    # make the import_module raise inside every gate, so the candidate produces no
+    # correct output and contracts fail — no 0.5 fixed point.
+    result = _score_source_body(DEFERRED_ORACLE_WRAP, {"op": "forward_chunked_scan"})
+    assert result["contracts_passed"] is False, result
+    assert result["reward"] <= 0.1
+
+
+# The early-binding bypass: capture the REAL import_module as a module global at
+# EXEC (before any per-call guard is installed), then call the saved reference in
+# the body. A live-attribute patch can't see a reference bound before it installed
+# — only the per-call sys.modules eviction (forcing a cache miss into the finder)
+# closes it. Pins that the eviction, not the removed import patch, is doing it.
+EARLY_BOUND_ORACLE_WRAP = (
+    "import torch\n"
+    "g = globals()\n"
+    "bi = g['__buil' + 'tins__']\n"
+    "imp0 = bi['__imp' + 'ort__'] if isinstance(bi, dict) else getattr(bi, '__imp' + 'ort__')\n"
+    "_saved = imp0('imp' + 'ortlib').import_module\n"
+    "def forward_chunked_scan(u, *aux, chunk_size=64):\n"
+    "    mod = _saved('flash' + '_mamba_rl.kernels.references.forward_chunked_scan')\n"
+    "    return mod.reference_forward_chunked_scan(u, *aux, chunk_size=chunk_size)\n"
+)
+
+
+def test_early_bound_oracle_import_blocked_by_eviction() -> None:
+    result = _score_source_body(EARLY_BOUND_ORACLE_WRAP, {"op": "forward_chunked_scan"})
+    assert result["contracts_passed"] is False, result
+    assert result["reward"] <= 0.1
+
+
 def test_ast_screen_passes_clean_candidate() -> None:
     from flash_mamba_rl.verifier.candidate_scoring import _ast_screen
 

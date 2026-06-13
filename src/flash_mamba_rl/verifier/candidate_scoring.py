@@ -25,11 +25,15 @@ Candidate sources that import the project package or the official Mamba
 kernels, or reach for the dynamic-import / builtins-reflection machinery a
 wrap needs, are blocked by three layers (see ``_ast_screen`` / ``_import_guard``
 / ``_OracleImportBlocker``): an AST screen rejects them before exec
-(``forbidden_import``, reward 0.0); a ``builtins.__import__`` guard and a
-``sys.meta_path`` finder block the oracle roots during exec across every import
-pathway. Wrapping the reference or the hand-written ops would otherwise pass
-every gate without writing a kernel — the 0.5-reward fixed point the policy
-must not be able to reach.
+(``forbidden_import``, reward 0.0); a ``builtins.__import__`` guard, a
+``sys.meta_path`` finder, and sys.modules eviction of the oracle block it across
+every import pathway, armed both during module exec AND around each
+candidate-entry-point call (the gates and the speedup bench invoke the entry point
+*after* exec, so a wrap deferred — or an import callable captured — into the body
+must be caught there too; the eviction forces a cache miss so even a captured-real
+``import_module`` re-resolves into the finder). Wrapping the reference or the
+hand-written ops would otherwise pass every gate without writing a kernel — the
+0.5-reward fixed point the policy must not be able to reach.
 
 CMP-02 (gradcheck) is excluded by default for generated kernels: forward
 tasks ask for a forward op, backward tasks ARE the gradient computation
@@ -96,11 +100,21 @@ DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 # see them; the finder is also why importlib is no longer guard-blocked (doing
 # so scored every real Triton kernel as a non-compile, since Triton pulls in
 # importlib transitively at jit time — the finder closes the importlib-as-gadget
-# path without the false positive). Project modules are additionally hidden from
-# sys.modules during exec (see ``_hidden_project_modules``) so a candidate
-# import re-consults the finders. Object-graph gadget chains (gc-walking to the
-# already-imported reference) stay possible by construction — a documented
-# arms-race boundary, not a contract.
+# path without the false positive). At exec, project modules are additionally
+# hidden from sys.modules (see ``_hidden_project_modules``) so a candidate import
+# re-consults the finder rather than hitting a cached oracle. The guards span two
+# windows, because the gates and the speedup bench invoke the entry point AFTER
+# exec (a wrap deferred into the body, or an import callable captured at exec, is
+# what (1)-(3) would otherwise miss): module exec uses all three layers; each
+# candidate-entry-point call pairs the finder with sys.modules eviction of a
+# bounded, pre-scanned oracle key set (4) (see ``_oracle_cache_evicted``).
+# Eviction is load-bearing — a candidate that saved the *real* ``import_module``
+# before the guards installed bypasses any live-attribute patch, but the forced
+# cache miss still routes its import through the finder; the key set is scanned
+# once so the cost stays out of the timed region (a full per-call scan dragged
+# parity kernels to ~0.7x). Object-graph gadget chains (gc-walking to the
+# already-imported reference object directly, no import at all) stay possible by
+# construction — a documented arms-race boundary, not a contract.
 _FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset(
     {
         "flash_mamba_rl",
@@ -186,6 +200,31 @@ def _import_guard() -> Iterator[None]:
         builtins.__import__ = real_import
 
 
+@contextlib.contextmanager
+def _oracle_cache_evicted(keys: list[str]) -> Iterator[None]:
+    """Evict a precomputed set of oracle module keys from sys.modules.
+
+    Forces any oracle import during the window — including one driven by a real
+    ``import_module`` / ``__import__`` reference the candidate *captured at exec*,
+    before any live-attribute patch was installed — to miss the sys.modules cache
+    and re-resolve through ``sys.meta_path``, where ``_OracleImportBlocker``
+    rejects it. Late-binding patches alone could not stop an early-bound
+    reference; the cache miss is what closes it.
+
+    ``keys`` is scanned once per scoring (see ``_gate_and_reward``), so the
+    per-call cost is O(oracle modules) — not the O(sys.modules) full scan that
+    landed inside the speedup timing and dragged parity kernels to ~0.7x.
+    op_harness holds direct references to the reference functions, so evicting
+    their sys.modules entries does not break the gates' own oracle calls — only a
+    fresh candidate import re-resolves and meets the finder.
+    """
+    saved = {name: sys.modules.pop(name) for name in keys if name in sys.modules}
+    try:
+        yield
+    finally:
+        sys.modules.update(saved)
+
+
 class _OracleImportBlocker:
     """meta-path finder that rejects the oracle packages by resolved root.
 
@@ -209,7 +248,10 @@ class _OracleImportBlocker:
 
 @contextlib.contextmanager
 def _oracle_import_blocker() -> Iterator[None]:
-    """Install ``_OracleImportBlocker`` at the front of sys.meta_path for exec."""
+    """Install ``_OracleImportBlocker`` at the front of sys.meta_path.
+
+    Used both around module exec and around each candidate-entry-point call.
+    """
     finder = _OracleImportBlocker()
     sys.meta_path.insert(0, finder)
     try:
@@ -335,7 +377,7 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _gate_and_reward(
-    fn: Any,
+    raw_fn: Any,
     spec: OpSpec,
     config: dict[str, Any],
     op_name: str,
@@ -343,11 +385,30 @@ def _gate_and_reward(
     exclude: set[str],
     fail_fast: bool,
 ) -> dict[str, Any]:
+    import flash_mamba_rl.kernels.ops  # noqa: F401  # force-load the speedup baseline into the evicted set
     from flash_mamba_rl.verifier import op_harness
     from flash_mamba_rl.verifier.reward import compute_reward
 
     reward_shaping = str(config.get("reward_shaping", "none"))
 
+    # The entry point is invoked HERE (gates + speedup bench), after exec — the
+    # exec-time guards are down. A candidate that deferred the oracle wrap into
+    # its body, or captured a real import_module/__import__ at exec, would reach
+    # the reference at call time (the 0.5 fixed point). Wrap every candidate call
+    # in a cache-eviction (forces a miss) + the meta-path finder, so the import
+    # re-resolves into the finder regardless of how the callable was bound. The
+    # oracle key set is scanned once, now that op_harness (references) and the
+    # hand-written ops are loaded — per-call cost is O(oracle modules), keeping
+    # the eviction out of the timed region.
+    oracle_keys = [
+        name for name in list(sys.modules) if name.split(".", 1)[0] in _GUARDED_IMPORT_ROOTS
+    ]
+
+    def guarded_fn(*args: Any, **kwargs: Any) -> Any:
+        with _oracle_cache_evicted(oracle_keys), _oracle_import_blocker():
+            return raw_fn(*args, **kwargs)
+
+    fn = guarded_fn
     verify = getattr(op_harness, spec.verify_name)
     gates: dict[str, dict[str, Any]] = {}
 
