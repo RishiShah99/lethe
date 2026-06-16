@@ -1,0 +1,15 @@
+{
+  "description": "Task #3 GPU rigor (B200): the chunk_parallel scan_mode through the verifier's score_candidate_config (the config-RL reward path) on forward_chunked_scan. The full 12-gate battery runs at each bench shape; speedup is vs the shipped serial default; reward = 1 + clip(log speedup, 0, 3) after all contracts pass. chunk_len is auto-selected (largest divisor of seq_len <= cap) so the path never raises on the gate battery's varied/odd shapes and still picks a coarse, fast granularity at long L.",
+  "finding": "chunk_parallel is contract-clean (passes all 12 gates, 0 failures) AND genuinely beats the hand-written serial kernel through the verified reward: 7.29x at L=16384, 3.46x at L=4096, 1.33x at L=2048 — reward up to 2.99 vs serial's ~1.0. This is an algorithmic-mode config-RL action (scan_mode) that beats the hand-written baseline, not just launch-knob tuning. The reward gradient (≈3.0 vs 1.0) is decisive, so a config-RL policy learns to select chunk_parallel at long L.",
+  "key_finding_before_fix": "A fixed large chunk_len (128/256/512) FAILED the gate battery (CMP-03/CMP-01 probe odd/small seq_lens the launcher could not divide -> raise); chunk_len inheriting the harness chunk_size=8 PASSED gates but was 0.28x (the Python O(n_chunks) carry dominates). _auto_chunk_len(seq_len, requested) = largest divisor <= target resolved both.",
+  "rows": [
+    {"tag": "serial_default", "shape": "b2_l16384_d1024", "contracts_passed": true, "reward": 1.0012, "speedup": 1.0012},
+    {"tag": "chunk_parallel_auto", "shape": "b2_l16384_d1024", "contracts_passed": true, "reward": 2.9868, "speedup": 7.2918},
+    {"tag": "chunk_parallel_cl512", "shape": "b2_l16384_d1024", "contracts_passed": true, "reward": 2.9989, "speedup": 7.3808},
+    {"tag": "chunk_parallel_cl256", "shape": "b2_l16384_d1024", "contracts_passed": true, "reward": 2.6504, "speedup": 5.2090},
+    {"tag": "serial_default", "shape": "b2_l4096_d1024", "contracts_passed": true, "reward": 1.0010, "speedup": 1.0010},
+    {"tag": "chunk_parallel_auto", "shape": "b2_l4096_d1024", "contracts_passed": true, "reward": 2.2407, "speedup": 3.4581},
+    {"tag": "serial_default", "shape": "b8_l2048_d2048", "contracts_passed": true, "reward": 1.0037, "speedup": 1.0037},
+    {"tag": "chunk_parallel_auto", "shape": "b8_l2048_d2048", "contracts_passed": true, "reward": 1.2817, "speedup": 1.3253}
+  ]
+}
