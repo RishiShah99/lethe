@@ -128,6 +128,7 @@ class GRPOTrainingLoop:
         scorer: Callable[[str], dict[str, Any]] | None = None,
         batch_scorer: Callable[[list[str]], list[dict[str, Any]]] | None = None,
         gen_pool: Any = None,
+        extractor: Callable[[str], str | None] | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -141,10 +142,17 @@ class GRPOTrainingLoop:
         self._scorer = scorer if scorer is not None else self._default_scorer
         self._batch_scorer = batch_scorer
         self._entry_point = _OP_ENTRY_POINTS[config.op]
+        # The action representation is pluggable: the default pulls the final
+        # fenced code block (source-generation track); the E2.c config track
+        # passes an extractor that pulls the fenced KernelConfig JSON instead.
+        self._extractor = extractor if extractor is not None else self._default_extractor
         self.optimizer = torch.optim.AdamW(
             list(policy.trainable_parameters()), lr=config.learning_rate
         )
         self.step_idx = 0
+
+    def _default_extractor(self, completion: str) -> str | None:
+        return extract_code(completion, self._entry_point)
 
     def _default_scorer(self, source: str) -> dict[str, Any]:
         from flash_mamba_rl.verifier.candidate_scoring import score_candidate_source
@@ -171,7 +179,7 @@ class GRPOTrainingLoop:
             generator = self.policy
         completions = generator.generate(self.prompt, cfg.n_per_prompt)
 
-        sources = [extract_code(c, self._entry_point) for c in completions]
+        sources = [self._extractor(c) for c in completions]
         to_score = [(idx, src) for idx, src in enumerate(sources) if src is not None]
         if self._batch_scorer is not None and to_score:
             scored = self._batch_scorer([src for _, src in to_score])

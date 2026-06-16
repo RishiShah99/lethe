@@ -23,6 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
+from flash_mamba_rl.kernels.autotune import ShapeSpec
+from flash_mamba_rl.rl.config_grpo import score_config_candidate
 from flash_mamba_rl.verifier.candidate_scoring import (
     DEFAULT_EXCLUDE_GATES,
     score_candidate_source,
@@ -81,3 +83,64 @@ class ParallelScorer:
 
     def __call__(self, sources: list[str]) -> list[dict[str, Any]]:
         return self.score_batch(sources)
+
+
+@dataclass
+class ParallelConfigScorer:
+    """Batch scorer over scoring GPUs for the E2.c config track.
+
+    Mirrors :class:`ParallelScorer`, but each candidate is a ``KernelConfig``
+    JSON applied to the trusted kernel (:func:`score_config_candidate`) and
+    timed at a fixed target ``shape`` — the field the source path lacks. Config
+    generation is tiny, so scoring (a full gate battery + the speedup bench per
+    candidate) is the step's bottleneck; this farms the K configs across GPUs.
+    """
+
+    op: str
+    gpu_ids: tuple[int, ...]
+    shape: ShapeSpec | None = None
+    device: str = "cuda"
+    timeout_s: float = 300.0
+    exclude_gates: tuple[str, ...] = DEFAULT_EXCLUDE_GATES
+    reward_shaping: str = "none"
+    measure_speedup: bool = True
+    workers_per_gpu: int = 1
+    _slots: queue.Queue[int] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.gpu_ids:
+            raise ValueError("ParallelConfigScorer needs at least one GPU id")
+        self._slots = queue.Queue()
+        for _ in range(self.workers_per_gpu):
+            for gpu in self.gpu_ids:
+                self._slots.put(gpu)
+
+    def _score_one(self, text: str) -> dict[str, Any]:
+        gpu = self._slots.get()
+        try:
+            result = score_config_candidate(
+                text,
+                op=self.op,
+                device=self.device,
+                shape=self.shape,
+                timeout_s=self.timeout_s,
+                exclude_gates=self.exclude_gates,
+                reward_shaping=self.reward_shaping,
+                measure_speedup=self.measure_speedup,
+                extra_env={"CUDA_VISIBLE_DEVICES": str(gpu)},
+            )
+        finally:
+            self._slots.put(gpu)
+        result["gpu_id"] = gpu
+        return result
+
+    def score_batch(self, texts: list[str]) -> list[dict[str, Any]]:
+        """Score *texts* concurrently; results align with the input order."""
+        if not texts:
+            return []
+        n_workers = len(self.gpu_ids) * self.workers_per_gpu
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            return list(pool.map(self._score_one, texts))
+
+    def __call__(self, texts: list[str]) -> list[dict[str, Any]]:
+        return self.score_batch(texts)

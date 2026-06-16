@@ -10,6 +10,8 @@ they are the single source of truth.
 
 from __future__ import annotations
 
+from flash_mamba_rl.kernels.autotune import SEARCH_GRID, ShapeSpec
+
 _C1_PROMPT = """\
 Write a high-performance Triton kernel implementing the Mamba selective \
 state-space scan (SISO forward pass) for CUDA GPUs.
@@ -507,3 +509,64 @@ def build_op_prompt(op_name: str) -> str:
 
 def available_ops() -> tuple[str, ...]:
     return tuple(_OP_PROMPTS)
+
+
+# E2.c — the config-emission action space. The knob set and legal values are
+# read from SEARCH_GRID so the prompt can never drift from what the verifier
+# accepts; a knob the policy invents or sets out of range is an illegal action
+# scored 0.0 (autotune.validate is the legality oracle).
+_KNOB_DESC: dict[str, str] = {
+    "block_d": "D (model-dim) tile width",
+    "block_p": "P (head-dim) tile width",
+    "chunk_k": "in-chunk recompute window of the checkpointed backward (must divide seq_len)",
+    "num_warps": "warps per program (occupancy vs per-thread registers)",
+    "num_stages": "software-pipelining depth of the kernel's main loop",
+}
+
+_CONFIG_PROMPT_TEMPLATE = """\
+You are tuning the CUDA launch configuration of a verified-correct Triton
+kernel implementing `{op}` on an NVIDIA B200 GPU. The kernel's numerics are
+fixed and already correct — you choose ONLY performance knobs that cannot
+change the result. Pick the fastest configuration for this exact shape:
+
+    batch = {batch}, seq_len = {seq_len}, d_model = {width}
+
+Choose values for these launch knobs (a JSON object):
+
+{knobs}
+
+Rules:
+- Omit a knob to use the kernel's shipped default heuristic for it; the empty
+  object {{}} is the shipped default.
+- A value outside the listed set is an illegal action and scores zero.
+- A config that fails to compile, spills past the register budget, or OOMs
+  scores zero; one whose output drifts outside the contract tolerance is
+  rejected.
+- Speedup over the shipped default is rewarded ONLY after the full gate
+  battery re-passes at this shape. Correctness first.
+
+Reply with ONE fenced ```json block holding the config object, e.g.
+```json
+{{"num_warps": 4, "block_d": 32}}
+```
+No prose after the block.
+"""
+
+
+def build_config_prompt(op_name: str, shape: ShapeSpec) -> str:
+    """Config-emission prompt for *op_name* at *shape* (KeyError if unknown).
+
+    Knob names + legal values come from ``SEARCH_GRID[op_name]`` so the prompt
+    is always in sync with the verifier's action space.
+    """
+    grid = SEARCH_GRID[op_name]
+    knobs = "\n".join(
+        f"    {name}: one of {list(values)}  ({_KNOB_DESC[name]})" for name, values in grid.items()
+    )
+    return _CONFIG_PROMPT_TEMPLATE.format(
+        op=op_name,
+        batch=shape.batch,
+        seq_len=shape.seq_len,
+        width=shape.width,
+        knobs=knobs,
+    )

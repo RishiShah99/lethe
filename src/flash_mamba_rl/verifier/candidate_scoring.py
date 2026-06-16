@@ -52,7 +52,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from flash_mamba_rl.verifier.sandbox import run_in_subprocess
@@ -384,6 +384,9 @@ def _gate_and_reward(
     device: str,
     exclude: set[str],
     fail_fast: bool,
+    *,
+    trusted: bool = False,
+    bench_shape: tuple[int, int, int] | None = None,
 ) -> dict[str, Any]:
     import flash_mamba_rl.kernels.ops  # noqa: F401  # force-load the speedup baseline into the evicted set
     from flash_mamba_rl.verifier import op_harness
@@ -399,16 +402,22 @@ def _gate_and_reward(
     # re-resolves into the finder regardless of how the callable was bound. The
     # oracle key set is scanned once, now that op_harness (references) and the
     # hand-written ops are loaded — per-call cost is O(oracle modules), keeping
-    # the eviction out of the timed region.
-    oracle_keys = [
-        name for name in list(sys.modules) if name.split(".", 1)[0] in _GUARDED_IMPORT_ROOTS
-    ]
+    # the eviction out of the timed region. The config-scoring path passes
+    # trusted=True: its callable IS an in-repo kernel (no generated source), so
+    # the eviction must NOT run — it would hide the very modules the trusted op
+    # imports, breaking the call it is meant to protect.
+    if trusted:
+        fn = raw_fn
+    else:
+        oracle_keys = [
+            name for name in list(sys.modules) if name.split(".", 1)[0] in _GUARDED_IMPORT_ROOTS
+        ]
 
-    def guarded_fn(*args: Any, **kwargs: Any) -> Any:
-        with _oracle_cache_evicted(oracle_keys), _oracle_import_blocker():
-            return raw_fn(*args, **kwargs)
+        def guarded_fn(*args: Any, **kwargs: Any) -> Any:
+            with _oracle_cache_evicted(oracle_keys), _oracle_import_blocker():
+                return raw_fn(*args, **kwargs)
 
-    fn = guarded_fn
+        fn = guarded_fn
     verify = getattr(op_harness, spec.verify_name)
     gates: dict[str, dict[str, Any]] = {}
 
@@ -455,7 +464,13 @@ def _gate_and_reward(
     ):
         from flash_mamba_rl.verifier import op_bench
 
-        bench = op_bench.measure_speedup(fn, op_name, device)
+        if bench_shape is not None:
+            b_sz, s_len, w = bench_shape
+            bench = op_bench.measure_speedup(
+                fn, op_name, device, batch=b_sz, seq_len=s_len, width=w
+            )
+        else:
+            bench = op_bench.measure_speedup(fn, op_name, device)
         if bench.get("correct_at_bench", True):
             speedup = float(bench["speedup"])
             bug_routing = op_bench.bug_routing_active(op_name, device)
@@ -532,6 +547,115 @@ def score_candidate_source(
                 "measure_speedup": measure_speedup,
             },
         ),
+        timeout_s=timeout_s,
+        memory_limit_mb=0,
+        extra_env=extra_env,
+    )
+    if res.success and isinstance(res.output, dict):
+        return dict(res.output)
+    return {
+        "status": f"sandbox_{res.error_class.name.lower()}",
+        "error": _trunc(res.stderr[-400:] if res.stderr else res.error_class.name),
+        "compiled": False,
+        "contracts_passed": False,
+        "reward": 0.0,
+        "gates": {},
+        "views_passed": 0,
+        "views_total": 0,
+        "first_failed_view": None,
+    }
+
+
+def _score_config_body(
+    op: str, kernel_config: dict[str, Any], opts: dict[str, Any]
+) -> dict[str, Any]:
+    from flash_mamba_rl.kernels import autotune
+
+    device = str(opts.get("device", "cpu"))
+    exclude = set(opts.get("exclude_gates", DEFAULT_EXCLUDE_GATES))
+    fail_fast = bool(opts.get("fail_fast", True))
+    reward_shaping = str(opts.get("reward_shaping", "none"))
+    if reward_shaping == "view_fraction":
+        fail_fast = False
+    spec = _OP_VERIFIERS[op]
+
+    cfg = autotune.KernelConfig(**kernel_config)
+    shape_dict = opts.get("shape")
+    shape = autotune.ShapeSpec(**shape_dict) if shape_dict else None
+    violations = autotune.validate(op, cfg, shape=shape)
+    if violations:
+        return _failure("invalid_config", f"illegal config {cfg.searched()}: {violations}")
+
+    fn = autotune.make_configured_op(op, cfg)
+    bench_shape = (shape.batch, shape.seq_len, shape.width) if shape is not None else None
+    gr_config = {
+        "measure_speedup": bool(opts.get("measure_speedup", False)),
+        "reward_shaping": reward_shaping,
+    }
+    return _gate_and_reward(
+        fn, spec, gr_config, op, device, exclude, fail_fast, trusted=True, bench_shape=bench_shape
+    )
+
+
+def score_config_worker(
+    op: str, kernel_config: dict[str, Any], opts: dict[str, Any]
+) -> dict[str, Any]:
+    """Subprocess body for config scoring: build the configured trusted op, gate it, score it.
+
+    stdout is swapped to stderr for the duration — the sandbox marshals the
+    return value as pickled stdout and a kernel printf would corrupt it (the
+    ``score_source_worker`` convention).
+    """
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        return _score_config_body(op, kernel_config, opts)
+    finally:
+        sys.stdout = real_stdout
+
+
+def score_candidate_config(
+    kernel_config: Any,
+    *,
+    op: str = "forward_chunked_scan",
+    device: str = "cpu",
+    shape: Any = None,
+    timeout_s: float = 300.0,
+    exclude_gates: tuple[str, ...] = DEFAULT_EXCLUDE_GATES,
+    fail_fast: bool = True,
+    reward_shaping: str = "none",
+    measure_speedup: bool = False,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Score one ``KernelConfig`` applied to the trusted in-repo op, in a subprocess.
+
+    Unlike :func:`score_candidate_source`, there is no generated source — the
+    config is bound into the already-correct kernel via
+    :func:`flash_mamba_rl.kernels.autotune.make_configured_op` — so the
+    AST/oracle screens do not run (nothing to game). The subprocess still
+    isolates OOM / ptxas-ICE / timeout, which normalise to reward 0.0; an
+    out-of-grid or shape-incompatible config scores the ``invalid_config`` 0.0.
+    ``shape`` (a ``ShapeSpec``) sets the speedup bench shape — this is the lever
+    the autotuner is rewarded on, since the shipped default is optimal only near
+    the training shape; ``None`` uses op_bench's default shape. Only
+    ``(batch, seq_len, width)`` reach the bench — ``ShapeSpec.n_state`` is NOT
+    consumed here (each op's state dim is fixed by its harness aux builder), so a
+    non-None ``n_state`` is silently ignored by scoring.
+    """
+    payload_config = asdict(kernel_config)
+    opts: dict[str, Any] = {
+        "device": device,
+        "exclude_gates": list(exclude_gates),
+        "fail_fast": fail_fast,
+        "reward_shaping": reward_shaping,
+        "measure_speedup": measure_speedup,
+    }
+    if shape is not None:
+        opts["shape"] = asdict(shape)
+    res = run_in_subprocess(
+        "flash_mamba_rl.verifier.candidate_scoring",
+        "score_config_worker",
+        (op, payload_config, opts),
         timeout_s=timeout_s,
         memory_limit_mb=0,
         extra_env=extra_env,
