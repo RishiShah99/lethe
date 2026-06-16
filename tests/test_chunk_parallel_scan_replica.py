@@ -33,7 +33,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from flash_mamba_rl.kernels.ops.forward_chunked_scan import _scan_eager
+from flash_mamba_rl.kernels.ops.forward_chunked_scan import _auto_chunk_len, _scan_eager
 from flash_mamba_rl.kernels.references.forward_chunked_scan import (
     reference_forward_chunked_scan,
 )
@@ -139,3 +139,31 @@ def test_indivisible_chunk_rejected() -> None:
     u, delta, A, B, C, D = _draw(1, 100, 4, 8, seed=0, dtype=torch.float32)
     with pytest.raises(ValueError, match="divisible"):
         chunk_parallel_scan_replica(u, delta, A, B, C, D, chunk_size=64)
+
+
+class TestAutoChunkLen:
+    """_auto_chunk_len makes chunk_parallel a contract-clean drop-in: it always
+    returns a divisor of seq_len ≤ the requested target, so the launcher never
+    raises on the shapes the gate battery probes, while choosing a coarse (fast)
+    granularity at long L."""
+
+    @pytest.mark.parametrize(
+        ("seq_len", "requested", "expected"),
+        [
+            (16384, None, 512),  # cap, divides
+            (16384, 256, 256),  # respects the request
+            (4096, 512, 512),
+            (2048, 512, 512),
+            (1000, None, 500),  # PTB-XL T=1000: largest divisor ≤ 512
+            (64, 256, 64),  # request exceeds a small gate shape → falls to seq_len
+            (8, None, 8),  # the harness SCAN_CHUNK_SIZE shape → one chunk
+            (257, None, 257),  # prime ≤ cap → one chunk (n_chunks=1)
+            (1031, None, 1),  # prime > cap → degenerate but valid (1 always divides)
+        ],
+    )
+    def test_largest_divisor_not_exceeding_target(
+        self, seq_len: int, requested: int | None, expected: int
+    ) -> None:
+        k = _auto_chunk_len(seq_len, requested)
+        assert k == expected
+        assert seq_len % k == 0  # never raises in the launcher
