@@ -341,16 +341,30 @@ class TestPTBXLGetItem:
         call_path = mock_wfdb.rdsamp.call_args[0][0]
         assert "records500" in call_path
 
-    def test_signal_values_preserved(self, ptbxl_root: Path) -> None:
+    def test_signal_normalized_per_lead(self, ptbxl_root: Path) -> None:
+        # The loader NaN-guards then per-lead z-scores (zero mean / unit std over
+        # time) — raw mV scales otherwise NaN the deep SSM. Layout stays
+        # [lead, t] from the transpose.
         arr = np.arange(12000, dtype=np.float64).reshape(1000, 12)
         with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (arr, {})
             ds = PTBXL(ptbxl_root, sampling_rate=100, split="test")
             sig, _ = ds[0]
-        # After transpose: sig[lead, t] == arr[t, lead]
+        assert sig.shape == (12, 1000)
         for lead in range(12):
-            expected = torch.from_numpy(arr[:, lead].astype(np.float32))
-            torch.testing.assert_close(sig[lead], expected)
+            x = torch.from_numpy(arr[:, lead].astype(np.float32))
+            expected = (x - x.mean()) / x.std().clamp_min(1e-6)
+            torch.testing.assert_close(sig[lead], expected, rtol=1e-4, atol=1e-4)
+
+    def test_nonfinite_samples_guarded(self, ptbxl_root: Path) -> None:
+        arr = np.arange(12000, dtype=np.float64).reshape(1000, 12)
+        arr[0, 0] = np.nan
+        arr[1, 1] = np.inf
+        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+            mock_wfdb.rdsamp.return_value = (arr, {})
+            ds = PTBXL(ptbxl_root, sampling_rate=100, split="test")
+            sig, _ = ds[0]
+        assert torch.isfinite(sig).all()
 
     def test_getitem_returns_tuple(self, ptbxl_root: Path) -> None:
         with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:

@@ -196,4 +196,11 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         signal, _ = wfdb.rdsamp(record_path)
         # wfdb returns (T, 12); transpose to (12, T).
         sig_t = torch.from_numpy(np.array(signal, dtype=np.float32)).T
+        # Some PTB-XL records carry NaN/Inf samples; raw mV scales also vary per
+        # lead. Both NaN the deep SSM forward, so guard then per-lead z-score
+        # (zero mean / unit std over time; flat leads -> zero via the clamp).
+        sig_t = torch.nan_to_num(sig_t, nan=0.0, posinf=0.0, neginf=0.0)
+        mean = sig_t.mean(dim=1, keepdim=True)
+        std = sig_t.std(dim=1, keepdim=True).clamp_min(1e-6)
+        sig_t = (sig_t - mean) / std
         return sig_t, self._labels[idx]

@@ -79,6 +79,7 @@ class MedicalTrainConfig:
 
     total_steps: int = 1000
     learning_rate: float = 3e-4
+    warmup_steps: int = 500
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     device: str = "cpu"
@@ -118,21 +119,40 @@ class MedicalTrainer:
             self._core.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
         )
         self.criterion = nn.BCEWithLogitsLoss()
+        # The model may be cast to bf16 (the box path); the fp32 ECG inputs must
+        # match its dtype or the first Linear's matmul dtype-mismatches. Loss is
+        # computed in fp32 regardless (logits upcast) for stable BCE.
+        self._in_dtype = next(self._core.parameters()).dtype
         self.step_idx = 0
 
     def train_step(self, ecg: Tensor, labels: Tensor) -> tuple[float, float]:
         """One optimizer step. Returns ``(loss, grad_norm)``."""
         self.model.train()
-        ecg = ecg.to(self.device)
+        # Linear LR warmup (stateless — derived from the checkpointed step_idx):
+        # a 1.1B SSM from scratch at full LR spikes the first updates into NaN.
+        warm = self.config.warmup_steps
+        lr = (
+            self.config.learning_rate * min(1.0, (self.step_idx + 1) / warm)
+            if warm
+            else (self.config.learning_rate)
+        )
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+        ecg = ecg.to(self.device, self._in_dtype)
         labels = labels.to(self.device)
         self.optimizer.zero_grad()
         logits = self.model(ecg)
-        loss = self.criterion(logits, labels)
+        loss = self.criterion(logits.float(), labels.float())
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self._core.parameters(), self.config.max_grad_norm
         )
-        self.optimizer.step()
+        # Skip the update on a non-finite grad: one bad batch (forward overflow on
+        # an outlier ECG) otherwise applies a NaN step that poisons every weight,
+        # and the loss is NaN forever after. Skipping keeps the model in the
+        # last-good state; the next batch recovers.
+        if torch.isfinite(grad_norm):
+            self.optimizer.step()
         self.step_idx += 1
         return float(loss.item()), float(grad_norm.item())
 
@@ -145,11 +165,11 @@ class MedicalTrainer:
         loss_sum = 0.0
         n = 0
         for ecg, labels in loader:
-            ecg = ecg.to(self.device)
+            ecg = ecg.to(self.device, self._in_dtype)
             labels = labels.to(self.device)
             logits = self.model(ecg)
             bs = labels.shape[0]
-            loss_sum += float(self.criterion(logits, labels).item()) * bs
+            loss_sum += float(self.criterion(logits.float(), labels.float()).item()) * bs
             n += bs
             logits_chunks.append(logits.detach().cpu())
             label_chunks.append(labels.detach().cpu())
@@ -159,7 +179,9 @@ class MedicalTrainer:
         if self._dist:
             logits = torch.cat(self._all_gather(logits), dim=0)
             labels = torch.cat(self._all_gather(labels), dim=0)
-            totals = torch.tensor([loss_sum, float(n)], dtype=torch.float64)
+            # all_reduce must run on the NCCL device — a CPU tensor raises
+            # "No backend type associated with device type cpu" under nccl.
+            totals = torch.tensor([loss_sum, float(n)], dtype=torch.float64, device=self.device)
             torch.distributed.all_reduce(totals)
             loss_sum, n = float(totals[0].item()), int(totals[1].item())
         return {"loss": loss_sum / max(n, 1), "macro_auc": macro_auc(logits, labels)}

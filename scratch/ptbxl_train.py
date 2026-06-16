@@ -35,7 +35,7 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--data-root", required=True)
     p.add_argument("--steps", type=int, default=20000)
     p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--sampling-rate", type=int, default=100, choices=(100, 500))
     p.add_argument("--label-set", default="superclass", choices=("superclass", "subclass"))
@@ -95,17 +95,25 @@ def main() -> None:
     )
 
     cfg = Mamba3Config.b1()
+    # The scan requires T % chunk_size == 0 (model docstring); T = sampling_rate*10
+    # (1000 @ 100 Hz, 5000 @ 500 Hz). The default chunk_size=64 divides neither.
+    # Pick the largest divisor <= 64 for good tiling (50 divides both 1000 and 5000).
+    seq_t = args.sampling_rate * 10
+    chunk_size = next(k for k in range(64, 0, -1) if seq_t % k == 0)
     cfg = Mamba3Config(
         d_model=cfg.d_model,
         n_layers=cfg.n_layers,
         d_state=cfg.d_state,
         conv_kernel_size=cfg.conv_kernel_size,
-        chunk_size=cfg.chunk_size,
+        chunk_size=chunk_size,
         eps=cfg.eps,
         n_classes=train_ds.n_classes,
         n_leads=12,
     )
-    model = Mamba3ECGClassifier(cfg).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+    # fp32: bf16 SSM training NaNs immediately here (the recurrence + RMSNorm are
+    # bf16-fragile) and the 1.1B model leaves ample B200 memory in fp32. bf16/MFU
+    # is a later optimisation, separate from the accuracy result.
+    model = Mamba3ECGClassifier(cfg).to(torch.float32)
 
     tcfg = MedicalTrainConfig(
         total_steps=args.steps,
