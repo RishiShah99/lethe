@@ -105,11 +105,11 @@ class Mamba3Config:
         D, N, K = self.d_model, self.d_state, self.conv_kernel_size
         lead_proj = D * (self.n_leads + 1)  # weight + bias
         # per block: in_proj (no bias, weight only) + conv_weight + conv_bias
-        #            + A (not a param; computed from log_A which IS a param)
+        #            + A (not a param; A = -exp(A_log), A_log IS a param)
         #            + D_skip + norm_weight + pre_norm (3 D-shaped params)
         #   in_proj weight:  D * (2D + 2N)
         #   conv_weight:     D * K
-        #   log_A (-> A):    D * N
+        #   A_log (-> A):    D * N
         #   conv_bias + D_skip + norm_weight: 3 * D
         per_block = D * (2 * D + 2 * N) + D * K + D * N + 3 * D
         head = D * self.n_classes + self.n_classes
@@ -139,10 +139,13 @@ class _MambaBlock(nn.Module):
         # depthwise conv: [D, 1, K]
         self.conv_weight = nn.Parameter(torch.empty(D, 1, K))
         self.conv_bias = nn.Parameter(torch.zeros(D))
-        # log_A initialised S4D-real: log(-A_ij) = log(j+1) for j in 0..N-1
-        # (negative A is the SSM stability convention; the scan receives A directly)
-        log_a = torch.log(torch.arange(1, N + 1, dtype=torch.float32).unsqueeze(0).expand(D, -1))
-        self.log_A = nn.Parameter(-log_a)
+        # A = -exp(A_log) (official Mamba convention). A is then strictly negative
+        # for ANY value of A_log, so a_bar = exp(delta*A) stays in (0,1) and the scan
+        # state cannot integrate/explode over long L. (The prior log_A-as-A init left
+        # the j=0 column at A=0 — a pure integrator that drifts positive under training
+        # and overflows the L=1000 scan into NaN.) S4D-real init: A = -(j+1).
+        a_log = torch.log(torch.arange(1, N + 1, dtype=torch.float32).unsqueeze(0).expand(D, N))
+        self.A_log = nn.Parameter(a_log.contiguous())
         self.D_skip = nn.Parameter(torch.ones(D))
         self.norm_weight = nn.Parameter(torch.ones(D))
         self._reset_conv()
@@ -173,8 +176,7 @@ class _MambaBlock(nn.Module):
         B_out = B_proj[:, K - 1 :, :]  # [B, L_out, N]
         C_out = C_proj[:, K - 1 :, :]  # [B, L_out, N]
 
-        # A is negative (decay); log_A is negative-log-magnitude init
-        A = self.log_A  # [D, N], negative — passed directly to the scan
+        A = -torch.exp(self.A_log)  # [D, N], strictly negative (decay) for any A_log
 
         y = fused_block_forward(
             x_raw,

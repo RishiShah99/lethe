@@ -29,6 +29,31 @@ class TestForward:
         assert torch.isfinite(out).all()
 
 
+class TestStability:
+    """A = -exp(A_log) must keep the scan a strict contraction for any A_log.
+
+    The prior init passed log_A directly as A, leaving the j=0 column at A=0 (a
+    pure integrator) and letting A drift positive under training → the L=1000
+    scan overflowed to NaN. These pin that the parametrisation now precludes it.
+    """
+
+    def test_effective_A_strictly_negative_at_init(self) -> None:
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        for block in model.blocks:
+            A = -torch.exp(block.A_log)
+            assert (A < 0).all()
+
+    def test_forward_finite_when_A_log_drifts_positive(self) -> None:
+        # Simulate a positive drift that the old A=log_A init would have turned
+        # into a_bar>1 (geometric blow-up); A=-exp(A_log) clamps it to (0,1).
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        with torch.no_grad():
+            for block in model.blocks:
+                block.A_log.fill_(5.0)
+        out = model(torch.randn(2, 12, 256) * 6.0)
+        assert torch.isfinite(out).all()
+
+
 class TestParamCount:
     def test_analytic_matches_live_tiny(self) -> None:
         cfg = Mamba3Config.tiny()
