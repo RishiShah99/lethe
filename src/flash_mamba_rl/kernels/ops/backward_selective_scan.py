@@ -28,6 +28,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.backward_selective_scan import SelectiveScanGrads
 
 from .forward_chunked_scan import _TRITON_DTYPES, _scan_eager, _triton_usable
@@ -55,6 +56,7 @@ def backward_selective_scan(
     dy: Tensor,
     *,
     chunk_size: int = 64,
+    config: KernelConfig | None = None,
 ) -> SelectiveScanGrads:
     """Selective-scan backward pass (SISO, Mamba-1 recurrence).
 
@@ -72,7 +74,9 @@ def backward_selective_scan(
     if u.is_cuda and u.dtype in _TRITON_DTYPES and _triton_usable():
         from flash_mamba_rl.kernels.ops import _triton_bwd_scan
 
-        return SelectiveScanGrads(*_triton_bwd_scan.launch_backward_scan(u, delta, A, B, C, D, dy))
+        return SelectiveScanGrads(
+            *_triton_bwd_scan.launch_backward_scan(u, delta, A, B, C, D, dy, config=config)
+        )
     return _bwd_eager(u, delta, A, B, C, D, dy)
 
 

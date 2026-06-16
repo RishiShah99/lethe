@@ -48,6 +48,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import collect_resource_meta
 
 try:  # moved between minor versions
@@ -201,12 +202,16 @@ def launch_fused_block_forward(
     norm_weight: Tensor,
     eps: float,
     num_warps: int | None = None,
+    *,
+    config: KernelConfig | None = None,
 ) -> Tensor:
     """Launch the fused block. Inputs must be CUDA tensors of one dtype.
 
-    ``num_warps`` overrides the conv-scan kernel's heuristic (bench sweep
-    hook); the norm kernel keeps its own heuristic — it is a trivially
-    memory-bound pass, not the sweep's subject.
+    ``config`` overrides the conv-scan kernel's searched knobs (block_d,
+    num_warps, num_stages); ``num_warps`` is the legacy bench-sweep hook. The
+    norm kernel keeps its own heuristic — a memory-bound pass, not the
+    autotuner's subject. A None config or None field keeps the shipped
+    heuristic.
     """
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]
@@ -220,7 +225,14 @@ def launch_fused_block_forward(
     block_n = triton.next_power_of_2(n_state)
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
-    block_d = min(64, triton.next_power_of_2(d_model))
+    # block_d tiles D into independent per-D outputs — bitwise correctness-
+    # invariant (it sets only which program computes which d, never the math).
+    # The E2.d grid sweep + full-gate confirm found block_d=16 with num_warps=4
+    # the robust optimum: 1.64x over the prior block_d=64 default at (2,2048,1024),
+    # gate-clean, and 1.45-1.66x across width 256-4096 x seq 1024-16384.
+    block_d = min(16, triton.next_power_of_2(d_model))
+    if config is not None and config.block_d is not None:
+        block_d = config.block_d
     block_k = triton.next_power_of_2(conv_k)
 
     x_c = x.contiguous()
@@ -237,7 +249,15 @@ def launch_fused_block_forward(
     out = torch.empty(batch, l_out, d_model, device=x.device, dtype=x.dtype)
 
     grid_scan = (batch, triton.cdiv(d_model, block_d))
-    num_warps_scan = num_warps if num_warps is not None else (4 if block_d * block_n >= 512 else 2)
+    # num_warps=4 is the sweep-universal best for the conv-scan kernel; the
+    # prior block_d*block_n>=512 heuristic dropped to 2 at small N, forfeiting
+    # the win there (block_d=16 alone measured 1.25x, the (16, 4) pair 1.64x).
+    num_warps_scan = num_warps if num_warps is not None else 4
+    if config is not None and config.num_warps is not None:
+        num_warps_scan = config.num_warps
+    extra: dict[str, int] = {}
+    if config is not None and config.num_stages is not None:
+        extra["num_stages"] = config.num_stages
     _conv_scan_kernel[grid_scan](
         x_c,
         conv_w_c,
@@ -256,6 +276,7 @@ def launch_fused_block_forward(
         BLOCK_D=block_d,
         BLOCK_N=block_n,
         num_warps=num_warps_scan,
+        **extra,
     )
 
     block_d_norm = min(_MAX_BLOCK_D_NORM, triton.next_power_of_2(d_model))

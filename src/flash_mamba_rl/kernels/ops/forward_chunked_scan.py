@@ -28,6 +28,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
+
 _TRITON_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 _HAS_TRITON: bool | None = None
 
@@ -82,18 +84,20 @@ class _ForwardScanCuda(torch.autograd.Function):
         B: Tensor,
         C: Tensor,
         D: Tensor,
+        config: KernelConfig | None = None,
     ) -> Tensor:
         from flash_mamba_rl.kernels.ops import _triton_fwd_scan
 
         ctx.save_for_backward(u, delta, A, B, C, D)
-        return _triton_fwd_scan.launch_forward_scan(u, delta, A, B, C, D)
+        return _triton_fwd_scan.launch_forward_scan(u, delta, A, B, C, D, config=config)
 
     @staticmethod
-    def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor, ...]:
+    def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
         from flash_mamba_rl.kernels.ops import _triton_bwd_scan
 
         u, delta, a, b, c, d_skip = ctx.saved_tensors
-        return _triton_bwd_scan.launch_backward_scan(u, delta, a, b, c, d_skip, grad_y)
+        grads = _triton_bwd_scan.launch_backward_scan(u, delta, a, b, c, d_skip, grad_y)
+        return (*grads, None)
 
 
 def forward_chunked_scan(
@@ -105,6 +109,7 @@ def forward_chunked_scan(
     D: Tensor,
     *,
     chunk_size: int = 64,
+    config: KernelConfig | None = None,
 ) -> Tensor:
     """Selective state-space scan forward (SISO, Mamba-1 recurrence).
 
@@ -121,7 +126,7 @@ def forward_chunked_scan(
     if u.is_cuda and u.dtype in _TRITON_DTYPES and _triton_usable():
         return cast(
             Tensor,
-            _ForwardScanCuda.apply(u, delta, A, B, C, D),  # type: ignore[no-untyped-call]
+            _ForwardScanCuda.apply(u, delta, A, B, C, D, config),  # type: ignore[no-untyped-call]
         )
     return _scan_eager(u, delta, A, B, C, D)
 

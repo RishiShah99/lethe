@@ -53,6 +53,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import collect_resource_meta
 
 # One program holds the whole headdim; P above this needs a multi-block design.
@@ -283,6 +284,7 @@ def launch_mimo_backward(
     dy: Tensor,
     *,
     num_warps: int | None = None,
+    config: KernelConfig | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Launch the Triton MIMO backward on CUDA tensors.
 
@@ -290,14 +292,18 @@ def launch_mimo_backward(
     fp32 and each gradient stores in its own input's dtype — mixed-dtype
     inputs are tolerated identically to the eager path, not validated.
     Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
-    grad_mimo_o)`` in the corresponding input dtypes. ``num_warps`` overrides
-    the launch config for the bench's compile-behaviour sweep.
+    grad_mimo_o)`` in the corresponding input dtypes. ``config`` overrides the
+    autotuner's searched knobs (block_p, chunk_k, num_warps, num_stages);
+    ``num_warps`` is the legacy bench-sweep hook. A None config or None field
+    keeps the shipped heuristic.
     """
     batch, seq_len, nheads, headdim = x.shape
     rank = B.shape[2]
     n_state = B.shape[4]
 
     block_p = triton.next_power_of_2(headdim)
+    if config is not None and config.block_p is not None:
+        block_p = config.block_p
     if block_p > MAX_BLOCK_P:
         raise ValueError(f"headdim={headdim} exceeds single-block budget {MAX_BLOCK_P}")
     if rank > MAX_RANK:
@@ -306,6 +312,8 @@ def launch_mimo_backward(
     block_n = min(MAX_BLOCK_N, triton.next_power_of_2(n_state))
     n_n_blocks = triton.cdiv(n_state, block_n)
     chunk_k = _chunk_k(seq_len)
+    if config is not None and config.chunk_k is not None:
+        chunk_k = config.chunk_k
     n_chunks = seq_len // chunk_k
 
     x_c = x.contiguous()
@@ -345,6 +353,11 @@ def launch_mimo_backward(
     # that adds register pressure (wider MAX_RANK unroll, larger BLOCK_P)
     # must re-check RES-02 and the spill column in the bench sweep.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
+    if config is not None and config.num_warps is not None:
+        warps = config.num_warps
+    extra: dict[str, int] = {}
+    if config is not None and config.num_stages is not None:
+        extra["num_stages"] = config.num_stages
     _mimo_bwd_kernel[grid](
         x_c,
         b_c,
@@ -374,6 +387,7 @@ def launch_mimo_backward(
         BLOCK_N=block_n,
         CHUNK_K=chunk_k,
         num_warps=warps,
+        **extra,
     )
 
     # Deterministic cross-program reductions (fixed shapes -> fixed reduction

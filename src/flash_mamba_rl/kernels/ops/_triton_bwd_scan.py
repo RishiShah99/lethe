@@ -63,6 +63,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import collect_resource_meta
 
 try:  # moved between minor versions
@@ -269,13 +270,16 @@ def launch_backward_scan(
     dy: Tensor,
     *,
     num_warps: int | None = None,
+    config: KernelConfig | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Launch the Triton backward scan. Inputs must be CUDA tensors of one dtype.
 
     Returns ``(grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)`` in the
-    corresponding input dtypes. ``num_warps`` overrides the launch config —
-    the bench driver uses it to sweep 2/4/8 for the #904 compile-behaviour
-    comparison; the default mirrors the C1 heuristic.
+    corresponding input dtypes. ``config`` overrides the autotuner's searched
+    knobs (block_d, chunk_k, num_warps, num_stages); ``num_warps`` is the
+    legacy bench-sweep hook for the #904 compile-behaviour comparison. A None
+    config or None field keeps the shipped heuristic, so the default path is
+    byte-for-byte the pre-autotune launch.
     """
     batch, seq_len, d_model = u.shape
     n_state = a.shape[1]
@@ -284,7 +288,11 @@ def launch_backward_scan(
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
     block_d = min(64, triton.next_power_of_2(d_model))
+    if config is not None and config.block_d is not None:
+        block_d = config.block_d
     chunk_k = _chunk_k(seq_len)
+    if config is not None and config.chunk_k is not None:
+        chunk_k = config.chunk_k
     n_chunks = seq_len // chunk_k
     n_d_blocks = triton.cdiv(d_model, block_d)
 
@@ -315,6 +323,11 @@ def launch_backward_scan(
 
     grid = (batch, n_d_blocks)
     warps = num_warps if num_warps is not None else (4 if block_d * block_n >= 512 else 2)
+    if config is not None and config.num_warps is not None:
+        warps = config.num_warps
+    extra: dict[str, int] = {}
+    if config is not None and config.num_stages is not None:
+        extra["num_stages"] = config.num_stages
     _bwd_scan_kernel[grid](
         u_c,
         delta_c,
@@ -339,6 +352,7 @@ def launch_backward_scan(
         BLOCK_N=block_n,
         CHUNK_K=chunk_k,
         num_warps=warps,
+        **extra,
     )
 
     # Deterministic cross-program reductions (fixed shapes -> fixed reduction

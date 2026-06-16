@@ -28,6 +28,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import collect_resource_meta
 
 try:  # moved between minor versions
@@ -111,9 +112,23 @@ def _fwd_scan_kernel(  # type: ignore[no-untyped-def]
 
 
 def launch_forward_scan(
-    u: Tensor, delta: Tensor, a: Tensor, b: Tensor, c: Tensor, d_skip: Tensor
+    u: Tensor,
+    delta: Tensor,
+    a: Tensor,
+    b: Tensor,
+    c: Tensor,
+    d_skip: Tensor,
+    *,
+    config: KernelConfig | None = None,
 ) -> Tensor:
-    """Launch the Triton scan. Inputs must be CUDA tensors of one dtype."""
+    """Launch the Triton scan. Inputs must be CUDA tensors of one dtype.
+
+    ``config`` overrides the autotuner's searched knobs (block_d, num_warps,
+    num_stages); a None config or None field keeps the shipped heuristic, so
+    the default path is byte-for-byte the pre-autotune launch. BLOCK_N is
+    pinned to the full state dim (the program holds the whole state in
+    registers) — a correctness constraint, never a knob.
+    """
     batch, seq_len, d_model = u.shape
     n_state = a.shape[1]
 
@@ -121,6 +136,8 @@ def launch_forward_scan(
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
     block_d = min(64, triton.next_power_of_2(d_model))
+    if config is not None and config.block_d is not None:
+        block_d = config.block_d
 
     u_c = u.contiguous()
     delta_c = delta.contiguous()
@@ -132,6 +149,11 @@ def launch_forward_scan(
 
     grid = (batch, triton.cdiv(d_model, block_d))
     num_warps = 4 if block_d * block_n >= 512 else 2
+    if config is not None and config.num_warps is not None:
+        num_warps = config.num_warps
+    extra: dict[str, int] = {}
+    if config is not None and config.num_stages is not None:
+        extra["num_stages"] = config.num_stages
     _fwd_scan_kernel[grid](
         u_c,
         delta_c,
@@ -146,6 +168,7 @@ def launch_forward_scan(
         BLOCK_D=block_d,
         BLOCK_N=block_n,
         num_warps=num_warps,
+        **extra,
     )
     return y
 

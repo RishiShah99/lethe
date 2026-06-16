@@ -28,6 +28,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.fused_block_backward import FusedBlockGrads
 
 from .forward_chunked_scan import _TRITON_DTYPES, _triton_usable
@@ -72,6 +73,7 @@ def fused_block_backward(
     conv_kernel_size: int = 4,
     eps: float = 1e-5,
     chunk_size: int = 64,
+    config: KernelConfig | None = None,
 ) -> FusedBlockGrads:
     """Mamba fused-block backward: all nine gradients of the C5 forward.
 
@@ -99,7 +101,7 @@ def fused_block_backward(
 
         return FusedBlockGrads(
             *_triton_fused_block_bwd.launch_fused_block_backward(
-                x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy, eps
+                x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy, eps, config=config
             )
         )
     return _fused_bwd_eager(x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy, eps)

@@ -41,6 +41,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import collect_resource_meta
 
 try:  # moved between minor versions
@@ -145,12 +146,15 @@ def launch_complex_scan_rope(
     angle_proj: Tensor,
     *,
     num_warps: int | None = None,
+    config: KernelConfig | None = None,
 ) -> Tensor:
     """Launch the fused rotary scan on CUDA tensors.
 
     Dispatch keys on ``x`` (device, dtype); every load upcasts to fp32 and
-    ``y`` rounds once at store into ``x``'s dtype. ``num_warps`` overrides
-    the launch config for the bench's compile-behaviour sweep.
+    ``y`` rounds once at store into ``x``'s dtype. ``config`` overrides the
+    autotuner's searched knobs (block_p, num_warps, num_stages); ``num_warps``
+    is the legacy bench-sweep hook. A None config or None field keeps the
+    shipped heuristic.
     """
     batch, seq_len, nheads, headdim = x.shape
     n_state = b_proj.shape[-1]
@@ -162,6 +166,8 @@ def launch_complex_scan_rope(
     if 2 * s_angles > n_state:
         raise ValueError(f"rotary_dim={2 * s_angles} exceeds d_state={n_state}")
     block_p = min(64, triton.next_power_of_2(headdim))
+    if config is not None and config.block_p is not None:
+        block_p = config.block_p
 
     x_c = x.contiguous()
     b_c = b_proj.contiguous()
@@ -178,6 +184,11 @@ def launch_complex_scan_rope(
     # — grid-size dependent, not block-size. Autotune is the v2 lever; the
     # num_warps override below serves measured callers meanwhile.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
+    if config is not None and config.num_warps is not None:
+        warps = config.num_warps
+    extra: dict[str, int] = {}
+    if config is not None and config.num_stages is not None:
+        extra["num_stages"] = config.num_stages
     _complex_rope_kernel[grid](
         x_c,
         b_c,
@@ -194,6 +205,7 @@ def launch_complex_scan_rope(
         BLOCK_P=block_p,
         BLOCK_N=block_n,
         num_warps=warps,
+        **extra,
     )
     return y
 

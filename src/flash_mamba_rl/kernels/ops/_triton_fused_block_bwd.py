@@ -72,6 +72,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import collect_resource_meta
 from flash_mamba_rl.kernels.ops._triton_bwd_scan import MAX_BLOCK_N, _chunk_k
 from flash_mamba_rl.kernels.ops._triton_fused_block import (
@@ -454,13 +455,15 @@ def launch_fused_block_backward(
     eps: float,
     *,
     num_warps: int | None = None,
+    config: KernelConfig | None = None,
 ) -> tuple[Tensor, ...]:
     """Launch the four-kernel backward. Inputs must be CUDA tensors of one dtype.
 
     Returns the nine gradients in ``FusedBlockGrads`` field order, each in
-    its input's dtype. ``num_warps`` overrides the two serial-sweep
-    kernels' heuristic (bench hook); the norm-backward and gather kernels
-    keep their own.
+    its input's dtype. ``config`` overrides the two serial-sweep kernels'
+    searched knobs (block_d, chunk_k, num_warps, num_stages); ``num_warps``
+    is the legacy bench hook. The norm-backward and gather kernels keep
+    their own.
 
     Checkpoint scratch is ``4 * B * ceil(D/64) * n_chunks * BLOCK_D *
     BLOCK_N`` bytes with ``n_chunks = l_out / chunk_k(l_out)``; chunk_k is
@@ -482,8 +485,12 @@ def launch_fused_block_backward(
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
     block_d = min(64, triton.next_power_of_2(d_model))
+    if config is not None and config.block_d is not None:
+        block_d = config.block_d
     block_k = triton.next_power_of_2(conv_k)
     chunk_k = _chunk_k(l_out)
+    if config is not None and config.chunk_k is not None:
+        chunk_k = config.chunk_k
     n_chunks = l_out // chunk_k
     n_d_blocks = triton.cdiv(d_model, block_d)
 
@@ -523,6 +530,11 @@ def launch_fused_block_backward(
     # spill (train bf16: 722 ms at nw=4 vs 114 ms at nw=8); nw=8 compiles
     # every spec at >=219 regs with <=172 B spill.
     warps = num_warps if num_warps is not None else (8 if block_d * block_n >= 512 else 2)
+    if config is not None and config.num_warps is not None:
+        warps = config.num_warps
+    extra: dict[str, int] = {}
+    if config is not None and config.num_stages is not None:
+        extra["num_stages"] = config.num_stages
     _fwd_stage_kernel[grid_sweep](
         x_c,
         conv_w_c,
@@ -544,6 +556,7 @@ def launch_fused_block_backward(
         BLOCK_N=block_n,
         CHUNK_K=chunk_k,
         num_warps=warps,
+        **extra,
     )
 
     block_d_norm = min(_MAX_BLOCK_D_NORM, triton.next_power_of_2(d_model))
@@ -598,6 +611,7 @@ def launch_fused_block_backward(
         BLOCK_N=block_n,
         CHUNK_K=chunk_k,
         num_warps=warps,
+        **extra,
     )
 
     block_t_x = max(1, _NORM_TILE // block_d_norm)

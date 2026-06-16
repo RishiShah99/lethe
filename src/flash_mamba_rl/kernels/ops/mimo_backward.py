@@ -20,6 +20,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads, reference_mimo_forward
 
 from .forward_chunked_scan import _TRITON_DTYPES, _triton_usable
@@ -55,6 +56,8 @@ def mimo_backward(
     mimo_x: Tensor,
     mimo_o: Tensor,
     dy: Tensor,
+    *,
+    config: KernelConfig | None = None,
 ) -> MimoGrads:
     """Mamba-3 MIMO SSM backward pass.
 
@@ -67,7 +70,9 @@ def mimo_backward(
         from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
 
         return MimoGrads(
-            *_triton_mimo_bwd.launch_mimo_backward(x, B, C, dt, alpha, mimo_x, mimo_o, dy)
+            *_triton_mimo_bwd.launch_mimo_backward(
+                x, B, C, dt, alpha, mimo_x, mimo_o, dy, config=config
+            )
         )
     return _mimo_bwd_eager(x, B, C, dt, alpha, mimo_x, mimo_o, dy)
 

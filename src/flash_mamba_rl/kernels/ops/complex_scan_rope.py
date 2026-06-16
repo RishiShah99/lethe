@@ -21,6 +21,7 @@ from typing import Any, cast
 import torch
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
 
 from .forward_chunked_scan import _TRITON_DTYPES, _triton_usable
@@ -51,20 +52,23 @@ class _ComplexRopeCuda(torch.autograd.Function):
         dt: Tensor,
         A: Tensor,
         angle_proj: Tensor,
+        config: KernelConfig | None = None,
     ) -> Tensor:
         from flash_mamba_rl.kernels.ops import _triton_complex_rope
 
         ctx.save_for_backward(x, B, C, dt, A, angle_proj)
-        return _triton_complex_rope.launch_complex_scan_rope(x, B, C, dt, A, angle_proj)
+        return _triton_complex_rope.launch_complex_scan_rope(
+            x, B, C, dt, A, angle_proj, config=config
+        )
 
     @staticmethod
-    def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor, ...]:
+    def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
         inputs = ctx.saved_tensors
         with torch.enable_grad():
             leaves = [t.detach().clone().requires_grad_(True) for t in inputs]
             y = _rope_eager(*leaves)
             grads = torch.autograd.grad(y, leaves, grad_y)
-        return tuple(grads)
+        return (*grads, None)
 
 
 def complex_scan_rope(
@@ -74,6 +78,8 @@ def complex_scan_rope(
     dt: Tensor,
     A: Tensor,
     angle_proj: Tensor,
+    *,
+    config: KernelConfig | None = None,
 ) -> Tensor:
     """Mamba-3 SSM forward with data-dependent RoPE rotation (paper §3.2).
 
@@ -91,7 +97,7 @@ def complex_scan_rope(
     if x.is_cuda and x.dtype in _TRITON_DTYPES and _triton_usable():
         return cast(
             Tensor,
-            _ComplexRopeCuda.apply(x, B, C, dt, A, angle_proj),  # type: ignore[no-untyped-call]
+            _ComplexRopeCuda.apply(x, B, C, dt, A, angle_proj, config),  # type: ignore[no-untyped-call]
         )
     return _rope_eager(x, B, C, dt, A, angle_proj)
 

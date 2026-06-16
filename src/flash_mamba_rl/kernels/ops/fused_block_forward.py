@@ -25,6 +25,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
+
 from .forward_chunked_scan import _TRITON_DTYPES, _scan_eager, _triton_usable
 
 
@@ -80,13 +82,14 @@ class _FusedBlockCuda(torch.autograd.Function):
         D: Tensor,
         norm_weight: Tensor,
         eps: float,
+        config: KernelConfig | None = None,
     ) -> Tensor:
         from flash_mamba_rl.kernels.ops import _triton_fused_block
 
         ctx.save_for_backward(x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight)
         ctx.eps = eps
         return _triton_fused_block.launch_fused_block_forward(
-            x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps
+            x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps, config=config
         )
 
     @staticmethod
@@ -97,7 +100,7 @@ class _FusedBlockCuda(torch.autograd.Function):
         grads = _triton_fused_block_bwd.launch_fused_block_backward(
             x, conv_weight, conv_bias, delta, a, b, c, d_skip, norm_weight, grad_y, ctx.eps
         )
-        return (*grads, None)
+        return (*grads, None, None)
 
 
 def fused_block_forward(
@@ -114,6 +117,7 @@ def fused_block_forward(
     conv_kernel_size: int = 4,
     eps: float = 1e-5,
     chunk_size: int = 64,
+    config: KernelConfig | None = None,
 ) -> Tensor:
     """Mamba fused-block forward: conv1d -> SiLU -> selective scan -> RMSNorm.
 
@@ -144,7 +148,7 @@ def fused_block_forward(
         return cast(
             Tensor,
             _FusedBlockCuda.apply(  # type: ignore[no-untyped-call]
-                x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps
+                x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps, config
             ),
         )
     return _fused_eager(x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps=eps)
