@@ -72,6 +72,19 @@ class TestParseConfig:
         # parse_config enforces only JSON shape; grid legality is validate's job.
         assert parse_config('{"num_warps": 3}') == KernelConfig(num_warps=3)
 
+    def test_scan_mode_string_accepted(self) -> None:
+        # scan_mode is the one string-valued knob; chunk_len stays an int.
+        assert parse_config('{"scan_mode": "chunk_parallel", "chunk_len": 256}') == KernelConfig(
+            scan_mode="chunk_parallel", chunk_len=256
+        )
+
+    def test_scan_mode_non_string_rejected(self) -> None:
+        assert parse_config('{"scan_mode": 1}') is None
+
+    def test_int_knob_as_string_still_rejected(self) -> None:
+        # Only scan_mode may be a string; a stringified int knob is illegal.
+        assert parse_config('{"num_warps": "4"}') is None
+
 
 class TestScoreConfigCandidateCPU:
     def test_valid_config_passes_contracts(self) -> None:

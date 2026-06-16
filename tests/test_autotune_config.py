@@ -58,3 +58,31 @@ def test_iter_configs_matches_grid_size_and_all_validate(op: str) -> None:
     configs = list(iter_configs(op))
     assert len(configs) == grid_size(op)
     assert all(validate(op, cfg) == [] for cfg in configs)
+
+
+def test_searched_includes_scan_mode_and_chunk_len() -> None:
+    cfg = KernelConfig(scan_mode="chunk_parallel", chunk_len=128)
+    assert cfg.searched() == {"scan_mode": "chunk_parallel", "chunk_len": 128}
+
+
+def test_scan_mode_is_tunable_for_forward_scan() -> None:
+    assert validate("forward_chunked_scan", KernelConfig(scan_mode="chunk_parallel")) == []
+    assert validate("forward_chunked_scan", KernelConfig(scan_mode="serial")) == []
+
+
+def test_validate_rejects_unknown_scan_mode() -> None:
+    v = validate("forward_chunked_scan", KernelConfig(scan_mode="parallel"))
+    assert v and any("scan_mode" in s for s in v)
+
+
+def test_scan_mode_not_tunable_for_other_ops() -> None:
+    # The chunk-parallel lever is the SISO forward only; not a backward knob.
+    v = validate("mimo_backward", KernelConfig(scan_mode="chunk_parallel"))
+    assert v and any("scan_mode" in s for s in v)
+
+
+def test_validate_chunk_len_must_divide_seq_len() -> None:
+    cfg = KernelConfig(scan_mode="chunk_parallel", chunk_len=128)
+    assert validate("forward_chunked_scan", cfg, shape=ShapeSpec(2, 4096, 1024)) == []
+    bad = validate("forward_chunked_scan", cfg, shape=ShapeSpec(2, 1000, 1024))
+    assert bad and any("chunk_len" in s for s in bad)

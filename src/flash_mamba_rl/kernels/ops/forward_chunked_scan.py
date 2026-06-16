@@ -85,10 +85,18 @@ class _ForwardScanCuda(torch.autograd.Function):
         C: Tensor,
         D: Tensor,
         config: KernelConfig | None = None,
+        chunk_len: int = 64,
     ) -> Tensor:
+        ctx.save_for_backward(u, delta, A, B, C, D)
+        if config is not None and config.scan_mode == "chunk_parallel":
+            from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fwd
+
+            k = config.chunk_len if config.chunk_len is not None else chunk_len
+            return _triton_chunk_parallel_fwd.launch_chunk_parallel_scan(
+                u, delta, A, B, C, D, chunk_len=k, config=config
+            )
         from flash_mamba_rl.kernels.ops import _triton_fwd_scan
 
-        ctx.save_for_backward(u, delta, A, B, C, D)
         return _triton_fwd_scan.launch_forward_scan(u, delta, A, B, C, D, config=config)
 
     @staticmethod
@@ -97,7 +105,10 @@ class _ForwardScanCuda(torch.autograd.Function):
 
         u, delta, a, b, c, d_skip = ctx.saved_tensors
         grads = _triton_bwd_scan.launch_backward_scan(u, delta, a, b, c, d_skip, grad_y)
-        return (*grads, None)
+        # +2 None for the non-tensor forward args (config, chunk_len). The C2
+        # backward depends only on the saved inputs and grad_y, never on how the
+        # forward was tiled, so it is correct for both scan modes unchanged.
+        return (*grads, None, None)
 
 
 def forward_chunked_scan(
@@ -126,7 +137,10 @@ def forward_chunked_scan(
     if u.is_cuda and u.dtype in _TRITON_DTYPES and _triton_usable():
         return cast(
             Tensor,
-            _ForwardScanCuda.apply(u, delta, A, B, C, D, config),  # type: ignore[no-untyped-call]
+            # chunk_size is a guaranteed divisor of L, so it is the safe default
+            # chunk-parallel granularity when scan_mode=chunk_parallel leaves
+            # config.chunk_len unset.
+            _ForwardScanCuda.apply(u, delta, A, B, C, D, config, chunk_size),  # type: ignore[no-untyped-call]
         )
     return _scan_eager(u, delta, A, B, C, D)
 

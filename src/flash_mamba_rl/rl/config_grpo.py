@@ -65,9 +65,10 @@ def parse_config(text: str) -> KernelConfig | None:
     """Parse a config JSON string into a ``KernelConfig``, or None if illegal.
 
     Enforces only the JSON *shape* — a dict over ``KernelConfig``'s fields with
-    int (not bool) or null values; the empty object is the shipped default.
-    Grid membership and shape divisibility are left to ``autotune.validate`` at
-    scoring time (one legality oracle, no duplicated grid here).
+    int (not bool) or null values, except ``scan_mode`` which is a string; the
+    empty object is the shipped default. Grid membership and shape divisibility
+    are left to ``autotune.validate`` at scoring time (one legality oracle, no
+    duplicated grid here).
     """
     try:
         obj = json.loads(text)
@@ -75,9 +76,14 @@ def parse_config(text: str) -> KernelConfig | None:
         return None
     if not isinstance(obj, dict) or not (obj.keys() <= _CONFIG_FIELDS):
         return None
-    for value in obj.values():
+    for key, value in obj.items():
+        if value is None:
+            continue
+        if key == "scan_mode":
+            if not isinstance(value, str):
+                return None
         # bool is an int subclass; a JSON true/false is not a launch knob.
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+        elif isinstance(value, bool) or not isinstance(value, int):
             return None
     return KernelConfig(**obj)
 
