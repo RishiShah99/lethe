@@ -70,13 +70,22 @@ def test_scan_mode_is_tunable_for_forward_scan() -> None:
     assert validate("forward_chunked_scan", KernelConfig(scan_mode="serial")) == []
 
 
+def test_scan_mode_is_tunable_for_backward_scan() -> None:
+    # The chunk-parallel lever also reassociates the SISO backward (C2).
+    assert validate("backward_selective_scan", KernelConfig(scan_mode="chunk_parallel")) == []
+    assert validate("backward_selective_scan", KernelConfig(scan_mode="serial")) == []
+    cfg = KernelConfig(scan_mode="chunk_parallel", chunk_len=256)
+    assert validate("backward_selective_scan", cfg, shape=ShapeSpec(2, 4096, 1024)) == []
+
+
 def test_validate_rejects_unknown_scan_mode() -> None:
     v = validate("forward_chunked_scan", KernelConfig(scan_mode="parallel"))
     assert v and any("scan_mode" in s for s in v)
 
 
 def test_scan_mode_not_tunable_for_other_ops() -> None:
-    # The chunk-parallel lever is the SISO forward only; not a backward knob.
+    # The chunk-parallel lever is for the SISO scan (forward + C2 backward); the
+    # head-structured ops (mimo) don't carry it.
     v = validate("mimo_backward", KernelConfig(scan_mode="chunk_parallel"))
     assert v and any("scan_mode" in s for s in v)
 

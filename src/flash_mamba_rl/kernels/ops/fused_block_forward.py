@@ -27,7 +27,7 @@ from torch import Tensor
 
 from flash_mamba_rl.kernels.autotune import KernelConfig
 
-from .forward_chunked_scan import _TRITON_DTYPES, _scan_eager, _triton_usable
+from .forward_chunked_scan import _TRITON_DTYPES, _auto_chunk_len, _scan_eager, _triton_usable
 
 
 def _fused_eager(
@@ -88,18 +88,52 @@ class _FusedBlockCuda(torch.autograd.Function):
 
         ctx.save_for_backward(x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight)
         ctx.eps = eps
+        ctx.config = config
         return _triton_fused_block.launch_fused_block_forward(
             x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, eps, config=config
         )
 
     @staticmethod
     def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
-        from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
-
         x, conv_weight, conv_bias, delta, a, b, c, d_skip, norm_weight = ctx.saved_tensors
-        grads = _triton_fused_block_bwd.launch_fused_block_backward(
-            x, conv_weight, conv_bias, delta, a, b, c, d_skip, norm_weight, grad_y, ctx.eps
-        )
+        config = ctx.config
+        if config is not None and config.scan_mode == "chunk_parallel":
+            from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fused_bwd
+
+            l_out = delta.shape[1]
+            k = _auto_chunk_len(l_out, config.chunk_len)
+            grads = _triton_chunk_parallel_fused_bwd.launch_fused_block_backward_chunk_parallel(
+                x,
+                conv_weight,
+                conv_bias,
+                delta,
+                a,
+                b,
+                c,
+                d_skip,
+                norm_weight,
+                grad_y,
+                ctx.eps,
+                chunk_len=k,
+                config=config,
+            )
+        else:
+            from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
+
+            grads = _triton_fused_block_bwd.launch_fused_block_backward(
+                x,
+                conv_weight,
+                conv_bias,
+                delta,
+                a,
+                b,
+                c,
+                d_skip,
+                norm_weight,
+                grad_y,
+                ctx.eps,
+                config=config,
+            )
         return (*grads, None, None)
 
 

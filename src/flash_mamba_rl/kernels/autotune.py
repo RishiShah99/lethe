@@ -40,12 +40,13 @@ _CHUNK_LEN = (64, 128, 256, 512)
 class KernelConfig:
     """A point in a kernel's launch-knob search space (None = shipped default).
 
-    All knobs are correctness-invariant. ``scan_mode`` selects the SISO forward
-    algorithm — ``"serial"`` (the O(L) walk, the byte-identical default) or
-    ``"chunk_parallel"`` (the SSD chunked-carry reassociation, the long-L lever);
-    ``chunk_len`` is its chunk-parallel granularity (must divide L), a no-op in
-    serial mode. Both reassociate the *same* recurrence, so the gate battery
-    re-confirms correctness within the eps*sqrt(chain)*scale band per config.
+    All knobs are correctness-invariant. ``scan_mode`` selects the SISO scan
+    algorithm (forward and backward) — ``"serial"`` (the O(L) walk, the
+    byte-identical default) or ``"chunk_parallel"`` (the SSD chunked-carry
+    reassociation, the long-L lever); ``chunk_len`` is its chunk-parallel
+    granularity (must divide L), a no-op in serial mode. Both reassociate the
+    *same* recurrence, so the gate battery re-confirms correctness within the
+    eps*sqrt(chain)*scale band per config.
     """
 
     block_d: int | None = None
@@ -88,6 +89,8 @@ SEARCH_GRID: dict[str, dict[str, tuple[int, ...] | tuple[str, ...]]] = {
         "chunk_k": _CHUNK_K,
         "num_warps": _WARPS,
         "num_stages": _STAGES,
+        "scan_mode": _SCAN_MODE,
+        "chunk_len": _CHUNK_LEN,
     },
     "mimo_backward": {
         "block_p": _BLOCK,
@@ -102,6 +105,8 @@ SEARCH_GRID: dict[str, dict[str, tuple[int, ...] | tuple[str, ...]]] = {
         "chunk_k": _CHUNK_K,
         "num_warps": _WARPS,
         "num_stages": _STAGES,
+        "scan_mode": _SCAN_MODE,
+        "chunk_len": _CHUNK_LEN,
     },
 }
 

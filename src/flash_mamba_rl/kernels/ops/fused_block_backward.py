@@ -31,7 +31,7 @@ from torch import Tensor
 from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.fused_block_backward import FusedBlockGrads
 
-from .forward_chunked_scan import _TRITON_DTYPES, _triton_usable
+from .forward_chunked_scan import _TRITON_DTYPES, _auto_chunk_len, _triton_usable
 from .fused_block_forward import _fused_eager
 
 
@@ -97,6 +97,27 @@ def fused_block_backward(
     if l_out % chunk_size != 0:
         raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")
     if x.is_cuda and x.dtype in _TRITON_DTYPES and _triton_usable():
+        if config is not None and config.scan_mode == "chunk_parallel":
+            from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fused_bwd
+
+            k = _auto_chunk_len(l_out, config.chunk_len)
+            return FusedBlockGrads(
+                *_triton_chunk_parallel_fused_bwd.launch_fused_block_backward_chunk_parallel(
+                    x,
+                    conv_weight,
+                    conv_bias,
+                    delta,
+                    A,
+                    B,
+                    C,
+                    D,
+                    norm_weight,
+                    dy,
+                    eps,
+                    chunk_len=k,
+                    config=config,
+                )
+            )
         from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
 
         return FusedBlockGrads(

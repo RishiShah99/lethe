@@ -108,6 +108,7 @@ class _ForwardScanCuda(torch.autograd.Function):
         config: KernelConfig | None = None,
     ) -> Tensor:
         ctx.save_for_backward(u, delta, A, B, C, D)
+        ctx.config = config
         if config is not None and config.scan_mode == "chunk_parallel":
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fwd
 
@@ -121,13 +122,25 @@ class _ForwardScanCuda(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
-        from flash_mamba_rl.kernels.ops import _triton_bwd_scan
-
         u, delta, a, b, c, d_skip = ctx.saved_tensors
-        grads = _triton_bwd_scan.launch_backward_scan(u, delta, a, b, c, d_skip, grad_y)
-        # +1 None for the non-tensor forward arg (config). The C2 backward depends
-        # only on the saved inputs and grad_y, never on how the forward was tiled,
-        # so it is correct for both scan modes unchanged.
+        config = ctx.config
+        # Both scan modes are correct for any tiling; chunk_parallel reassociates
+        # the backward the same way it does the forward, so the long-L lever
+        # carries to the training path when the forward selected it.
+        if config is not None and config.scan_mode == "chunk_parallel":
+            from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
+
+            k = _auto_chunk_len(u.shape[1], config.chunk_len)
+            grads = _triton_chunk_parallel_bwd.launch_backward_chunk_parallel_scan(
+                u, delta, a, b, c, d_skip, grad_y, chunk_len=k, config=config
+            )
+        else:
+            from flash_mamba_rl.kernels.ops import _triton_bwd_scan
+
+            grads = _triton_bwd_scan.launch_backward_scan(
+                u, delta, a, b, c, d_skip, grad_y, config=config
+            )
+        # +1 None for the non-tensor forward arg (config).
         return (*grads, None)
 
 
