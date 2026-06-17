@@ -10,11 +10,13 @@ Mamba-3 backward dies on sm_100, #904).
 
 from __future__ import annotations
 
+import functools
 import math
 
 import pytest
 import torch
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
@@ -980,3 +982,87 @@ class TestC6ContractGates:
         meta = triton_fused_block_bwd_resource_meta()
         assert meta is not None, "no resource metadata from the compiled kernel cache"
         assert 0 < meta["n_regs"] <= 255
+
+
+# --- Chunk-parallel scan_mode for the backward kernels (C2 + C6) ----------------
+# The reverse-carry reassociation must (a) reproduce the serial backward within
+# the reorder band on every gradient and (b) pass the full per-grad-view gate
+# battery — the CPU replicas pin the algebra, but the Triton offsets, EXC-01
+# masked lanes, and deterministic-reduction layout only run on CUDA.
+_CP = KernelConfig(scan_mode="chunk_parallel")
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC2ChunkParallelBackward:
+    @pytest.mark.parametrize(
+        ("b", "seq", "d", "n"),
+        [
+            (1, 4096, 256, 16),  # long-L small-batch: the regime the lever targets
+            (2, 2048, 128, 16),
+            (3, 120, 100, 10),  # non-pow2 L/D/N, odd shape (chunk_len auto-divides)
+        ],
+    )
+    def test_chunk_parallel_matches_serial(self, b: int, seq: int, d: int, n: int) -> None:
+        args, dy = _bwd_inputs(b, seq, d, n)
+        serial = backward_selective_scan(*args, dy, chunk_size=8)
+        cp = backward_selective_scan(*args, dy, chunk_size=8, config=_CP)
+        for field, s, c in zip(BWD_GRAD_FIELDS, serial, cp, strict=True):
+            scale = s.float().abs().max().clamp(min=1.0).item()
+            max_err = (s.float() - c.float()).abs().max().item()
+            assert torch.allclose(c, s, atol=2e-4 * scale, rtol=2e-4), (
+                f"{field}: serial vs chunk_parallel scale_rel={max_err / scale:.3e}"
+            )
+
+    def test_all_gates_pass_chunk_parallel(self) -> None:
+        args, dy = _bwd_inputs(1, 8, 4, 16)
+        op = functools.partial(backward_selective_scan, config=_CP)
+        op(*args, dy, chunk_size=8)  # warm the cache
+        meta = triton_bwd_scan_resource_meta(config=_CP)
+        all_results = verify_bwd_scan_op_all_grads(op, device="cuda", resource_meta=meta)
+        failed = {
+            f"{view}.{name}": (result.reason, result.details)
+            for view, results in all_results.items()
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"chunk_parallel gates failed (resource_meta={meta}): {failed}"
+
+
+@pytest.mark.gpu
+@requires_gpu
+class TestC6ChunkParallelBackward:
+    @pytest.mark.parametrize(
+        ("b", "l_out", "d", "n", "k"),
+        [
+            (1, 4096, 256, 16, 4),  # long-L small-batch
+            (2, 2048, 128, 16, 4),
+            (3, 120, 100, 10, 3),  # non-pow2 shape, odd conv window
+        ],
+    )
+    def test_chunk_parallel_matches_serial(
+        self, b: int, l_out: int, d: int, n: int, k: int
+    ) -> None:
+        args, dy = _fused_bwd_inputs(b, l_out, d, n, k=k)
+        serial = fused_block_backward(*args, dy, conv_kernel_size=k, chunk_size=8)
+        cp = fused_block_backward(*args, dy, conv_kernel_size=k, chunk_size=8, config=_CP)
+        for field, s, c in zip(FUSED_BWD_GRAD_FIELDS, serial, cp, strict=True):
+            scale = s.float().abs().max().clamp(min=1.0).item()
+            max_err = (s.float() - c.float()).abs().max().item()
+            assert torch.allclose(c, s, atol=3e-4 * scale, rtol=3e-4), (
+                f"{field}: serial vs chunk_parallel scale_rel={max_err / scale:.3e}"
+            )
+
+    def test_all_gates_pass_chunk_parallel(self) -> None:
+        args, dy = _fused_bwd_inputs(1, 8, 4, 8)
+        op = functools.partial(fused_block_backward, config=_CP)
+        op(*args, dy, chunk_size=8)  # warm the cache
+        meta = triton_fused_block_bwd_resource_meta(config=_CP)
+        all_results = verify_fused_bwd_op_all_grads(op, device="cuda", resource_meta=meta)
+        failed = {
+            f"{view}.{name}": (result.reason, result.details)
+            for view, results in all_results.items()
+            for name, result in results.items()
+            if not result.passed
+        }
+        assert not failed, f"chunk_parallel gates failed (resource_meta={meta}): {failed}"

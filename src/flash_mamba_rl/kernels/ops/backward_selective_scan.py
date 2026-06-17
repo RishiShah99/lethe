@@ -89,14 +89,20 @@ def backward_selective_scan(
     return _bwd_eager(u, delta, A, B, C, D, dy)
 
 
-def triton_bwd_scan_resource_meta() -> dict[str, int] | None:
+def triton_bwd_scan_resource_meta(config: KernelConfig | None = None) -> dict[str, int] | None:
     """Resource metadata of the compiled Triton backward kernel, if any.
 
     Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
+    None (nothing compiled / no triton) keeps the gate not-applicable. With a
+    chunk_parallel config RES-02 must audit the chunk-parallel kernels, not the
+    serial one.
     """
     if not _triton_usable():
         return None
+    if config is not None and config.scan_mode == "chunk_parallel":
+        from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
+
+        return _triton_chunk_parallel_bwd.resource_meta()
     from flash_mamba_rl.kernels.ops import _triton_bwd_scan
 
     return _triton_bwd_scan.resource_meta()

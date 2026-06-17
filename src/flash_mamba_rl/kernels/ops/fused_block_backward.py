@@ -128,14 +128,21 @@ def fused_block_backward(
     return _fused_bwd_eager(x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight, dy, eps)
 
 
-def triton_fused_block_bwd_resource_meta() -> dict[str, int] | None:
-    """Resource metadata over the four compiled backward kernels, if any.
+def triton_fused_block_bwd_resource_meta(
+    config: KernelConfig | None = None,
+) -> dict[str, int] | None:
+    """Resource metadata over the compiled backward kernels, if any.
 
     Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
+    None (nothing compiled / no triton) keeps the gate not-applicable. With a
+    chunk_parallel config RES-02 must audit the chunk-parallel kernels.
     """
     if not _triton_usable():
         return None
+    if config is not None and config.scan_mode == "chunk_parallel":
+        from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fused_bwd
+
+        return _triton_chunk_parallel_fused_bwd.resource_meta()
     from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
 
     return _triton_fused_block_bwd.resource_meta()

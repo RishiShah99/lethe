@@ -324,7 +324,7 @@ def _chunk_bwd_sweep_kernel(  # type: ignore[no-untyped-def]
 
     offs_tile = tl.arange(0, BLOCK_D)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
     offs_d_row = tl.arange(0, BLOCK_D)
-    prog = ((pid_b * n_chunks + pid_c) * n_d_blocks + pid_d).to(tl.int64)
+    prog = (pid_b.to(tl.int64) * n_chunks + pid_c) * n_d_blocks + pid_d
     hbuf_prog = hbuf_ptr + prog * chunk_len * BLOCK_D * BLOCK_N + offs_tile
     zbuf_prog = zbuf_ptr + prog * chunk_len * BLOCK_D + offs_d_row
     cvbuf_prog = cvbuf_ptr + prog * chunk_len * BLOCK_D + offs_d_row
@@ -476,6 +476,19 @@ def launch_fused_block_backward_chunk_parallel(
     block_k = triton.next_power_of_2(conv_k)
     n_chunks = l_out // chunk_len
     n_d_blocks = triton.cdiv(d_model, block_d)
+
+    # Per-chunk forward-recompute scratch sized for all chunks at once — O(B*L*D*
+    # block_n), the whole state tensor (the serial kernel reuses a K=16 buffer).
+    # Guard before allocating so a too-large shape/config raises instead of an
+    # opaque CUDA OOM (and config scoring records it honestly).
+    hbuf_elems = batch * n_chunks * n_d_blocks * chunk_len * block_d * block_n
+    if x.is_cuda:
+        free_bytes, _ = torch.cuda.mem_get_info(x.device)
+        if hbuf_elems * 4 > 0.7 * free_bytes:
+            raise ValueError(
+                f"chunk_parallel C6 backward scratch ~{hbuf_elems * 4 / 1e9:.1f} GB exceeds "
+                f"{0.7 * free_bytes / 1e9:.1f} GB free; use serial scan_mode or smaller chunk_len"
+            )
 
     x_c = x.contiguous()
     conv_w_c = conv_weight.contiguous()
