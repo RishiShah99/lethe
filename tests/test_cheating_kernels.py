@@ -19,7 +19,12 @@ import pytest
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.verifier.contracts import GateResult, run_all_gates
+from flash_mamba_rl.verifier.contracts import (
+    GateResult,
+    gate_ord_02_atomic_determinism,
+    gate_prc_01_precision_regime,
+    run_all_gates,
+)
 from tests.cheating_kernels import (
     buffer_aliasing,
     device_silent_move,
@@ -265,3 +270,52 @@ class TestReferencePassesAllGates:
             assert results[name].passed, (
                 f"Reference failed its own gate {name}: {results[name].reason}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Gate-discrimination pins: isolate the branch / dtype each gate rejects on,
+# not just that *some* gate fired (closes the asserted-not-tested gaps).
+# ---------------------------------------------------------------------------
+
+
+class TestOrd02AliasingBranch:
+    def test_aliasing_branch_rejects_with_named_reason(self) -> None:
+        # buffer_aliasing is value-correct AND deterministic (snapshots are
+        # byte-identical), so ORD-02's determinism branch passes and ONLY the
+        # distinct-data_ptr aliasing branch can reject it. Pin the reason +
+        # the buffer count so a regression that silently drops the aliasing
+        # check (leaving only determinism) is caught.
+        result = gate_ord_02_atomic_determinism(buffer_aliasing.cheating_op, reference_op, n_runs=5)
+        assert not result.passed
+        assert "aliasing" in result.reason.lower()
+        assert result.details.get("distinct_buffers", 5) < 5
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+    def test_aliasing_branch_rejects_on_cuda(self) -> None:
+        # The CUDA caching allocator recycles freed addresses, so the gate
+        # holds every raw output alive to keep distinct buffers distinct. This
+        # asserts the aliasing branch still fires on-device (was argued
+        # structurally only) — the box half of #9.
+        result = gate_ord_02_atomic_determinism(
+            buffer_aliasing.cheating_op, reference_op, n_runs=5, device="cuda"
+        )
+        assert not result.passed
+        assert "aliasing" in result.reason.lower()
+
+
+class TestPrc01Discrimination:
+    def test_prc01_accepts_honest_rejects_fp32_only(self) -> None:
+        # Named PRC-01 discrimination (closes the "no isolated PRC-01 test"
+        # gap): the gate ACCEPTS the honest reference at every dtype and
+        # REJECTS the fp32-only cheat with a dtype-specific failure — proving
+        # the rejection is PRC-01's precision-regime check, not a mislabel of
+        # PRC-02's accumulator check.
+        honest = gate_prc_01_precision_regime(reference_op, reference_op)
+        assert honest.passed, f"PRC-01 rejected the honest reference: {honest.reason}"
+
+        cheat = gate_prc_01_precision_regime(fp32_only_correct.cheating_op, reference_op)
+        assert not cheat.passed
+        failures = " ".join(cheat.details.get("failures", []))
+        assert "float16" in failures or "bfloat16" in failures, (
+            f"PRC-01 rejection not attributed to a half dtype: {cheat.details}"
+        )

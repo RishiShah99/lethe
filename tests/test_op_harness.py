@@ -165,6 +165,40 @@ def _cumprod_trick_scan(
     return y.to(u.dtype)
 
 
+def _reordered_reduction_scan(
+    u: torch.Tensor,
+    delta: torch.Tensor,
+    a: torch.Tensor,
+    b_proj: torch.Tensor,
+    c_proj: torch.Tensor,
+    d_skip: torch.Tensor,
+    *,
+    chunk_size: int = 8,
+) -> torch.Tensor:
+    """Honest scan whose N-state readout sums in REVERSED index order.
+
+    A numerically-valid reduction reordering (associativity): the output
+    differs from the reference only by float reassociation noise (~1e-7),
+    well inside ORD-03's scan tolerance. ORD-03 must ACCEPT this — the
+    positive half of its discrimination, paired with the cumprod-trick reject.
+    """
+    import torch.nn.functional as F
+
+    delta_bar = F.softplus(delta.float())
+    a_bar = torch.exp(delta_bar.unsqueeze(-1) * a.float().unsqueeze(0).unsqueeze(0))
+    b_bar = delta_bar.unsqueeze(-1) * b_proj.float().unsqueeze(2)
+    bu = b_bar * u.float().unsqueeze(-1)
+    batch, seq_len, d_model = u.shape
+    n_state = a.shape[1]
+    h = torch.zeros(batch, d_model, n_state)
+    y = torch.empty(batch, seq_len, d_model)
+    for t in range(seq_len):
+        h = a_bar[:, t] * h + bu[:, t]
+        prod = h * c_proj.float()[:, t].unsqueeze(1)  # [B, D, N]
+        y[:, t] = prod.flip(-1).sum(-1) + d_skip.float() * u.float()[:, t]
+    return y.to(u.dtype)
+
+
 def _scan_inputs(
     b: int = 2,
     seq: int = 8,
@@ -296,6 +330,17 @@ class TestScanHarness:
         results = verify_scan_op(_cumprod_trick_scan)
         ord03 = results["gate_ord_03_noncommutative_reduction"]
         assert not ord03.passed, "ORD-03 lost its discriminative power for the scan op"
+
+    def test_ord03_discriminates_correct_reorder_from_wrong(self) -> None:
+        # Closes the gap that ORD-03 "never shows it discriminates correct
+        # reorder from wrong": a gate that rejected ALL reorderings (e.g. an
+        # accidental bitwise comparison) would still pass the reject-only test
+        # above. This pins BOTH directions — a valid reversed-N-sum reorder
+        # (~1e-7 noise) is ACCEPTED while the cumprod-ratio trick is REJECTED.
+        good = verify_scan_op(_reordered_reduction_scan)["gate_ord_03_noncommutative_reduction"]
+        bad = verify_scan_op(_cumprod_trick_scan)["gate_ord_03_noncommutative_reduction"]
+        assert good.passed, f"ORD-03 rejected a valid reduction reorder: {good.reason}"
+        assert not bad.passed, "ORD-03 accepted the cumprod-ratio trick"
 
     def test_gate_overrides_reach_named_gate_only(self) -> None:
         candidate = scan_candidate_adapter(forward_chunked_scan)
