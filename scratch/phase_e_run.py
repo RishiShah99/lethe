@@ -74,12 +74,17 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=8)
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--kl-coef", type=float, default=0.04)
-    ap.add_argument("--max-new-tokens", type=int, default=2048)
-    # Backward ops emit far longer kernels (the fused_block_backward triton
-    # target is 8754 tokens); curriculum mode raises the cap to this for the
-    # backward levels only (forward levels keep --max-new-tokens, so their
-    # generation buffer is not sized for a length they never reach).
-    ap.add_argument("--max-new-tokens-bwd", type=int, default=9216)
+    # Forward triton targets run ~3.1-3.4k tokens (complex_scan_rope,
+    # fused_block_forward), so 2048 truncated them and they could only promote on
+    # shorter correct generations; 4096 clears the longest forward target with
+    # margin (#15).
+    ap.add_argument("--max-new-tokens", type=int, default=4096)
+    # Backward ops emit far longer kernels — the fused_block_backward triton
+    # target is 8754 tokens, which left only ~5% headroom under the old 9216 cap
+    # (a slightly longer generation truncated -> unparseable -> the hardest level
+    # never promoted, the #15 bug). 12288 gives ~40% margin. Curriculum mode
+    # raises the cap to this for the backward levels only.
+    ap.add_argument("--max-new-tokens-bwd", type=int, default=12288)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--promote-rate", type=float, default=0.5, help="contract-pass rate gate")
     ap.add_argument("--promote-window", type=int, default=8)
