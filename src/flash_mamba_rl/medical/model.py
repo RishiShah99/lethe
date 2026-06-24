@@ -198,7 +198,7 @@ class _MambaBlock(nn.Module):
 
 
 class Mamba3ECGClassifier(nn.Module):
-    """1B Mamba-3 multi-label ECG classifier for PTB-XL.
+    """1.1B Mamba-1 SISO multi-label ECG classifier for PTB-XL (Mamba-3 MIMO block pending).
 
     Input:  [B, 12, T]  float32  (loader's native layout)
     Output: [B, n_classes]  float32  logits (no activation — BCEWithLogitsLoss)

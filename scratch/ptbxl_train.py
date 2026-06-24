@@ -1,4 +1,4 @@
-"""Box driver: DDP PTB-XL training of the ~1.1B Mamba-3 classifier (Phase F.3).
+"""Box driver: DDP PTB-XL training of the ~1.1B Mamba-1 SISO classifier (Phase F.3).
 
 Runs on the 8× B200 under torchrun; consumes the Phase C kernels via
 ``Mamba3ECGClassifier`` (CUDA path) and the real ``PTBXL`` dataset. Spot-resilient

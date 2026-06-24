@@ -1,7 +1,7 @@
 """Mamba-3 real-equivalent SSM with data-dependent RoPE rotation (Eq. 9).
 
 Implements the complex SSM reformulation from:
-  "Mamba-3" (Tri Dao + Albert Gu, ICLR 2026, arXiv:2603.15569)
+  "Mamba-3" (Lahoti, Li, et al., ICLR 2026, arXiv:2603.15569)
   Section 3.2, Equations 8-9 and Proposition 3.2.1.
 
 SIGNATURE CHANGES FROM OLD STUB

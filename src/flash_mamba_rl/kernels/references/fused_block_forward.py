@@ -8,7 +8,7 @@ Implements the full Mamba block as a composition of:
 
 No fusion, no Triton — correctness oracle only.
 
-Reference: Mamba-3 (Tri Dao + Albert Gu, ICLR 2026), building on
+Reference: Mamba-3 (Lahoti, Li, et al., ICLR 2026), building on
 Mamba-1 (Gu & Dao, ICLR 2024, arXiv:2312.00752).
 """
 

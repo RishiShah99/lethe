@@ -4,7 +4,7 @@ Reference oracle for the verifier. Implements the core SSM recurrence from:
   "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
   Gu & Dao, ICLR 2024 (arXiv:2312.00752)
 
-Used as the scan primitive inside Mamba-3 (Tri Dao + Albert Gu, ICLR 2026).
+Used as the scan primitive inside Mamba-3 (Lahoti, Li, et al., ICLR 2026).
 Correctness over speed: float32 throughout, plain Python loop per chunk.
 """
 

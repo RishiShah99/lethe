@@ -4,7 +4,7 @@ Reference oracle — gradients are obtained by differentiating through
 ``reference_fused_block_forward`` using torch.autograd.grad.  No hand-derived
 formulae; correctness is guaranteed by PyTorch's autograd engine.
 
-Reference: Mamba-3 (Tri Dao + Albert Gu, ICLR 2026).
+Reference: Mamba-3 (Lahoti, Li, et al., ICLR 2026).
 """
 
 from typing import NamedTuple

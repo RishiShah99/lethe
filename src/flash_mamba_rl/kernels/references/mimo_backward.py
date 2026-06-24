@@ -1,7 +1,7 @@
 """Mamba-3 MIMO selective scan: forward reference and autograd-based backward.
 
 Implements the MIMO SSM from:
-  "Mamba-3" (Tri Dao + Albert Gu, ICLR 2026, arXiv:2603.15569)
+  "Mamba-3" (Lahoti, Li, et al., ICLR 2026, arXiv:2603.15569)
   Section 3.3, Equations 12-14 and surrounding prose.
 
 SIGNATURE CHANGES FROM OLD STUB

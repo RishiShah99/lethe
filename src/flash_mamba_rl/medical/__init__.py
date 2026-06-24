@@ -1,4 +1,4 @@
-"""PTB-XL pipeline: data loaders, 1B Mamba-3 wrapper, training script."""
+"""PTB-XL pipeline: data loaders, 1.1B Mamba-1 SISO wrapper (Mamba-3 MIMO upgrade pending), training script."""
 
 from flash_mamba_rl.medical.data import PTBXL
 from flash_mamba_rl.medical.model import Mamba3Config, Mamba3ECGClassifier

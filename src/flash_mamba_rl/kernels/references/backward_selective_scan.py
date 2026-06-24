@@ -6,7 +6,7 @@ gradient formulae. This is intentional: the reference must be correct by
 construction; analytical gradient derivation belongs in the optimised Triton
 kernel, not here.
 
-Reference: "Mamba-3" (Tri Dao + Albert Gu, ICLR 2026); underlying scan math
+Reference: "Mamba-3" (Lahoti, Li, et al., ICLR 2026); underlying scan math
 from the original Mamba paper (Gu & Dao, ICLR 2024, arXiv:2312.00752).
 """
 
