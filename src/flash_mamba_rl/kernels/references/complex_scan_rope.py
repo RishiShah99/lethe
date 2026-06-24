@@ -40,7 +40,12 @@ state is never re-rotated inside the scan — so the oracle matches that
 convention exactly.
 
 The trapezoidal discretisation (Prop 3.2.2) reduces to this form at lambda=1;
-this oracle implements the lambda=1 base case.
+this oracle implements the lambda=1 base case. The full data-dependent
+trapezoidal term (lambda = sigmoid(trap), resolved from the paper + official
+mamba3.py) is implemented + pinned at the SISO oracle level in
+``forward_chunked_scan.reference_forward_trapezoidal_scan``; folding it into the
+RoPE scan + the six graded kernels is a scoped extension (they implement
+lambda=1, so they would diverge from a trapezoidal oracle otherwise).
 
 UNRESOLVED / OUT OF SCOPE
 --------------------------

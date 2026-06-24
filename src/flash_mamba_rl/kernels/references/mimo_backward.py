@@ -76,7 +76,12 @@ UNRESOLVED / OUT OF SCOPE
   * RoPE rotation on B and C: belongs to the complex_scan_rope oracle, not here.
     This oracle takes pre-rotated B and C as inputs.
   * D skip connection: outer block, not the scan.
-  * Trapezoidal lambda term: oracle implements Eq. 12 base form (alpha only).
+  * Trapezoidal lambda term: oracle implements Eq. 12 base form (alpha only,
+    i.e. lambda=1). The resolved full trapezoidal discretisation (Prop 3.2.2,
+    lambda = sigmoid(trap)) lives at the SISO oracle level in
+    ``forward_chunked_scan.reference_forward_trapezoidal_scan``; the MIMO scan +
+    graded kernels stay on the lambda=1 base case (folding trap into them is a
+    scoped kernel extension, not an oracle change).
 """
 
 from typing import NamedTuple
