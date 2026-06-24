@@ -25,22 +25,27 @@ Poll:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import os
 
-# (op, batch, seq_len, width) training levels. Off-default + long-L by design:
-# the shipped heuristics are tuned near L=2048, so these are where a learned
-# config can beat the default. C1/C2/C4 are measurement-tuned with no config
-# headroom (HANDOFF) and are omitted from the default set.
+# (op, batch, seq_len, width) training levels. BOUNDARY-STRADDLING by design
+# (#14): the three scan_mode-bearing SISO ops, each at a chunk_parallel-favorable
+# shape (small batch x long L) AND a serial-favorable one (the saturated corner:
+# large batch x short L x large width, where the boundary sweep
+# results/scan_mode_boundary.json found serial wins, e.g. b8/L512/d4096 bwd
+# 0.746). The prior level set was long-L only, so committing to chunk_parallel
+# was reward-optimal at every shape and the policy never explored serial. With
+# both regimes present there is a true shape->mode gradient: a policy that reads
+# the shape promotes on all levels; one that commits to a single mode loses
+# reward on the opposite-regime levels. That is what demonstrates the policy
+# LEARNS the crossover rather than emitting its prior.
 DEFAULT_LEVELS: tuple[tuple[str, int, int, int], ...] = (
-    ("fused_block_forward", 2, 4096, 1024),
-    ("fused_block_forward", 2, 16384, 2048),
-    ("fused_block_forward", 2, 1024, 4096),
-    ("mimo_backward", 2, 4096, 1024),
-    ("mimo_backward", 2, 8192, 2048),
-    ("fused_block_backward", 2, 4096, 1024),
-    ("fused_block_backward", 2, 8192, 2048),
+    ("forward_chunked_scan", 2, 16384, 1024),
+    ("forward_chunked_scan", 8, 512, 4096),
+    ("backward_selective_scan", 2, 16384, 1024),
+    ("backward_selective_scan", 8, 512, 4096),
+    ("fused_block_backward", 2, 16384, 1024),
+    ("fused_block_backward", 8, 512, 4096),
 )
 
 SCORE_TIMEOUT_S: dict[str, float] = {
@@ -77,7 +82,7 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=16, help="configs sampled per step")
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--kl-coef", type=float, default=0.04)
-    ap.add_argument("--temperature", type=float, default=1.1)
+    ap.add_argument("--temperature", type=float, default=1.3)  # #14: widen mode exploration
     ap.add_argument("--max-new-tokens", type=int, default=256, help="a config is tiny")
     ap.add_argument("--train-gpu", type=int, default=0)
     ap.add_argument("--score-gpus", default="1,2,3,4,5,6,7")

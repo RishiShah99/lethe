@@ -521,8 +521,9 @@ _KNOB_DESC: dict[str, str] = {
     "chunk_k": "in-chunk recompute window of the checkpointed backward (must divide seq_len)",
     "num_warps": "warps per program (occupancy vs per-thread registers)",
     "num_stages": "software-pipelining depth of the kernel's main loop",
-    "scan_mode": "SISO forward algorithm: 'serial' (O(L) walk) or 'chunk_parallel' "
-    "(SSD chunked-carry, parallel across L/chunk_len chunks — the long-L lever)",
+    "scan_mode": "SISO scan algorithm: 'serial' (a sequential O(L) walk over the "
+    "sequence) or 'chunk_parallel' (an SSD chunked-carry reassociating the scan "
+    "across L/chunk_len chunks). Both are correct; which is faster depends on the shape",
     "chunk_len": "chunk-parallel granularity (must divide seq_len; no-op in serial mode)",
 }
 
