@@ -27,7 +27,13 @@ from torch import Tensor
 
 from flash_mamba_rl.kernels.autotune import KernelConfig
 
-from .forward_chunked_scan import _TRITON_DTYPES, _auto_chunk_len, _scan_eager, _triton_usable
+from .forward_chunked_scan import (
+    _TRITON_DTYPES,
+    _auto_chunk_len,
+    _resolve_scan_mode,
+    _scan_eager,
+    _triton_usable,
+)
 
 
 def _fused_eager(
@@ -97,11 +103,12 @@ class _FusedBlockCuda(torch.autograd.Function):
     def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
         x, conv_weight, conv_bias, delta, a, b, c, d_skip, norm_weight = ctx.saved_tensors
         config = ctx.config
-        if config is not None and config.scan_mode == "chunk_parallel":
+        l_out = delta.shape[1]
+        batch, _, width = x.shape
+        if _resolve_scan_mode(config, l_out, batch, width, is_forward=False) == "chunk_parallel":
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fused_bwd
 
-            l_out = delta.shape[1]
-            k = _auto_chunk_len(l_out, config.chunk_len)
+            k = _auto_chunk_len(l_out, config.chunk_len if config is not None else None)
             grads = _triton_chunk_parallel_fused_bwd.launch_fused_block_backward_chunk_parallel(
                 x,
                 conv_weight,

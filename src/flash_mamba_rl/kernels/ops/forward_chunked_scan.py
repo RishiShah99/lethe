@@ -62,6 +62,40 @@ def _auto_chunk_len(seq_len: int, requested: int | None) -> int:
     return 1
 
 
+def _default_scan_mode(seq_len: int, batch: int, width: int, *, is_forward: bool) -> str:
+    """Launch-default scan mode for a shape, consulted only when scan_mode is unset.
+
+    Calibrated to the broad boundary sweep (``results/scan_mode_boundary.json``,
+    178 shapes x 3 SISO ops, best-tuned-vs-best-tuned through the verifier):
+    chunk_parallel is the global optimum (geomean ~2.2x over the serial default)
+    EXCEPT in the saturated short-sequence corner, where the O(seq_len/chunk_len)
+    carry cannot amortise against an already SM-saturated device. Serial there,
+    chunk_parallel otherwise; an explicit ``config.scan_mode`` overrides this so
+    the autotuner/config-RL still drives the choice. ``is_forward`` adds the
+    forward op's extra serial preference at every short L (the forward kernel is
+    cheap enough per step that the carry rarely pays below L=512). The thresholds
+    are the sweep's measured boundary, slightly biased toward chunk_parallel (the
+    dominant winner): the rule trails the per-shape oracle by <0.1% in geomean
+    with its worst single-shape regression ~5%.
+    """
+    if is_forward and seq_len <= 512:
+        return "serial"
+    if batch >= 8 and width >= 4096 and seq_len <= 4096:
+        return "serial"
+    if batch >= 8 and width >= 2048 and seq_len <= 512:
+        return "serial"
+    return "chunk_parallel"
+
+
+def _resolve_scan_mode(
+    config: KernelConfig | None, seq_len: int, batch: int, width: int, *, is_forward: bool
+) -> str:
+    """The effective scan mode: an explicit config knob, else the shape default."""
+    if config is not None and config.scan_mode is not None:
+        return config.scan_mode
+    return _default_scan_mode(seq_len, batch, width, is_forward=is_forward)
+
+
 def _scan_eager(u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor) -> Tensor:
     """Reference math, replicated op-for-op, in fp32 (fp64 stays fp64)."""
     compute_dtype = torch.float64 if u.dtype == torch.float64 else torch.float32
@@ -109,10 +143,11 @@ class _ForwardScanCuda(torch.autograd.Function):
     ) -> Tensor:
         ctx.save_for_backward(u, delta, A, B, C, D)
         ctx.config = config
-        if config is not None and config.scan_mode == "chunk_parallel":
+        batch, seq_len, width = u.shape
+        if _resolve_scan_mode(config, seq_len, batch, width, is_forward=True) == "chunk_parallel":
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fwd
 
-            k = _auto_chunk_len(u.shape[1], config.chunk_len)
+            k = _auto_chunk_len(seq_len, config.chunk_len if config is not None else None)
             return _triton_chunk_parallel_fwd.launch_chunk_parallel_scan(
                 u, delta, A, B, C, D, chunk_len=k, config=config
             )
@@ -125,12 +160,14 @@ class _ForwardScanCuda(torch.autograd.Function):
         u, delta, a, b, c, d_skip = ctx.saved_tensors
         config = ctx.config
         # Both scan modes are correct for any tiling; chunk_parallel reassociates
-        # the backward the same way it does the forward, so the long-L lever
-        # carries to the training path when the forward selected it.
-        if config is not None and config.scan_mode == "chunk_parallel":
+        # the backward the same way it does the forward. The backward is its own
+        # regime (the C2 adjoint, not the C1 forward), so it resolves the mode
+        # with is_forward=False rather than inheriting the forward pass's choice.
+        batch, seq_len, width = u.shape
+        if _resolve_scan_mode(config, seq_len, batch, width, is_forward=False) == "chunk_parallel":
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
 
-            k = _auto_chunk_len(u.shape[1], config.chunk_len)
+            k = _auto_chunk_len(seq_len, config.chunk_len if config is not None else None)
             grads = _triton_chunk_parallel_bwd.launch_backward_chunk_parallel_scan(
                 u, delta, a, b, c, d_skip, grad_y, chunk_len=k, config=config
             )

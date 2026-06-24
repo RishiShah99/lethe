@@ -31,7 +31,13 @@ from torch import Tensor
 from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.backward_selective_scan import SelectiveScanGrads
 
-from .forward_chunked_scan import _TRITON_DTYPES, _auto_chunk_len, _scan_eager, _triton_usable
+from .forward_chunked_scan import (
+    _TRITON_DTYPES,
+    _auto_chunk_len,
+    _resolve_scan_mode,
+    _scan_eager,
+    _triton_usable,
+)
 
 
 def _bwd_eager(
@@ -72,10 +78,11 @@ def backward_selective_scan(
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
     if u.is_cuda and u.dtype in _TRITON_DTYPES and _triton_usable():
-        if config is not None and config.scan_mode == "chunk_parallel":
+        batch, _, width = u.shape
+        if _resolve_scan_mode(config, seq_len, batch, width, is_forward=False) == "chunk_parallel":
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
 
-            k = _auto_chunk_len(seq_len, config.chunk_len)
+            k = _auto_chunk_len(seq_len, config.chunk_len if config is not None else None)
             return SelectiveScanGrads(
                 *_triton_chunk_parallel_bwd.launch_backward_chunk_parallel_scan(
                     u, delta, A, B, C, D, dy, chunk_len=k, config=config
