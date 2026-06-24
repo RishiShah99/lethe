@@ -12,11 +12,14 @@ from __future__ import annotations
 from typing import Any
 
 from flash_mamba_rl.verifier.audit_harness import (
+    _RI_MARKER,
     AUDIT_GATE_NAMES,
     GATE_SHORT_NAMES,
+    _gate_status,
     _shape_variants,
     audit_worker,
 )
+from flash_mamba_rl.verifier.contracts import GateResult
 
 REF_ELEMENTWISE = """
 import torch
@@ -416,3 +419,19 @@ def test_undeepcopyable_candidate_prc_gates_via_rebuild() -> None:
     assert gates["PRC-01"] in ("pass", "na"), gates
     assert gates["PRC-02"] in ("pass", "na"), gates
     assert gates["CMP-01"] == "pass", gates
+
+
+def test_ri_marker_not_forgeable_by_candidate_text() -> None:
+    # H4: a candidate whose exception text merely contains the guessable
+    # "[ref-inapplicable]" substring must NOT have its real failure
+    # reclassified as skipped coverage — the marker carries a nonce only the
+    # reference adapter produces. Only the genuine marker maps to "na".
+    forged = GateResult(
+        passed=False,
+        reason="candidate raised: ValueError [ref-inapplicable] from foreign code",
+        details={},
+    )
+    assert _gate_status("gate_cmp_01_input_variation", forged, None)["status"] == "fail"
+
+    genuine = GateResult(passed=False, reason=f"{_RI_MARKER} ValueError: ref cannot", details={})
+    assert _gate_status("gate_cmp_01_input_variation", genuine, None)["status"] == "na"

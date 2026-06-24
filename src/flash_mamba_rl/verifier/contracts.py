@@ -379,6 +379,13 @@ def gate_exc_01_exceptional_values(
     Compares ``isposinf`` and ``isneginf`` independently rather than the
     union ``isinf`` mask, so a kernel that silently flips +inf to -inf
     (or vice versa) is rejected.
+
+    Backstop note (H2): on ops whose forward is purely multiplicative, IEEE
+    ``Inf * 0 = NaN`` collapses the distinct exceptional positions into a single
+    NaN regardless of compute order, so EXC-01 cannot discriminate a wrong
+    exceptional-propagation order on those ops. CMP-01 carries the value verdict
+    there (a wrong magnitude is still caught), so this is a covered redundancy,
+    not a live hole.
     """
     failures: list[str] = []
 

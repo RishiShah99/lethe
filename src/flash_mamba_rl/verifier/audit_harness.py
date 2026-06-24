@@ -62,7 +62,14 @@ from flash_mamba_rl.verifier.contracts import GateResult, run_all_gates
 
 AUDIT_SEED = 1337
 
-_RI_MARKER = "[ref-inapplicable]"
+# Reference-inapplicable sentinel: prepended by the reference adapter (and only
+# there) when the *reference* cannot consume an input, so that failure is scored
+# as skipped coverage, not a candidate failure. The trailing nonce makes the
+# token collision/forgery-resistant — a foreign candidate cannot get its own real
+# failure reclassified as "skipped" by emitting the marker substring in its
+# exception text (H4 hardening). The audit aggregation is unchanged: the token is
+# still produced only at the single site below and matched the same way.
+_RI_MARKER = "[ref-inapplicable::fmr-ri-9e3779b97f4a7c15]"
 
 # Gate subset within the audited corpora's claimed scope (no CMP-02/RES-02).
 AUDIT_GATE_NAMES: tuple[str, ...] = (
