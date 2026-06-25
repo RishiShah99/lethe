@@ -25,6 +25,7 @@ from typing import Any
 
 from flash_mamba_rl.kernels.autotune import ShapeSpec
 from flash_mamba_rl.rl.config_grpo import score_config_candidate
+from flash_mamba_rl.rl.edit_rl import score_edit_candidate
 from flash_mamba_rl.verifier.candidate_scoring import (
     DEFAULT_EXCLUDE_GATES,
     score_candidate_source,
@@ -121,6 +122,70 @@ class ParallelConfigScorer:
             result = score_config_candidate(
                 text,
                 op=self.op,
+                device=self.device,
+                shape=self.shape,
+                timeout_s=self.timeout_s,
+                exclude_gates=self.exclude_gates,
+                reward_shaping=self.reward_shaping,
+                measure_speedup=self.measure_speedup,
+                extra_env={"CUDA_VISIBLE_DEVICES": str(gpu)},
+            )
+        finally:
+            self._slots.put(gpu)
+        result["gpu_id"] = gpu
+        return result
+
+    def score_batch(self, texts: list[str]) -> list[dict[str, Any]]:
+        """Score *texts* concurrently; results align with the input order."""
+        if not texts:
+            return []
+        n_workers = len(self.gpu_ids) * self.workers_per_gpu
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            return list(pool.map(self._score_one, texts))
+
+    def __call__(self, texts: list[str]) -> list[dict[str, Any]]:
+        return self.score_batch(texts)
+
+
+@dataclass
+class ParallelEditScorer:
+    """Batch scorer over scoring GPUs for the E2.f edit track.
+
+    Mirrors :class:`ParallelConfigScorer`, but each candidate is a SEARCH/REPLACE
+    edit applied to the ``base_variant`` kernel source and graded through the
+    untrusted path (:func:`score_edit_candidate`) at a fixed target ``shape``.
+    Generation is larger than a config but far smaller than full-source-gen;
+    scoring (the gate battery + speedup bench per candidate) is still the
+    bottleneck, so the K edits are farmed across GPUs.
+    """
+
+    op: str
+    gpu_ids: tuple[int, ...]
+    shape: ShapeSpec | None = None
+    base_variant: str = "triton"
+    device: str = "cuda"
+    timeout_s: float = 300.0
+    exclude_gates: tuple[str, ...] = DEFAULT_EXCLUDE_GATES
+    reward_shaping: str = "none"
+    measure_speedup: bool = True
+    workers_per_gpu: int = 1
+    _slots: queue.Queue[int] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.gpu_ids:
+            raise ValueError("ParallelEditScorer needs at least one GPU id")
+        self._slots = queue.Queue()
+        for _ in range(self.workers_per_gpu):
+            for gpu in self.gpu_ids:
+                self._slots.put(gpu)
+
+    def _score_one(self, text: str) -> dict[str, Any]:
+        gpu = self._slots.get()
+        try:
+            result = score_edit_candidate(
+                text,
+                op=self.op,
+                base_variant=self.base_variant,
                 device=self.device,
                 shape=self.shape,
                 timeout_s=self.timeout_s,

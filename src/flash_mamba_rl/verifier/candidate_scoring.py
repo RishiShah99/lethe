@@ -344,6 +344,8 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
     if reward_shaping == "view_fraction":
         fail_fast = False
     spec = _OP_VERIFIERS[op_name]
+    raw_shape = config.get("shape")
+    bench_shape = (int(raw_shape[0]), int(raw_shape[1]), int(raw_shape[2])) if raw_shape else None
 
     violations = _ast_screen(source)
     if violations:
@@ -370,7 +372,9 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
         fn = getattr(mod, spec.entry_point, None)
         if fn is None or not callable(fn):
             return _failure("no_entrypoint", f"module defines no callable {spec.entry_point}")
-        return _gate_and_reward(fn, spec, config, op_name, device, exclude, fail_fast)
+        return _gate_and_reward(
+            fn, spec, config, op_name, device, exclude, fail_fast, bench_shape=bench_shape
+        )
     finally:
         with contextlib.suppress(OSError):
             os.unlink(path)
@@ -524,14 +528,18 @@ def score_candidate_source(
     fail_fast: bool = True,
     reward_shaping: str = "none",
     measure_speedup: bool = False,
+    shape: tuple[int, int, int] | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Score one candidate source in an isolated subprocess (parent-side API).
 
     Sandbox-level failures (hangs, segfaults, CUDA context kills) normalize
     to reward 0.0 — a kernel that takes the process down cannot earn the
-    contract-failure floor. ``extra_env`` pins the sandbox (e.g.
-    ``CUDA_VISIBLE_DEVICES``) for multi-GPU scoring workers.
+    contract-failure floor. ``shape`` (batch, seq_len, width) pins the speedup
+    bench shape — the lever the edit-RL track is rewarded on, since the shipped
+    default is optimal only near the training shape; ``None`` keeps op_bench's
+    default shape. ``extra_env`` pins the sandbox (e.g. ``CUDA_VISIBLE_DEVICES``)
+    for multi-GPU scoring workers.
     """
     res = run_in_subprocess(
         "flash_mamba_rl.verifier.candidate_scoring",
@@ -545,6 +553,7 @@ def score_candidate_source(
                 "fail_fast": fail_fast,
                 "reward_shaping": reward_shaping,
                 "measure_speedup": measure_speedup,
+                "shape": list(shape) if shape is not None else None,
             },
         ),
         timeout_s=timeout_s,

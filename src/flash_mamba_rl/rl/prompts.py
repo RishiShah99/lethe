@@ -11,6 +11,7 @@ they are the single source of truth.
 from __future__ import annotations
 
 from flash_mamba_rl.kernels.autotune import SEARCH_GRID, ShapeSpec
+from flash_mamba_rl.rl.sft_targets import target_source
 
 _C1_PROMPT = """\
 Write a high-performance Triton kernel implementing the Mamba selective \
@@ -573,4 +574,60 @@ def build_config_prompt(op_name: str, shape: ShapeSpec) -> str:
         seq_len=shape.seq_len,
         width=shape.width,
         knobs=knobs,
+    )
+
+
+# E2.f — the edit-emission action space. Unlike config emission, the action can
+# change the kernel SOURCE, so it can discover structural wins — but the edited
+# source is re-graded by the full untrusted gate battery, so it stays
+# reference-faithful by verification, not by construction.
+_EDIT_PROMPT_TEMPLATE = """\
+You are optimizing a verified-correct kernel implementing `{op}` on an NVIDIA
+B200 GPU. Make it FASTER at this exact shape while keeping it numerically
+faithful to the float32 reference it is graded against:
+
+    batch = {batch}, seq_len = {seq_len}, d_model = {width}
+
+Current kernel source:
+
+```python
+{base}
+```
+
+Express every change as a git-conflict-style SEARCH/REPLACE block:
+
+<<<<<<< SEARCH
+<exact lines copied from the source above>
+=======
+<replacement lines>
+>>>>>>> REPLACE
+
+Rules:
+- Each SEARCH must match the source above EXACTLY and occur exactly once; you
+  may emit several blocks and they apply in order.
+- The edited kernel is re-graded by a 12-gate contract verifier against a
+  float32 eager reference. An edit that changes the result, fails to compile,
+  spills past the register budget, or OOMs scores zero.
+- Speedup over the hand-written kernel at this shape is rewarded ONLY after the
+  full gate battery re-passes. Correctness first.
+- The module must stay self-contained: do NOT import the reference, the official
+  Mamba kernels, or any project package.
+
+Reply with ONLY the SEARCH/REPLACE blocks. No prose, no full-file rewrite.
+"""
+
+
+def build_edit_prompt(op_name: str, shape: ShapeSpec, *, base_variant: str = "triton") -> str:
+    """Edit-emission prompt for *op_name* at *shape* (KeyError if unknown).
+
+    Embeds the self-contained ``base_variant`` SFT target as the source to edit;
+    ``"triton"`` is the kernel optimised on the box, ``"eager"`` the CPU base.
+    """
+    base = target_source(op_name, base_variant)
+    return _EDIT_PROMPT_TEMPLATE.format(
+        op=op_name,
+        batch=shape.batch,
+        seq_len=shape.seq_len,
+        width=shape.width,
+        base=base,
     )
