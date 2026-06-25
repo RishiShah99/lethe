@@ -1,6 +1,6 @@
 """Box driver: DDP PTB-XL training of the ~1.1B Mamba-1 SISO classifier (Phase F.3).
 
-Runs on the 8× B200 under torchrun; consumes the Phase C kernels via
+Runs on the 8x B200 under torchrun; consumes the Phase C kernels via
 ``Mamba3ECGClassifier`` (CUDA path) and the real ``PTBXL`` dataset. Spot-resilient
 via ``--resume`` (MedicalTrainer's atomic trainer_state.pt). Logs throughput and a
 rough MFU per log interval.
@@ -37,6 +37,12 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
+    # #19 regularization knobs.
+    p.add_argument("--config", default="b1", choices=("b1", "b_mid"))
+    p.add_argument("--dropout", type=float, default=None, help="override config dropout")
+    p.add_argument("--lr-decay", action="store_true", help="cosine LR decay after warmup")
+    p.add_argument("--min-lr-ratio", type=float, default=0.1)
+    p.add_argument("--augment", action="store_true", help="train-only ECG augmentation")
     p.add_argument("--sampling-rate", type=int, default=100, choices=(100, 500))
     p.add_argument("--label-set", default="superclass", choices=("superclass", "subclass"))
     p.add_argument("--checkpoint-dir", default="ptbxl_out")
@@ -86,6 +92,7 @@ def main() -> None:
         sampling_rate=args.sampling_rate,
         split="train",
         label_set=args.label_set,
+        augment=args.augment,
     )
     val_ds = PTBXL(
         args.data_root,
@@ -94,21 +101,22 @@ def main() -> None:
         label_set=args.label_set,
     )
 
-    cfg = Mamba3Config.b1()
+    base = Mamba3Config.b_mid() if args.config == "b_mid" else Mamba3Config.b1()
     # The scan requires T % chunk_size == 0 (model docstring); T = sampling_rate*10
     # (1000 @ 100 Hz, 5000 @ 500 Hz). The default chunk_size=64 divides neither.
     # Pick the largest divisor <= 64 for good tiling (50 divides both 1000 and 5000).
     seq_t = args.sampling_rate * 10
     chunk_size = next(k for k in range(64, 0, -1) if seq_t % k == 0)
     cfg = Mamba3Config(
-        d_model=cfg.d_model,
-        n_layers=cfg.n_layers,
-        d_state=cfg.d_state,
-        conv_kernel_size=cfg.conv_kernel_size,
+        d_model=base.d_model,
+        n_layers=base.n_layers,
+        d_state=base.d_state,
+        conv_kernel_size=base.conv_kernel_size,
         chunk_size=chunk_size,
-        eps=cfg.eps,
+        eps=base.eps,
         n_classes=train_ds.n_classes,
         n_leads=12,
+        dropout=args.dropout if args.dropout is not None else base.dropout,
     )
     # fp32: bf16 SSM training NaNs immediately here (the recurrence + RMSNorm are
     # bf16-fragile) and the 1.1B model leaves ample B200 memory in fp32. bf16/MFU
@@ -119,6 +127,8 @@ def main() -> None:
         total_steps=args.steps,
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
+        lr_decay=args.lr_decay,
+        min_lr_ratio=args.min_lr_ratio,
         device=str(device),
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
