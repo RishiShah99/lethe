@@ -81,11 +81,25 @@ class Mamba3Config:
     eps: float = 1e-5
     n_classes: int = 5
     n_leads: int = 12
+    # Regularization (#19): dropout on each block's output (residual stream) and
+    # on the pooled representation before the head. 0.0 = no dropout, which makes
+    # the modules identity ⇒ the default path is byte-identical to the pre-#19
+    # model (every existing GPU/CPU parity test still holds).
+    dropout: float = 0.0
 
     @classmethod
     def tiny(cls) -> Mamba3Config:
         """CPU-testable config; small enough to forward in seconds."""
         return cls(d_model=32, n_layers=2, d_state=8, conv_kernel_size=4, chunk_size=8)
+
+    @classmethod
+    def b_mid(cls) -> Mamba3Config:
+        """~160M right-sized config (#19 overfit fix): the 1.1B b1 over-parameterizes
+        ~17k PTB-XL labels (val loss rose at step 2500). Narrower + shallower, paired
+        with dropout, to trade ceiling for generalization."""
+        return cls(
+            d_model=2048, n_layers=12, d_state=64, conv_kernel_size=4, chunk_size=64, dropout=0.2
+        )
 
     @classmethod
     def b1(cls) -> Mamba3Config:
@@ -148,6 +162,7 @@ class _MambaBlock(nn.Module):
         self.A_log = nn.Parameter(a_log.contiguous())
         self.D_skip = nn.Parameter(torch.ones(D))
         self.norm_weight = nn.Parameter(torch.ones(D))
+        self.drop = nn.Dropout(cfg.dropout)
         self._reset_conv()
 
     def _reset_conv(self) -> None:
@@ -193,8 +208,9 @@ class _MambaBlock(nn.Module):
             chunk_size=cfg.chunk_size,
         )  # [B, L_out, D]
 
-        # Residual: add input at L_out positions (strip the pad from input too)
-        return y + x[:, K - 1 :, :]
+        # Residual: add input at L_out positions (strip the pad from input too).
+        # Dropout on the block's contribution (identity at p=0).
+        return cast(Tensor, self.drop(y) + x[:, K - 1 :, :])
 
 
 class Mamba3ECGClassifier(nn.Module):
@@ -226,6 +242,7 @@ class Mamba3ECGClassifier(nn.Module):
         D = cfg.d_model
         self.lead_proj = nn.Linear(cfg.n_leads, D)
         self.blocks = nn.ModuleList([_MambaBlock(cfg) for _ in range(cfg.n_layers)])
+        self.dropout = nn.Dropout(cfg.dropout)
         self.head = nn.Linear(D, cfg.n_classes)
 
     def forward(self, ecg: Tensor) -> Tensor:
@@ -244,7 +261,7 @@ class Mamba3ECGClassifier(nn.Module):
             pad = x.new_zeros(x.shape[0], K - 1, x.shape[2])
             x = block(torch.cat([pad, x], dim=1))  # [B, T, D] each iteration
 
-        pooled = x.mean(dim=1)  # [B, D]
+        pooled = self.dropout(x.mean(dim=1))  # [B, D]
         return cast(Tensor, self.head(pooled))  # [B, n_classes]
 
     def param_count(self) -> int:

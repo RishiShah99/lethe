@@ -50,6 +50,52 @@ def _trainer(tmp_path: object, **overrides: object) -> MedicalTrainer:
     return MedicalTrainer(model, cfg)
 
 
+class TestLRSchedule:
+    def test_cosine_decay_after_warmup(self, tmp_path: object) -> None:
+        torch.manual_seed(0)
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        cfg = MedicalTrainConfig(
+            device="cpu",
+            checkpoint_dir=str(tmp_path),
+            total_steps=12,
+            warmup_steps=3,
+            learning_rate=1.0,
+            lr_decay=True,
+            min_lr_ratio=0.1,
+        )
+        trainer = MedicalTrainer(model, cfg)
+        ecg = torch.randn(2, 12, 64)
+        labels = (torch.rand(2, 5) > 0.5).float()
+        lrs: list[float] = []
+        for _ in range(12):
+            trainer.train_step(ecg, labels)
+            lrs.append(trainer.optimizer.param_groups[0]["lr"])
+        assert lrs[0] < lrs[2]  # warmup ramps up
+        assert abs(lrs[2] - 1.0) < 1e-9  # peak at end of warmup
+        post = lrs[3:]
+        assert all(post[i] >= post[i + 1] - 1e-9 for i in range(len(post) - 1))  # monotone decay
+        assert lrs[-1] < 0.5 and lrs[-1] >= 0.1 - 1e-6  # decays toward min_lr_ratio*peak
+
+    def test_decay_off_is_flat_after_warmup(self, tmp_path: object) -> None:
+        torch.manual_seed(0)
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        cfg = MedicalTrainConfig(
+            device="cpu",
+            checkpoint_dir=str(tmp_path),
+            total_steps=12,
+            warmup_steps=2,
+            learning_rate=1.0,
+        )
+        trainer = MedicalTrainer(model, cfg)
+        ecg = torch.randn(2, 12, 64)
+        labels = (torch.rand(2, 5) > 0.5).float()
+        lrs: list[float] = []
+        for _ in range(6):
+            trainer.train_step(ecg, labels)
+            lrs.append(trainer.optimizer.param_groups[0]["lr"])
+        assert all(abs(x - 1.0) < 1e-9 for x in lrs[2:])  # flat at peak (default off)
+
+
 class TestMacroAUC:
     def test_perfect_ranking_is_one(self) -> None:
         labels = torch.tensor([[0.0], [0.0], [1.0], [1.0]])

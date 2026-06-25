@@ -103,6 +103,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         split: Literal["train", "val", "test"] = "train",
         label_set: Literal["superclass", "subclass"] = "superclass",
         min_likelihood: float = 0.0,
+        augment: bool = False,
     ) -> None:
         if sampling_rate not in (100, 500):
             raise ValueError(f"sampling_rate must be 100 or 500, got {sampling_rate}")
@@ -116,6 +117,9 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         self._split = split
         self._label_set = label_set
         self._min_likelihood = min_likelihood
+        # #19: train-only augmentation against overfit. Off for val/test so the
+        # eval signal is the clean record. Applied after the per-lead z-score.
+        self._augment = augment
 
         db_path = self._root / "ptbxl_database.csv"
         scp_path = self._root / "scp_statements.csv"
@@ -203,4 +207,25 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         mean = sig_t.mean(dim=1, keepdim=True)
         std = sig_t.std(dim=1, keepdim=True).clamp_min(1e-6)
         sig_t = (sig_t - mean) / std
+        if self._augment:
+            sig_t = self._augment_signal(sig_t)
         return sig_t, self._labels[idx]
+
+    @staticmethod
+    def _augment_signal(sig: torch.Tensor) -> torch.Tensor:
+        """Light ECG augmentation on a z-scored (12, T) signal (train only).
+
+        Composes per-signal amplitude jitter, additive Gaussian noise, a circular
+        time shift, and occasional lead masking — perturbations that preserve the
+        diagnostic morphology while breaking memorization of exact waveforms.
+        Uses the global torch RNG, which DataLoader seeds per worker.
+        """
+        n_leads, t = sig.shape
+        sig = sig * (1.0 + 0.1 * (torch.rand(n_leads, 1) - 0.5) * 2.0)  # +/-10% per-lead scale
+        sig = sig + 0.08 * torch.randn_like(sig)  # additive noise
+        shift = int(torch.randint(-t // 50, t // 50 + 1, (1,)).item())  # +/-2% circular shift
+        if shift:
+            sig = torch.roll(sig, shifts=shift, dims=1)
+        if float(torch.rand(1).item()) < 0.3:  # drop one lead 30% of the time
+            sig[int(torch.randint(0, n_leads, (1,)).item())] = 0.0
+        return sig

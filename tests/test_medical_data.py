@@ -100,3 +100,24 @@ class TestValidation:
     def test_missing_files(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             PTBXL(tmp_path, sampling_rate=100)
+
+
+class TestAugment:
+    """The train-only augmentation (_augment_signal) is a pure tensor op — testable
+    without WFDB records."""
+
+    def test_preserves_shape_and_finite(self) -> None:
+        import torch
+
+        torch.manual_seed(0)
+        sig = torch.randn(12, 1000)
+        out = PTBXL._augment_signal(sig)
+        assert out.shape == sig.shape
+        assert torch.isfinite(out).all()
+
+    def test_changes_signal(self) -> None:
+        import torch
+
+        torch.manual_seed(0)
+        sig = torch.randn(12, 1000)
+        assert not torch.allclose(PTBXL._augment_signal(sig), sig)

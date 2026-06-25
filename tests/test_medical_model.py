@@ -69,3 +69,34 @@ class TestParamCount:
         cfg = Mamba3Config(d_model=256, n_layers=4, d_state=32, chunk_size=8)
         model = Mamba3ECGClassifier(cfg)
         assert model.param_count() == cfg.analytic_param_count()
+
+
+class TestRegularization:
+    def test_dropout_p0_is_identity(self) -> None:
+        # Default dropout 0.0 -> train and eval forwards agree (no params added).
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        ecg = torch.randn(2, 12, 64)
+        model.train()
+        a = model(ecg)
+        model.eval()
+        b = model(ecg)
+        assert torch.allclose(a, b, atol=1e-6)
+        assert model.param_count() == Mamba3Config.tiny().analytic_param_count()
+
+    def test_dropout_active_in_train_mode(self) -> None:
+        cfg = Mamba3Config(d_model=32, n_layers=2, d_state=8, chunk_size=8, dropout=0.5)
+        model = Mamba3ECGClassifier(cfg)
+        ecg = torch.randn(2, 12, 64)
+        model.train()
+        torch.manual_seed(0)
+        a = model(ecg)
+        torch.manual_seed(1)
+        b = model(ecg)
+        # Different dropout masks -> different train outputs; eval is deterministic.
+        assert not torch.allclose(a, b)
+        model.eval()
+        assert torch.allclose(model(ecg), model(ecg))
+
+    def test_b_mid_param_count_in_range(self) -> None:
+        n = Mamba3Config.b_mid().analytic_param_count()
+        assert 1.0e8 < n < 2.5e8  # ~160M, well under b1's 1.1B

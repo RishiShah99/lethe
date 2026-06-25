@@ -21,6 +21,7 @@ loop stays import-light.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from collections.abc import Iterable, Iterator
@@ -82,6 +83,11 @@ class MedicalTrainConfig:
     warmup_steps: int = 500
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
+    # #19: cosine LR decay after warmup, peak -> min_lr_ratio*peak over the
+    # remaining steps. Default off keeps the flat-after-warmup schedule the
+    # existing tests pin.
+    lr_decay: bool = False
+    min_lr_ratio: float = 0.1
     device: str = "cpu"
     checkpoint_dir: str = "checkpoints/medical"
     save_every: int = 100
@@ -128,14 +134,20 @@ class MedicalTrainer:
     def train_step(self, ecg: Tensor, labels: Tensor) -> tuple[float, float]:
         """One optimizer step. Returns ``(loss, grad_norm)``."""
         self.model.train()
-        # Linear LR warmup (stateless — derived from the checkpointed step_idx):
-        # a 1.1B SSM from scratch at full LR spikes the first updates into NaN.
-        warm = self.config.warmup_steps
-        lr = (
-            self.config.learning_rate * min(1.0, (self.step_idx + 1) / warm)
-            if warm
-            else (self.config.learning_rate)
-        )
+        # Stateless schedule (derived from the checkpointed step_idx): linear
+        # warmup — a 1.1B SSM from scratch at full LR spikes the first updates
+        # into NaN — then optional cosine decay to min_lr_ratio*peak (#19).
+        cfg = self.config
+        warm = cfg.warmup_steps
+        step = self.step_idx + 1
+        if warm and step <= warm:
+            lr = cfg.learning_rate * step / warm
+        elif cfg.lr_decay and cfg.total_steps > warm:
+            progress = min(1.0, max(0.0, (step - warm) / max(1, cfg.total_steps - warm)))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            lr = cfg.learning_rate * (cfg.min_lr_ratio + (1.0 - cfg.min_lr_ratio) * cosine)
+        else:
+            lr = cfg.learning_rate
         for group in self.optimizer.param_groups:
             group["lr"] = lr
         ecg = ecg.to(self.device, self._in_dtype)
