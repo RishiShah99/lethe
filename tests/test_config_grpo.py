@@ -9,18 +9,20 @@ advantages -> loss -> update path runs and parameter movement is observable).
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec
+from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec, validate
 from flash_mamba_rl.rl.config_grpo import (
     build_config_scorer,
     extract_config,
     parse_config,
     score_config_candidate,
+    serial_seed_completions,
 )
 from flash_mamba_rl.rl.prompts import build_config_prompt
 from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
@@ -234,3 +236,97 @@ class TestLoopReuseWithConfigExtractor:
         assert metrics.loss is not None
         assert metrics.mean_reward == pytest.approx(0.55)
         assert not torch.equal(policy.theta.detach(), before)
+
+
+# --- #14 forced serial-seeding ---------------------------------------------
+
+CHUNK_PARALLEL = '```json\n{"scan_mode": "chunk_parallel", "chunk_len": 256}\n```'
+
+
+def _serial_pref_scorer(text: str) -> dict[str, Any]:
+    """A scorer that rewards serial over chunk_parallel (the saturated regime)."""
+    serial = '"serial"' in text
+    return {
+        "status": "scored",
+        "reward": 1.0 if serial else 0.1,
+        "compiled": True,
+        "contracts_passed": True,
+        "gates": {},
+    }
+
+
+class TestSerialSeedCompletions:
+    def test_scan_mode_op_yields_grid_legal_serial_configs(self) -> None:
+        seeds = serial_seed_completions("backward_selective_scan", 3)
+        assert len(seeds) == 3
+        cfgs = [parse_config(extract_config(s) or "") for s in seeds]
+        assert all(c is not None and c.scan_mode == "serial" for c in cfgs)
+        # Each seed pins a distinct grid num_warps; all are grid-legal.
+        assert {c.num_warps for c in cfgs if c is not None} == {2, 4, 8}
+        assert all(validate("backward_selective_scan", c) == [] for c in cfgs if c is not None)
+
+    def test_no_scan_mode_op_yields_nothing(self) -> None:
+        for op in ("mimo_backward", "complex_scan_rope", "fused_block_forward"):
+            assert serial_seed_completions(op, 3) == []
+
+    def test_zero_or_negative_yields_nothing(self) -> None:
+        assert serial_seed_completions("forward_chunked_scan", 0) == []
+        assert serial_seed_completions("forward_chunked_scan", -1) == []
+
+    def test_warps_cycle_when_n_exceeds_grid(self) -> None:
+        seeds = serial_seed_completions("forward_chunked_scan", 4)
+        warps = [parse_config(extract_config(s) or "").num_warps for s in seeds]  # type: ignore[union-attr]
+        assert warps == [2, 4, 8, 2]
+
+
+class TestSerialSeedingInLoop:
+    def test_unseeded_single_mode_group_is_degenerate(self, tmp_path: Any) -> None:
+        # The #14 failure: a chunk_parallel-only group has one reward value, so
+        # the update skips (loss=None) and no serial gradient ever forms.
+        policy = StubTrainablePolicy([CHUNK_PARALLEL])
+        config = TrainLoopConfig(
+            op="forward_chunked_scan",
+            n_per_prompt=6,
+            total_steps=1,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            device="cpu",
+        )
+        loop = GRPOTrainingLoop(
+            config, policy, prompt="P", extractor=extract_config, scorer=_serial_pref_scorer
+        )
+        assert loop.step().loss is None
+
+    def test_seeds_break_degeneracy_and_record_serial(self, tmp_path: Any) -> None:
+        seeds = serial_seed_completions("forward_chunked_scan", 2)
+        policy = StubTrainablePolicy([CHUNK_PARALLEL])
+        ckpt = tmp_path / "ckpt"
+        config = TrainLoopConfig(
+            op="forward_chunked_scan",
+            n_per_prompt=6,
+            total_steps=1,
+            checkpoint_dir=str(ckpt),
+            device="cpu",
+        )
+        before = policy.theta.detach().clone()
+        loop = GRPOTrainingLoop(
+            config,
+            policy,
+            prompt="P",
+            extractor=extract_config,
+            scorer=_serial_pref_scorer,
+            seed_completions=seeds,
+        )
+        metrics = loop.step()
+        # Seeds make the group non-degenerate -> a real update happens.
+        assert metrics.loss is not None
+        assert not torch.equal(policy.theta.detach(), before)
+
+        rows = [json.loads(line) for line in (ckpt / "rollouts.jsonl").read_text().splitlines()]
+        seeded = [r for r in rows if r["seeded"]]
+        assert len(seeded) == 2
+        assert all(r["idx"] in (0, 1) for r in seeded)
+        assert all(r["reward"] == 1.0 for r in seeded)
+        assert all('"serial"' in r["source"] for r in seeded)
+        rest = [r for r in rows if not r["seeded"]]
+        assert len(rest) == 4
+        assert all(r["reward"] == 0.1 for r in rest)

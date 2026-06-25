@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import fields
 from typing import Any
 
-from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec
+from flash_mamba_rl.kernels.autotune import SEARCH_GRID, KernelConfig, ShapeSpec
 from flash_mamba_rl.verifier.candidate_scoring import (
     DEFAULT_EXCLUDE_GATES,
     score_candidate_config,
@@ -163,3 +163,38 @@ def build_config_scorer(
         )
 
     return scorer
+
+
+def serial_seed_completions(op: str, n: int) -> list[str]:
+    """``n`` well-formed ``scan_mode="serial"`` emissions for *op* (``[]`` if it
+    has no ``scan_mode`` knob).
+
+    Forced-exploration seeds for the config-RL group (#14). A fresh 32B prior
+    commits to ``chunk_parallel`` at every shape, so a sampled group never
+    contains a serial config and GRPO has no gradient toward serial — it cannot
+    learn the saturated-shape crossover the boundary sweep proved exists
+    (``results/scan_mode_boundary.json``). Replacing the first ``n`` of the K
+    sampled completions with these makes the reward see serial: at a saturated
+    shape serial out-scores chunk_parallel so its group-relative advantage is
+    positive (policy pushed toward serial); at long-L it loses so the advantage
+    is negative (pushed away). That contrast is the learned boundary. The
+    injection is GRPO-sound because the loop sets ``old_lp = new_lp.detach()``,
+    so the step-0 importance ratio is 1 even for these off-policy samples.
+
+    Each seed pins a distinct ``num_warps`` from the op's grid (serial's main
+    perf knob) so the scorer can surface the best serial config rather than
+    betting on one; all are grid-legal, so ``autotune.validate`` passes them.
+    """
+    if n <= 0:
+        return []
+    grid = SEARCH_GRID.get(op, {})
+    if "scan_mode" not in grid:
+        return []
+    warps: list[int] = [int(w) for w in grid.get("num_warps", ())]
+    out: list[str] = []
+    for i in range(n):
+        cfg: dict[str, int | str] = {"scan_mode": "serial"}
+        if warps:
+            cfg["num_warps"] = warps[i % len(warps)]
+        out.append(f"```json\n{json.dumps(cfg)}\n```")
+    return out

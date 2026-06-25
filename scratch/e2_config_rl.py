@@ -83,6 +83,14 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--kl-coef", type=float, default=0.04)
     ap.add_argument("--temperature", type=float, default=1.3)  # #14: widen mode exploration
+    ap.add_argument(
+        "--serial-seeds",
+        type=int,
+        default=3,
+        help="#14: inject this many forced scan_mode=serial configs into each "
+        "group (0 = off). Gives GRPO a serial gradient the chunk_parallel-prior "
+        "policy never samples; no-op on ops without a scan_mode knob.",
+    )
     ap.add_argument("--max-new-tokens", type=int, default=256, help="a config is tiny")
     ap.add_argument("--train-gpu", type=int, default=0)
     ap.add_argument("--score-gpus", default="1,2,3,4,5,6,7")
@@ -93,7 +101,7 @@ def main() -> None:
     args = ap.parse_args()
 
     from flash_mamba_rl.kernels.autotune import ShapeSpec
-    from flash_mamba_rl.rl.config_grpo import extract_config
+    from flash_mamba_rl.rl.config_grpo import extract_config, serial_seed_completions
     from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
     from flash_mamba_rl.rl.parallel_scoring import ParallelConfigScorer
     from flash_mamba_rl.rl.prompts import build_config_prompt
@@ -140,13 +148,17 @@ def main() -> None:
             checkpoint_dir=level_dir,
             save_every=1,
         )
+        seeds = serial_seed_completions(op, args.serial_seeds)
         loop = GRPOTrainingLoop(
             config,
             policy,
             prompt=prompt,
             extractor=extract_config,
             batch_scorer=scorer,
+            seed_completions=seeds,
         )
+        if seeds:
+            print(f"[{op} B{b}L{length}W{w}] {len(seeds)} serial seeds/group", flush=True)
         if args.resume and loop.load_trainer_state():
             print(f"[{op} B{b}L{length}W{w}] resume at step {loop.step_idx}", flush=True)
         if loop.step_idx >= args.steps:

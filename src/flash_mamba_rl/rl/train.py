@@ -129,6 +129,7 @@ class GRPOTrainingLoop:
         batch_scorer: Callable[[list[str]], list[dict[str, Any]]] | None = None,
         gen_pool: Any = None,
         extractor: Callable[[str], str | None] | None = None,
+        seed_completions: Sequence[str] | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -146,6 +147,13 @@ class GRPOTrainingLoop:
         # fenced code block (source-generation track); the E2.c config track
         # passes an extractor that pulls the fenced KernelConfig JSON instead.
         self._extractor = extractor if extractor is not None else self._default_extractor
+        # Forced-exploration seeds (#14): each step replaces the first
+        # len(seed_completions) sampled completions with these fixed strings,
+        # so a group the policy would fill with one mode always carries the
+        # other. Sound because old_lp = new_lp.detach() makes the step-0 ratio
+        # 1 for the injected (off-policy) samples; their log-probs/advantages
+        # then flow exactly like sampled ones.
+        self._seed_completions = list(seed_completions) if seed_completions else []
         self.optimizer = torch.optim.AdamW(
             list(policy.trainable_parameters()), lr=config.learning_rate
         )
@@ -178,6 +186,9 @@ class GRPOTrainingLoop:
         else:
             generator = self.policy
         completions = generator.generate(self.prompt, cfg.n_per_prompt)
+        n_seed = min(len(self._seed_completions), len(completions))
+        if n_seed:
+            completions[:n_seed] = self._seed_completions[:n_seed]
 
         sources = [self._extractor(c) for c in completions]
         to_score = [(idx, src) for idx, src in enumerate(sources) if src is not None]
@@ -194,6 +205,7 @@ class GRPOTrainingLoop:
                     {
                         "step": self.step_idx + 1,
                         "idx": idx,
+                        "seeded": idx < n_seed,
                         "status": "no_code_block",
                         "reward": 0.0,
                         "compiled": False,
@@ -205,6 +217,7 @@ class GRPOTrainingLoop:
                     {
                         "step": self.step_idx + 1,
                         "idx": idx,
+                        "seeded": idx < n_seed,
                         "source": source,
                         **score_by_idx[idx],
                     }
@@ -228,6 +241,12 @@ class GRPOTrainingLoop:
             append_eos: bool | list[bool] = (
                 list(terminated) if terminated and len(terminated) == len(completions) else True
             )
+            # A seed is a complete emission (it ends with a closed fence), so
+            # the stop decision is part of its trajectory — override the
+            # generator's terminated flag for the positions we overwrote.
+            if n_seed and isinstance(append_eos, list):
+                for i in range(n_seed):
+                    append_eos[i] = True
             with torch.no_grad():
                 ref_lp, _ = self.policy.completion_log_probs(
                     self.prompt, completions, use_adapter=False, append_eos=append_eos
