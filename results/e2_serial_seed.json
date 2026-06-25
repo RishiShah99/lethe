@@ -1,0 +1,45 @@
+{
+  "experiment": "#14 config-RL serial-seeding (forced serial exploration to learn the scan_mode crossover)",
+  "code": "b14984a",
+  "runs": [
+    {
+      "name": "run1",
+      "settings": {"steps": 25, "k": 16, "serial_seeds": 3, "kl_coef": 0.04, "temperature": 1.3},
+      "levels": [
+        {
+          "op": "forward_chunked_scan", "batch": 2, "seq_len": 16384, "width": 1024,
+          "oracle_winner": "chunk_parallel",
+          "late_nonseeded_modes": {"chunk_parallel": 104, "serial": 0},
+          "learned_mode": "chunk_parallel",
+          "best_speedup": 1.1671, "best_speedup_mode": "chunk_parallel",
+          "verdict": "correct: policy autonomously selects chunk_parallel where it wins, beats shipped default 1.167x"
+        },
+        {
+          "op": "forward_chunked_scan", "batch": 8, "seq_len": 512, "width": 4096,
+          "oracle_winner": "serial",
+          "late_nonseeded_modes": {"chunk_parallel": 104, "serial": 0},
+          "learned_mode": "chunk_parallel",
+          "best_speedup": 1.0321, "best_speedup_mode": "serial",
+          "verdict": "FAIL: seeding surfaced serial as optimal (1.032x) and made groups non-degenerate (the prior-run failure is fixed), but 3 seeds / KL 0.04 / 25 steps did not move the policy off its chunk_parallel prior"
+        }
+      ]
+    },
+    {
+      "name": "sat2",
+      "settings": {"steps": 40, "k": 16, "serial_seeds": 8, "kl_coef": 0.02, "temperature": 1.3},
+      "levels": [
+        {
+          "op": "forward_chunked_scan", "batch": 8, "seq_len": 512, "width": 4096,
+          "oracle_winner": "serial",
+          "early_half_nonseeded_modes": {"chunk_parallel": 131, "serial": 28, "default": 1},
+          "late10_nonseeded_modes": {"default": 79, "serial": 1, "chunk_parallel": 0},
+          "learned_mode": "default (= serial via the shipped shape-gated selector at this shape)",
+          "best_speedup": 1.131, "best_speedup_mode": "serial",
+          "verdict": "PARTIAL WIN: stronger seeding (8/16) + halved KL moved the policy OFF chunk_parallel at the saturated shape (early 131 cp -> late 0 cp). It converged to the empty config {}, which the shipped selector resolves to serial here, so the policy effectively selects the correct mode. It did not converge to the optimal EXPLICIT serial config (best explicit serial = 1.131x); it defers to the already-serial default."
+        }
+      ]
+    }
+  ],
+  "conclusion": "Serial-seeding fixes the prior-run failure: groups update non-degenerately and serial is evaluated every step. The policy learns the shape->mode boundary DIRECTION: it selects chunk_parallel at long-L (1.167x) and abandons chunk_parallel at the saturated crossover, deferring to the shipped selector's serial default (best explicit serial 1.131x). The strongest claim (policy autonomously emits the optimal explicit serial config) is NOT met at the saturated shape under the budgets tried -- it converges to {} because the shape-gated default already picks serial there, so {} is reward-competitive and the highest-prior emission. Honest framing: RL-as-autotuner beats the shipped kernel at long-L and learns the crossover direction; the shipped shape-gated selector captures the saturated optimum deterministically.",
+  "raw": "rollouts on gpu-flash-mamba-rl boot disk (europe-north1-b): e2_config_seed/ (run1), e2_config_sat2/ (sat2)"
+}
