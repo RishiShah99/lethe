@@ -1,0 +1,606 @@
+{
+  "claim": "ours backward vs crippled official Mamba-3 backward (mamba3_siso_bwd_kernel_dqkv)",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.12.0+cu130",
+    "triton": "3.7.0",
+    "mamba_ssm": "2.3.2.post1",
+    "python": "3.12.3"
+  },
+  "flop_model": {
+    "fwd_flops_per_elem": 8,
+    "bwd_flops_per_elem": 16,
+    "peak_tflops": {
+      "float32": 1100.0,
+      "bfloat16": 2250.0
+    },
+    "note": "applied to OURS only (achieved_tflops/mfu); the official op is a richer Mamba-3 chunk-scan, not FLOP-matched \u2014 it reports wall-clock only"
+  },
+  "runs": [
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 512,
+        "d_model": 1024,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "float32",
+      "bwd_flops": 2147483648,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 8.302144050598145,
+          "std_ms": 0.0110407024697,
+          "min_ms": 8.286591529846191,
+          "max_ms": 8.338080406188965,
+          "n_trials": 50.0,
+          "achieved_tflops": 0.2586661511667315,
+          "mfu": 0.00023515104651521042
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 10.00707197189331,
+          "std_ms": 0.01233152637330395,
+          "min_ms": 9.977791786193848,
+          "max_ms": 10.043999671936035,
+          "n_trials": 50.0,
+          "achieved_tflops": 0.21459660268574066,
+          "mfu": 0.0001950878206234006
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 0.8595519959926605,
+          "std_ms": 0.010159745210242491,
+          "min_ms": 0.8372480273246765,
+          "max_ms": 0.8829119801521301,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 1.7755520343780518,
+          "std_ms": 0.017791394781715427,
+          "min_ms": 1.73580801486969,
+          "max_ms": 1.835744023323059,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 32,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 8.302144050598145,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.10353373667742279,
+        "official_mamba3_module_bwd": 0.2138666859496528
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 512,
+        "d_model": 1024,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "bfloat16",
+      "bwd_flops": 2147483648,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 7.083967924118042,
+          "std_ms": 0.020369187204014705,
+          "min_ms": 7.048351764678955,
+          "max_ms": 7.136576175689697,
+          "n_trials": 50.0,
+          "achieved_tflops": 0.3031470033466255,
+          "mfu": 0.0001347320014873891
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 8.640639781951904,
+          "std_ms": 0.014553460073814932,
+          "min_ms": 8.61308765411377,
+          "max_ms": 8.678751945495605,
+          "n_trials": 50.0,
+          "achieved_tflops": 0.24853294457263989,
+          "mfu": 0.00011045908647672883
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 0.8743840157985687,
+          "std_ms": 0.010701418718557865,
+          "min_ms": 0.8531200289726257,
+          "max_ms": 0.892799973487854,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 1.5624959468841553,
+          "std_ms": 0.014831066524246627,
+          "min_ms": 1.539680004119873,
+          "max_ms": 1.5960639715194702,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 32,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 7.083967924118042,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.12343139115885114,
+        "official_mamba3_module_bwd": 0.22056790256834582
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "d_model": 4096,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "float32",
+      "bwd_flops": 137438953472,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 105.19259262084961,
+          "std_ms": 0.274489488353579,
+          "min_ms": 104.35107421875,
+          "max_ms": 105.63442993164062,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.3065459273104656,
+          "mfu": 0.001187769024827696
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 98.1100959777832,
+          "std_ms": 0.0902696531637014,
+          "min_ms": 97.9427490234375,
+          "max_ms": 98.3177261352539,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.400864529814778,
+          "mfu": 0.0012735132089225253
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 12.516496181488037,
+          "std_ms": 0.3588292077051631,
+          "min_ms": 12.036319732666016,
+          "max_ms": 13.298879623413086,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 115.57596588134766,
+          "std_ms": 0.32327899587722286,
+          "min_ms": 115.057373046875,
+          "max_ms": 116.11459350585938,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 128,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 98.1100959777832,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.1275760262666787,
+        "official_mamba3_module_bwd": 1.1780231660105558
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 2048,
+        "d_model": 4096,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "bfloat16",
+      "bwd_flops": 137438953472,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 86.94689559936523,
+          "std_ms": 0.12758057306579448,
+          "min_ms": 86.59398651123047,
+          "max_ms": 87.18224334716797,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.5807229519187502,
+          "mfu": 0.0007025435341861112
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 78.32795333862305,
+          "std_ms": 0.10250877061398332,
+          "min_ms": 78.19395446777344,
+          "max_ms": 78.60313415527344,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.754660343004643,
+          "mfu": 0.0007798490413353969
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 12.094831943511963,
+          "std_ms": 0.27086705004192957,
+          "min_ms": 11.607647895812988,
+          "max_ms": 12.856191635131836,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 17.855167388916016,
+          "std_ms": 0.2947714498432338,
+          "min_ms": 17.42963218688965,
+          "max_ms": 18.603103637695312,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 128,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 78.32795333862305,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.15441271510343516,
+        "official_mamba3_module_bwd": 0.22795396314934402
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 4096,
+        "d_model": 4096,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "float32",
+      "bwd_flops": 274877906944,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 210.7971954345703,
+          "std_ms": 0.6355493226871676,
+          "min_ms": 210.0864715576172,
+          "max_ms": 212.21705627441406,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.303992239447606,
+          "mfu": 0.0011854474904069146
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 193.76435089111328,
+          "std_ms": 0.17370432678249106,
+          "min_ms": 193.4133758544922,
+          "max_ms": 194.1790771484375,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.4186196051020181,
+          "mfu": 0.0012896541864563802
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 24.604127883911133,
+          "std_ms": 0.5912224849931736,
+          "min_ms": 23.639488220214844,
+          "max_ms": 26.059200286865234,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 230.14483642578125,
+          "std_ms": 0.5785932472874525,
+          "min_ms": 229.36585998535156,
+          "max_ms": 231.3038330078125,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 128,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 193.76435089111328,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.12697964187301683,
+        "official_mamba3_module_bwd": 1.1877563409747758
+      }
+    },
+    {
+      "shape": {
+        "batch": 8,
+        "seq_len": 4096,
+        "d_model": 4096,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "bfloat16",
+      "bwd_flops": 274877906944,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 173.73716735839844,
+          "std_ms": 0.3128395924997647,
+          "min_ms": 173.1249542236328,
+          "max_ms": 174.50936889648438,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.5821479716942812,
+          "mfu": 0.0007031768763085695
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 155.56366729736328,
+          "std_ms": 0.11094444526222762,
+          "min_ms": 155.29869079589844,
+          "max_ms": 155.72647094726562,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.7669801163697496,
+          "mfu": 0.0007853244961643331
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 23.59235191345215,
+          "std_ms": 0.43042861716907566,
+          "min_ms": 22.965791702270508,
+          "max_ms": 24.744735717773438,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 35.41593551635742,
+          "std_ms": 0.5060254818641275,
+          "min_ms": 34.78636932373047,
+          "max_ms": 36.76588821411133,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 128,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 155.56366729736328,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.15165721098844284,
+        "official_mamba3_module_bwd": 0.2276619993064261
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 16384,
+        "d_model": 4096,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "float32",
+      "bwd_flops": 274877906944,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 327.09442138671875,
+          "std_ms": 0.6351836261697421,
+          "min_ms": 326.83319091796875,
+          "max_ms": 331.24859619140625,
+          "n_trials": 50.0,
+          "achieved_tflops": 0.8403625649702415,
+          "mfu": 0.000763965968154765
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 194.20244598388672,
+          "std_ms": 0.1953467877032949,
+          "min_ms": 193.6717071533203,
+          "max_ms": 194.5581817626953,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.415419386462347,
+          "mfu": 0.0012867448967839518
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 27.74569606781006,
+          "std_ms": 0.991752884947656,
+          "min_ms": 25.169599533081055,
+          "max_ms": 29.38812828063965,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 232.0399932861328,
+          "std_ms": 1.2421551565670097,
+          "min_ms": 230.38192749023438,
+          "max_ms": 234.69580078125,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 128,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 194.20244598388672,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.14286996194740081,
+        "official_mamba3_module_bwd": 1.194835585672209
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 16384,
+        "d_model": 4096,
+        "n_state": 128,
+        "headdim": 64
+      },
+      "dtype": "bfloat16",
+      "bwd_flops": 274877906944,
+      "impls": {
+        "ours_serial": {
+          "median_ms": 267.30218505859375,
+          "std_ms": 0.5135564614880715,
+          "min_ms": 266.9862060546875,
+          "max_ms": 268.4136657714844,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.0283414139833746,
+          "mfu": 0.0004570406284370554
+        },
+        "ours_chunk_parallel": {
+          "median_ms": 156.01226043701172,
+          "std_ms": 0.1404986698075251,
+          "min_ms": 155.79837036132812,
+          "max_ms": 156.35536193847656,
+          "n_trials": 50.0,
+          "achieved_tflops": 1.761899392868415,
+          "mfu": 0.0007830663968304067
+        },
+        "official_siso_combined_bwd": {
+          "median_ms": 26.240303993225098,
+          "std_ms": 0.9937981094814976,
+          "min_ms": 24.475135803222656,
+          "max_ms": 28.437183380126953,
+          "n_trials": 50.0,
+          "crippled_kernels_launched": [
+            "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "mamba3_siso_bwd_kernel_dqkv",
+            "mamba3_siso_bwd_kernel_dzdo",
+            "mamba3_siso_bwd_kernel_rotary_bias_angles"
+          ],
+          "grads_nonzero": "11/11",
+          "flop_note": "richer op than ours; MFU omitted (not FLOP-matched) \u2014 wall-clock is the claim"
+        },
+        "official_mamba3_module_bwd": {
+          "median_ms": 37.737632751464844,
+          "std_ms": 0.9343482307603267,
+          "min_ms": 36.2224006652832,
+          "max_ms": 39.53414535522461,
+          "n_trials": 25.0,
+          "flop_note": "projection-inclusive; MFU omitted (not comparable to ours)"
+        }
+      },
+      "skipped": {},
+      "official_meta": {
+        "layer_cfg": {
+          "d_state": 128,
+          "headdim": 64,
+          "nheads": 128,
+          "mimo_rank": 1,
+          "chunk_size": 64
+        },
+        "captured_arg_shapes": {},
+        "captured_arg_dtypes": {},
+        "n_leaves": 11
+      },
+      "module_bwd_note": "projection-inclusive; not shape-matched to ours \u2014 sanity only",
+      "ours_best_ms": 156.01226043701172,
+      "ours_best_speedup_vs": {
+        "official_siso_combined_bwd": 0.16819385809629583,
+        "official_mamba3_module_bwd": 0.24188889158939536
+      }
+    }
+  ]
+}
