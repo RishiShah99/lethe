@@ -76,6 +76,10 @@ _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 
 # One CTA holds the whole state dim; N above this needs a multi-block design.
 MAX_BLOCK_N = 128
+# Register-tile budget (elements) for the per-program [block_d, block_n] fp32
+# tiles the serial-L recurrence holds; block_d shrinks at large block_n so a
+# Mamba-3 d_state=128 tile doesn't spill. Validated by scratch/bwd_n128_sweep.
+_BWD_TILE_BUDGET = 2048
 
 # Recompute-chunk cap. Working set of the in-chunk state scratch is
 # B*D*K*N fp32 across all programs; K=16 keeps it ~34 MB at the training
@@ -287,7 +291,13 @@ def launch_backward_scan(
     block_n = triton.next_power_of_2(n_state)
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
-    block_d = min(64, triton.next_power_of_2(d_model))
+    # Cap the per-program [block_d, block_n] fp32 register tile at a budget so a
+    # large state (Mamba-3 d_state=128) shrinks block_d instead of spilling: the
+    # serial-L recurrence holds several such tiles in registers, and at the old
+    # fixed block_d=64 a block_n=128 tile spills hard (measured 2x slower; bd=64
+    # nw=2 at N=128 was 6x worse — bwd_n128_sweep). Unchanged at N=16
+    # (2048//16=128 -> min(64,128)=64), correctness-invariant (tiling only).
+    block_d = min(64, max(16, _BWD_TILE_BUDGET // block_n))
     if config is not None and config.block_d is not None:
         block_d = config.block_d
     chunk_k = _chunk_k(seq_len)
@@ -322,7 +332,14 @@ def launch_backward_scan(
     )
 
     grid = (batch, n_d_blocks)
-    warps = num_warps if num_warps is not None else (4 if block_d * block_n >= 512 else 2)
+    # block_d<=16 only at the large-state regime (block_n=128 => block_d=16),
+    # where the sweep finds num_warps=2 beats 4 (fewer warps, less per-thread
+    # overhead on the small-block_d serial loop); all other shapes unchanged.
+    warps = (
+        num_warps
+        if num_warps is not None
+        else (2 if block_d <= 16 else (4 if block_d * block_n >= 512 else 2))
+    )
     if config is not None and config.num_warps is not None:
         warps = config.num_warps
     extra: dict[str, int] = {}

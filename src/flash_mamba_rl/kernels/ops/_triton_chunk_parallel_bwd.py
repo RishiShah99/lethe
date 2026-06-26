@@ -60,6 +60,10 @@ except ImportError:  # pragma: no cover - depends on installed triton
     from triton.language.extra.cuda import libdevice
 
 _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
+# Register-tile budget (elements) for the [block_d, block_n] fp32 tiles; block_d
+# shrinks at large block_n so a Mamba-3 d_state=128 tile doesn't spill. Mirrors
+# the serial backward; validated by scratch/bwd_n128_sweep.
+_BWD_TILE_BUDGET = 2048
 
 
 @triton.jit  # type: ignore[untyped-decorator]
@@ -295,7 +299,10 @@ def launch_backward_chunk_parallel_scan(
     block_n = triton.next_power_of_2(n_state)
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
-    block_d = min(64, triton.next_power_of_2(d_model))
+    # Same register-tile budget as the serial backward: shrink block_d at large
+    # block_n so a Mamba-3 d_state=128 tile doesn't spill (2x at N=128;
+    # bwd_n128_sweep). Unchanged at N=16; correctness-invariant (tiling only).
+    block_d = min(64, max(16, _BWD_TILE_BUDGET // block_n))
     if config is not None and config.block_d is not None:
         block_d = config.block_d
     n_d_blocks = triton.cdiv(d_model, block_d)
@@ -340,7 +347,9 @@ def launch_backward_chunk_parallel_scan(
     )
 
     grid = (batch, n_chunks, n_d_blocks)
-    num_warps = 4 if block_d * block_n >= 512 else 2
+    # block_d<=16 only at the large-state regime (block_n=128); num_warps=2 wins
+    # there (bwd_n128_sweep), all other shapes unchanged.
+    num_warps = 2 if block_d <= 16 else (4 if block_d * block_n >= 512 else 2)
     if config is not None and config.num_warps is not None:
         num_warps = config.num_warps
     extra: dict[str, int] = {}
