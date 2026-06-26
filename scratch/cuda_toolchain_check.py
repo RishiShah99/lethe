@@ -10,8 +10,29 @@ forward/backward warp-shuffle scan kernels (docs/cuda_warpscan_plan.md).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import torch
 from torch.utils.cpp_extension import load_inline
+
+
+def _cuda_cflags() -> list[str]:
+    """nvcc flags, adding the CCCL include dir CUDA 13 relocated cub/thrust into.
+
+    CUDA 13.0 moved the CCCL headers (cub, thrust, libcu++) from
+    ``<cuda>/include`` to ``<cuda>/include/cccl``, which nvcc does not add to
+    the default search path — so ``#include <cub/...>`` fails out of the box.
+    Detect and add it; a no-op on CUDA 12 where the dir does not exist.
+    """
+    flags = ["-O2"]
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or "/usr/local/cuda"
+    base = Path(cuda_home)
+    for inc in (base / "include" / "cccl", base / "targets" / "x86_64-linux" / "include" / "cccl"):
+        if (inc / "cub").is_dir():
+            flags.append(f"-I{inc}")
+            break
+    return flags
 
 # (1) trivial elementwise kernel — validates nvcc + cpp_extension + ninja.
 # (2) cub::BlockScan with the SSM linear-recurrence monoid over one row —
@@ -75,7 +96,7 @@ def main() -> None:
         cuda_sources=[_CUDA],
         functions=["add", "ssm_scan"],
         with_cuda=True,
-        extra_cuda_cflags=["-O2"],
+        extra_cuda_cflags=_cuda_cflags(),
         verbose=True,
     )
     dev = "cuda"
