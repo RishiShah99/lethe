@@ -63,6 +63,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops import backward_selective_scan
 from flash_mamba_rl.verifier.timing import benchmark
 
@@ -182,7 +183,14 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
     # that exposes the symbol bound to the real fn.
     patched: list[Any] = []
     for mod in list(sys.modules.values()):
-        if getattr(mod, "mamba3_siso_combined", None) is real_fn:
+        # getattr on a PEP-562 lazy module (e.g. the torchvision stub) can
+        # trigger an import that raises ModuleNotFoundError, which the None
+        # default does not catch — guard and skip.
+        try:
+            attr = getattr(mod, "mamba3_siso_combined", None)
+        except Exception:
+            continue
+        if attr is real_fn:
             mod.mamba3_siso_combined = _spy  # type: ignore[attr-defined]
             patched.append(mod)
 
@@ -277,15 +285,24 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
     skipped: dict[str, str] = row["skipped"]
 
     u, delta, a, b_proj, c_proj, d_skip, dy = _ours_scan_inputs(spec, dtype)
-    impls["ours_triton"] = _perf(
-        _time(
-            lambda: backward_selective_scan(u, delta, a, b_proj, c_proj, d_skip, dy, chunk_size=64),
-            warmup=10,
-            trials=trials,
-        ),
-        spec,
-        dtype,
-    )
+
+    # Bench BOTH our scan modes explicitly so the headline uses our best, not
+    # whatever the shape-gated selector (calibrated at N=16) picks at N=128.
+    def _bench_ours(mode: str) -> dict[str, float]:
+        cfg = KernelConfig(scan_mode=mode)
+
+        def run() -> Any:
+            return backward_selective_scan(
+                u, delta, a, b_proj, c_proj, d_skip, dy, chunk_size=64, config=cfg
+            )
+
+        return _perf(_time(run, warmup=10, trials=trials), spec, dtype)
+
+    for mode in ("serial", "chunk_parallel"):
+        try:
+            impls[f"ours_{mode}"] = _bench_ours(mode)
+        except Exception:
+            skipped[f"ours_{mode}"] = traceback.format_exc(limit=3)
 
     if not _HAS_MAMBA3:
         skipped["official_siso_combined_bwd"] = "mamba_ssm Mamba3 not installed"
@@ -311,21 +328,28 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
     return _finalize(row, impls)
 
 
-def _crippled_kernel_launches(fn: Callable[[], Any]) -> list[str]:
-    """CUDA kernel names matching the #904 backward, observed running ``fn``.
+def _crippled_kernel_launches(fn: Callable[[], Any]) -> tuple[list[str], list[str]]:
+    """(matched, all) CUDA kernel names observed running ``fn`` one call.
 
-    Profiles one call and returns the distinct SISO-backward kernel names
-    (``mamba3_siso_bwd*`` / ``*dqkv*``). Empty => the timed backward does not
-    run the crippled kernel, so the comparison would be fabricated — the
-    caller must skip rather than report a timing (review B1/N3).
+    ``matched`` = the #904 backward kernels (``mamba3_siso_bwd``/``dqkv``, or
+    any ``mamba3``-prefixed CUDA kernel, since the official backward launches
+    only mamba3_* kernels). Empty matched => the timed backward does not run
+    the crippled kernel, so the comparison would be fabricated and the caller
+    must skip (review B1/N3). ``all`` is a sample for the skip diagnostic.
     """
     from torch.profiler import ProfilerActivity, profile
 
     with profile(activities=[ProfilerActivity.CUDA]) as prof:
         fn()
         torch.cuda.synchronize()
-    names = {e.name for e in prof.key_averages()}
-    return sorted(n for n in names if "siso_bwd" in n.lower() or "dqkv" in n.lower())
+    # FunctionEventAvg exposes the op/kernel name as ``.key`` (``.name`` only
+    # on raw FunctionEvent); fall back across torch versions.
+    names = sorted(
+        {str(getattr(e, "key", None) or getattr(e, "name", "")) for e in prof.key_averages()}
+    )
+    matched = [n for n in names if any(t in n.lower() for t in ("siso_bwd", "dqkv", "mamba3"))]
+    cuda_like = [n for n in names if any(c.isalpha() for c in n)][:40]
+    return matched, cuda_like
 
 
 def _bench_official_combined(
@@ -338,12 +362,12 @@ def _bench_official_combined(
 
     grads = _bwd()
     nonzero = [g is not None and bool(g.abs().sum() > 0) for g in grads]
-    launched = _crippled_kernel_launches(_bwd)
+    launched, observed = _crippled_kernel_launches(_bwd)
     if not launched:
         raise RuntimeError(
-            "official backward did not launch a mamba3_siso_bwd/dqkv kernel "
-            f"(grads nonzero={sum(nonzero)}/{len(grads)}); refusing to report a "
-            "fabricated timing — rerun discovery, the timed op is not the crippled kernel"
+            "official backward launched no mamba3_siso_bwd/dqkv kernel "
+            f"(grads nonzero={sum(nonzero)}/{len(grads)}); refusing a fabricated "
+            f"timing. Observed CUDA kernels: {observed}"
         )
     # No achieved_tflops/MFU here: the official op (rich Mamba-3 chunk-scan)
     # does materially more work than our spec's SSM FLOP model, so applying
@@ -373,12 +397,15 @@ def _bench_official_module(spec: ShapeSpec, dtype: torch.dtype, trials: int) -> 
 
 
 def _finalize(row: dict[str, Any], impls: dict[str, Any]) -> dict[str, Any]:
-    ours = impls.get("ours_triton", {}).get("median_ms")
-    if ours:
-        row["ours_speedup_vs"] = {
-            name: timing["median_ms"] / ours
+    ours_ms = [t["median_ms"] for k, t in impls.items() if k.startswith("ours_")]
+    if ours_ms:
+        best = min(ours_ms)
+        row["ours_best_ms"] = best
+        # ratio official/ours_best: >1 => ours faster, <1 => ours slower.
+        row["ours_best_speedup_vs"] = {
+            name: timing["median_ms"] / best
             for name, timing in impls.items()
-            if name != "ours_triton"
+            if not name.startswith("ours_")
         }
     return row
 
