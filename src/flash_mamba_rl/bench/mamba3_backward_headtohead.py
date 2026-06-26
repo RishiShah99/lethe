@@ -8,9 +8,21 @@ slow." The honest head-to-head is against the **Mamba-3** backward that
 on sm_100 loses every ``num_warps >= 4`` config to the TMEM-budget overflow
 (544 > 512) and runs at the spilled ``num_warps=2`` survivor.
 
-Two official comparators, both exercising that kernel:
+What this measures, honestly: the wall-clock of **the backward kernel that
+runs in the real crippled model** vs our backward, at the same
+(B, L, d_model). It is NOT "same math, ours faster" — our op is a
+Mamba-1-style SISO selective-scan backward (u, delta, A, B, C, D); the
+official ``mamba3_siso_combined`` backward is a richer Mamba-3 chunk-scan
+(Q/K/V/DT/Trap/angles/gates) doing materially more work. The point of the
+comparison is that the official path is the one #904 cripples and ours runs
+full-strength, not that the two compute identical FLOPs — so MFU is reported
+for **ours only** (under the explicit SSM FLOP model below); the official
+side reports wall-clock alone (a shared FLOP model applied to it would be a
+tautology). Wall-clock is the claim.
 
-- ``official_siso_combined_bwd`` — the matched one: the Mamba-3 SISO
+Two official comparators, both exercising the crippled kernel:
+
+- ``official_siso_combined_bwd`` — the closest one: the Mamba-3 SISO
   chunk-scan training function ``mamba3_siso_combined`` (its backward
   dispatches to the crippled kernel), differentiated, vs our
   ``backward_selective_scan`` at the same (B, L, d_model). Its signature
@@ -18,22 +30,20 @@ Two official comparators, both exercising that kernel:
   so rather than hand-build those tensors (which would mean guessing Mamba-3
   internals) we *capture* the exact tensors a real ``Mamba3`` module feeds
   the function via a monkeypatch hook, detach them into fresh leaves, and
-  time the backward on those — the op runs at the model's real head config,
-  recorded in the row. If capture fails (the module calls a different
-  internal) it records a skip; the discovery dump
-  (``scratch/mamba3_bwd_discover.py``) shows the real path.
+  time the backward on those — the op runs at the model's real head config
+  (recorded in ``official_meta``). A profiler check on the warm-up backward
+  confirms a ``mamba3_siso_bwd``/``dqkv`` kernel actually launched; if not
+  (or capture fails), the row is a recorded skip, never a fabricated timing.
+  The discovery dump (``scratch/mamba3_bwd_discover.py``) shows the real path.
 - ``official_mamba3_module_bwd`` — the robust backstop: the full ``Mamba3``
   SISO module backward (always exercises the kernel, but includes in/out
   projections, so it is *not* shape-matched to our scan-only op — labelled,
   for sanity not for the headline).
 
-Methodology mirrors the c2/c6 benches: the official forward runs once
-outside the timed region and the timed backward reuses its forward-saved
-activations (conservative against us — every timed call of ours re-stages
-the forward in-kernel). Wall-clock is the headline; ``achieved_tflops`` /
-``mfu`` (under the explicit SSM FLOP model below, applied identically to
-both impls, so the MFU ratio equals the time ratio) is order-of-magnitude
-context, not the claim.
+Timing mirrors the c2/c6 benches: the official forward runs once outside the
+timed region and the timed backward reuses its forward-saved activations
+(conservative against us — every timed call of ours re-stages the forward
+in-kernel). CUDA-event timed, median over trials.
 
     CUDA_VISIBLE_DEVICES=0 uv run python -m \
         flash_mamba_rl.bench.mamba3_backward_headtohead --out ~/out/headtohead.json
@@ -67,9 +77,9 @@ except Exception:  # pragma: no cover - box-only dependency
 # element: discretized decay apply (1 mul) + input term dt*B*x (2 mul) +
 # state add (1) + output C*h reduction (1 mul + 1 add) ~= 6 FLOPs; round to
 # 8 for the dt/exp discretization tail. Backward redoes the forward sweep and
-# carries an adjoint sweep -> ~2x. The constant is rough; it cancels in the
-# ours/official MFU ratio, which equals the wall-clock ratio. Documented so
-# the achieved-TFLOP/s numbers are reproducible, not load-bearing.
+# carries an adjoint sweep -> ~2x. Applied to OURS only (the official op is a
+# richer chunk-scan, not FLOP-matched); rough, documented so our achieved-
+# TFLOP/s is reproducible context, not load-bearing. Wall-clock is the claim.
 _SSM_FWD_FLOPS_PER_ELEM = 8
 _SSM_BWD_FLOPS_PER_ELEM = 16
 
@@ -149,7 +159,7 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
 
     Monkeypatches the function in its defining module so the captured tensors
     are exactly what the real model passes — no Mamba-3-internal guessing.
-    Returns (callable, captured_args_tuple, captured_kwargs).
+    Returns (callable, captured_args_tuple, captured_kwargs, layer_cfg).
     """
     import sys
 
@@ -185,7 +195,12 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
             mod.mamba3_siso_combined = real_fn
     if "args" not in captured:
         raise RuntimeError("Mamba3.forward did not call mamba3_siso_combined (see discovery dump)")
-    return real_fn, captured["args"], captured["kwargs"]
+    layer_cfg = {
+        k: getattr(layer, k)
+        for k in ("d_state", "headdim", "nheads", "ngroups", "mimo_rank", "chunk_size")
+        if isinstance(getattr(layer, k, None), int)
+    }
+    return real_fn, captured["args"], captured["kwargs"], layer_cfg
 
 
 def _official_siso_combined(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # type: ignore[no-untyped-def]
@@ -195,8 +210,11 @@ def _official_siso_combined(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):
     Leaves are the differentiable float captured tensors detached fresh, so
     the timed backward isolates the scan (the crippled kernel), exactly as
     our backward_selective_scan timing isolates the scan from any projection.
+    ``meta`` records the captured shapes/dtypes and the real Mamba3 head
+    config so the row is auditable (the official op runs at the model's
+    native d_state/headdim, not our spec's).
     """
-    real_fn, args, kwargs = _capture_siso_args(spec, dtype, seed)
+    real_fn, args, kwargs, layer_cfg = _capture_siso_args(spec, dtype, seed)
 
     def _leaf(t: Any) -> Any:
         if isinstance(t, Tensor) and t.is_floating_point():
@@ -210,11 +228,21 @@ def _official_siso_combined(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):
 
     out = real_fn(*new_args, **new_kwargs)
     y = out[0] if isinstance(out, tuple) else out
+    torch.manual_seed(seed + 1)
     dy = torch.randn_like(y)
-    captured_shapes = {
-        f"arg{i}": tuple(a.shape) for i, a in enumerate(args) if isinstance(a, Tensor)
+    meta: dict[str, Any] = {
+        "layer_cfg": layer_cfg,
+        "captured_arg_shapes": {
+            f"arg{i}": tuple(a.shape) for i, a in enumerate(args) if isinstance(a, Tensor)
+        },
+        "captured_arg_dtypes": {
+            f"arg{i}": str(a.dtype).removeprefix("torch.")
+            for i, a in enumerate(args)
+            if isinstance(a, Tensor)
+        },
+        "n_leaves": len(leaves),
     }
-    return y, leaves, dy, captured_shapes
+    return y, leaves, dy, meta
 
 
 def _official_mamba3_module(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # type: ignore[no-untyped-def]
@@ -265,10 +293,10 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
         return _finalize(row, impls)
 
     try:
-        impls["official_siso_combined_bwd"], captured_shapes = _bench_official_combined(
+        impls["official_siso_combined_bwd"], official_meta = _bench_official_combined(
             spec, dtype, trials
         )
-        row["official_captured_shapes"] = captured_shapes
+        row["official_meta"] = official_meta
         torch.cuda.empty_cache()
     except Exception:
         skipped["official_siso_combined_bwd"] = traceback.format_exc(limit=4)
@@ -283,28 +311,65 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
     return _finalize(row, impls)
 
 
+def _crippled_kernel_launches(fn: Callable[[], Any]) -> list[str]:
+    """CUDA kernel names matching the #904 backward, observed running ``fn``.
+
+    Profiles one call and returns the distinct SISO-backward kernel names
+    (``mamba3_siso_bwd*`` / ``*dqkv*``). Empty => the timed backward does not
+    run the crippled kernel, so the comparison would be fabricated — the
+    caller must skip rather than report a timing (review B1/N3).
+    """
+    from torch.profiler import ProfilerActivity, profile
+
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        fn()
+        torch.cuda.synchronize()
+    names = {e.name for e in prof.key_averages()}
+    return sorted(n for n in names if "siso_bwd" in n.lower() or "dqkv" in n.lower())
+
+
 def _bench_official_combined(
     spec: ShapeSpec, dtype: torch.dtype, trials: int
-) -> tuple[dict[str, float], dict[str, Any]]:
-    y, leaves, dy_o, captured_shapes = _official_siso_combined(spec, dtype)
-    torch.autograd.grad(y, leaves, dy_o, retain_graph=True, allow_unused=True)
-    timing = _time(
-        lambda: torch.autograd.grad(y, leaves, dy_o, retain_graph=True, allow_unused=True),
-        warmup=10,
-        trials=trials,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    y, leaves, dy_o, meta = _official_siso_combined(spec, dtype)
+
+    def _bwd() -> Any:
+        return torch.autograd.grad(y, leaves, dy_o, retain_graph=True, allow_unused=True)
+
+    grads = _bwd()
+    nonzero = [g is not None and bool(g.abs().sum() > 0) for g in grads]
+    launched = _crippled_kernel_launches(_bwd)
+    if not launched:
+        raise RuntimeError(
+            "official backward did not launch a mamba3_siso_bwd/dqkv kernel "
+            f"(grads nonzero={sum(nonzero)}/{len(grads)}); refusing to report a "
+            "fabricated timing — rerun discovery, the timed op is not the crippled kernel"
+        )
+    # No achieved_tflops/MFU here: the official op (rich Mamba-3 chunk-scan)
+    # does materially more work than our spec's SSM FLOP model, so applying
+    # spec.bwd_flops() to it would be a tautology (= wall-clock rescaled).
+    # Wall-clock at matched (B, L, d_model) is the comparison.
+    result: dict[str, Any] = dict(_time(_bwd, warmup=10, trials=trials))
+    result["crippled_kernels_launched"] = launched
+    result["grads_nonzero"] = f"{sum(nonzero)}/{len(grads)}"
+    result["flop_note"] = (
+        "richer op than ours; MFU omitted (not FLOP-matched) — wall-clock is the claim"
     )
-    return _perf(timing, spec, dtype), captured_shapes
+    return result, meta
 
 
-def _bench_official_module(spec: ShapeSpec, dtype: torch.dtype, trials: int) -> dict[str, float]:
+def _bench_official_module(spec: ShapeSpec, dtype: torch.dtype, trials: int) -> dict[str, Any]:
     ym, leaves_m, dym = _official_mamba3_module(spec, dtype)
     torch.autograd.grad(ym, leaves_m, dym, retain_graph=True)
-    timing = _time(
-        lambda: torch.autograd.grad(ym, leaves_m, dym, retain_graph=True),
-        warmup=5,
-        trials=max(10, trials // 2),
+    result: dict[str, Any] = dict(
+        _time(
+            lambda: torch.autograd.grad(ym, leaves_m, dym, retain_graph=True),
+            warmup=5,
+            trials=max(10, trials // 2),
+        )
     )
-    return _perf(timing, spec, dtype)
+    result["flop_note"] = "projection-inclusive; MFU omitted (not comparable to ours)"
+    return result
 
 
 def _finalize(row: dict[str, Any], impls: dict[str, Any]) -> dict[str, Any]:
@@ -355,7 +420,8 @@ def main() -> None:
             "fwd_flops_per_elem": _SSM_FWD_FLOPS_PER_ELEM,
             "bwd_flops_per_elem": _SSM_BWD_FLOPS_PER_ELEM,
             "peak_tflops": _PEAK_TFLOPS,
-            "note": "rough; cancels in the ours/official MFU ratio (= wall-clock ratio)",
+            "note": "applied to OURS only (achieved_tflops/mfu); the official op is a "
+            "richer Mamba-3 chunk-scan, not FLOP-matched — it reports wall-clock only",
         },
         "runs": [],
     }
