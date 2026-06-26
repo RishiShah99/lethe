@@ -151,6 +151,8 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
     are exactly what the real model passes — no Mamba-3-internal guessing.
     Returns (callable, captured_args_tuple, captured_kwargs).
     """
+    import sys
+
     import mamba_ssm.ops.triton.mamba3.mamba3_siso_combined as siso_mod
 
     torch.manual_seed(seed)
@@ -164,15 +166,25 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
             captured["kwargs"] = kwargs
         return real_fn(*args, **kwargs)
 
+    # The module may import the function by value (from ... import
+    # mamba3_siso_combined), so the live reference lives in the caller's
+    # namespace, not only the defining module. Patch every loaded module
+    # that exposes the symbol bound to the real fn.
+    patched: list[Any] = []
+    for mod in list(sys.modules.values()):
+        if getattr(mod, "mamba3_siso_combined", None) is real_fn:
+            mod.mamba3_siso_combined = _spy  # type: ignore[attr-defined]
+            patched.append(mod)
+
     layer = Mamba3(d_model=spec.d_model).to(dev).to(dtype)
     x = torch.randn(spec.batch, spec.seq_len, spec.d_model, device=dev, dtype=dtype)
-    siso_mod.mamba3_siso_combined = _spy
     try:
         layer(x)
     finally:
-        siso_mod.mamba3_siso_combined = real_fn
+        for mod in patched:
+            mod.mamba3_siso_combined = real_fn
     if "args" not in captured:
-        raise RuntimeError("Mamba3.forward did not call mamba3_siso_combined")
+        raise RuntimeError("Mamba3.forward did not call mamba3_siso_combined (see discovery dump)")
     return real_fn, captured["args"], captured["kwargs"]
 
 
