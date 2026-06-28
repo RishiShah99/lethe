@@ -40,7 +40,19 @@ def gdn2_backward(
     Args/semantics mirror ``reference_gdn2_backward``: ``q``/``k``/``g``/``b``
     [B, L, H, d_k], ``v``/``w``/``do`` [B, L, H, d_v]; each returned gradient
     matches its input's shape and dtype.
+
+    On a Blackwell device with a supported dtype the native CuTe kernel runs; it
+    returns ``None`` until built (Phase 2), so this falls through to the eager path.
     """
+    if q.is_cuda and q.dtype in (torch.bfloat16, torch.float16, torch.float32):
+        from flash_mamba_rl.kernels.cute.gdn2_backward import native_gdn2_backward
+
+        native = native_gdn2_backward(
+            q, k, v, g, b, w, do, scale=scale, use_qk_l2norm=use_qk_l2norm
+        )
+        if native is not None:
+            return native
+
     compute_dtype = torch.float64 if q.dtype == torch.float64 else torch.float32
     inputs = (q, k, v, g, b, w)
     create_graph = do.requires_grad
