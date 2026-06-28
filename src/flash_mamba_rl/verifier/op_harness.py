@@ -62,6 +62,7 @@ from flash_mamba_rl.kernels.references import (
 from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
 from flash_mamba_rl.kernels.references.fused_block_backward import reference_fused_block_backward
 from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
+from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     GateResult,
@@ -815,6 +816,245 @@ def verify_mimo_bwd_op_all_grads(
             headdim=headdim,
         )
         for grad_field in MIMO_BWD_GRAD_FIELDS
+    }
+
+
+# ---------------------------------------------------------------------------
+# GDN-2 backward: one gate view per gradient output
+# ---------------------------------------------------------------------------
+
+# GDN-2-backward signature: (q, k, v, g, b, w, do) -> the six gradients as an
+# indexable sequence (Gdn2Grads, whose 7th field grad_initial_state is None and
+# never viewed). The gates drive 3D [batch, seq, d_model] primaries; the GDN-2
+# ``do`` views d_model as (nheads, GDN2_HEADDIM). The crown target is d_k=d_v=128;
+# the harness uses GDN2_HEADDIM=4 (d_k=d_v) so every gate d_model factors cleanly.
+Gdn2BwdCallable = Callable[..., Any]
+
+GDN2_HEADDIM = 4  # d_k == d_v at the gate shapes (no GVA; crown is H == HV)
+_GDN2_BWD_AUX_SEED = 41213
+
+# Gradient outputs of the GDN-2 backward, in Gdn2Grads field order (the 6 the
+# kernel produces; grad_initial_state is excluded — no initial state is fed).
+GDN2_BWD_GRAD_FIELDS: tuple[str, ...] = (
+    "grad_q",
+    "grad_k",
+    "grad_v",
+    "grad_g",
+    "grad_b",
+    "grad_w",
+)
+
+
+def _gdn2_nheads(d_model: int, headdim: int) -> int:
+    if d_model % headdim != 0:
+        raise ValueError(f"d_model={d_model} not divisible by GDN-2 headdim {headdim}")
+    return d_model // headdim
+
+
+def _gdn2_bwd_aux(
+    batch: int,
+    seq_len: int,
+    nheads: int,
+    headdim: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Deterministic (q, k, v, g, b, w) for a 4D-viewed ``do``.
+
+    ``g`` is channel-wise log-decay built from the official Mamba dt-init range
+    times a per-head negative rate (so exp(g) stays in the near-integrator regime
+    where low-precision accumulators lose mass), plus a small per-channel jitter
+    kept <= 0 for stability. ``b`` (erase, key axis) and ``w`` (write, value axis)
+    are sigmoid-squashed into (0, 1) — the gate domains. No saturation variant
+    exists: the op takes g/b/w precomputed, there is no softplus inside it. Draw
+    order under ``_GDN2_BWD_AUX_SEED`` is pinned.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_GDN2_BWD_AUX_SEED)
+    q = torch.randn(batch, seq_len, nheads, headdim, generator=gen)
+    k = torch.randn(batch, seq_len, nheads, headdim, generator=gen)
+    v = torch.randn(batch, seq_len, nheads, headdim, generator=gen)
+    log_lo = math.log(_DT_MIN)
+    log_hi = math.log(_DT_MAX)
+    dt = torch.exp(torch.rand(batch, seq_len, nheads, generator=gen) * (log_hi - log_lo) + log_lo)
+    a_head = -torch.rand(nheads, generator=gen)
+    g_head = dt * a_head  # (batch, seq, nheads), <= 0
+    jitter = -torch.rand(batch, seq_len, nheads, headdim, generator=gen) * 0.02
+    g = g_head.unsqueeze(-1) + jitter  # channel-wise, <= 0
+    b = torch.randn(batch, seq_len, nheads, headdim, generator=gen).sigmoid()
+    w = torch.randn(batch, seq_len, nheads, headdim, generator=gen).sigmoid()
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype)
+
+    return cast(q), cast(k), cast(v), cast(g), cast(b), cast(w)
+
+
+def _gdn2_prc02(atol: float) -> dict[str, Any]:
+    """Scale-aware PRC-02 config for a GDN-2 view at the L=4096 stress shape.
+
+    GDN-2 gradients are reverse-state-recurrence sums whose fp16 input-rounding
+    error carries the magnitude of large cancelling intermediates (the delta-rule
+    erase term), so a flat atol misreads them — every view runs scale-aware
+    (``scale_atol_by_ref_inf``), as the MIMO backward does.
+
+    Calibrated on CPU at (1, 4096, 32), 6 views x several draws
+    (``scratch/gdn2_prc02_floor.py``): the honest fp16 input-rounding floor is
+    5.5e-4..7.6e-4 of output scale across views. Crucially, an fp16-*state* cheat
+    sits only ~2x over that floor — GDN-2's decay-limited memory (exp(g) ~ 0.9, so
+    only the last ~tens of tokens contribute) caps how much an fp16 accumulator can
+    drift, so it is NOT separable at a safe atol. The robust adversary is a bf16
+    (or coarser) state accumulator at 4.3e-3..9.4e-3 of scale (5.9x..14.9x over the
+    floor). The unit atol below (2e-3) sits ~3x above the honest floor and >=2.1x
+    under the bf16 cheat. This is a DESK floor that catches coarse accumulators; the
+    tight fp16-vs-fp32 discrimination floor is re-pinned against the native kernel
+    on B200 in Phase 2 (as the MIMO/scan tables were).
+    """
+    return {
+        "shape": (1, 4096, 32),
+        "atol": atol,
+        "rtol": 0.0,
+        "scale_atol_by_ref_inf": True,
+    }
+
+
+# Per-view overrides. ORD reduction extents at ORD-01's (4, 512, 32) gate shape
+# (nheads=8, d_k=d_v=4) are theory-seeded under the eps*sqrt(chain)*scale model:
+# every gradient's dominant chain is the reverse-time state carry (~L). ORD/CMP
+# tolerances are DESK-SEEDED (no kernel yet) — re-pin on B200 in Phase 2, like the
+# MIMO/scan tables were. PRC-02 floor is calibrated on CPU (see _gdn2_prc02).
+_GDN2_PRC02_ATOL = 2e-3
+GDN2_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    "grad_q": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=1e-3,
+        ord03_rtol=1e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+    "grad_k": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+    "grad_v": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=1e-3,
+        ord03_rtol=1e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+    "grad_g": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+    "grad_b": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+    "grad_w": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+}
+
+
+def gdn2_bwd_candidate_adapter(
+    bwd_fn: Gdn2BwdCallable,
+    grad_field: str,
+    *,
+    headdim: int = GDN2_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of one gradient output: ``do -> bwd(...)[field]``.
+
+    ``saturate`` is accepted for interface parity with the scan adapters and
+    ignored — the GDN-2 aux has no saturation variant.
+    """
+    idx = GDN2_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(do: Tensor) -> Tensor:
+        batch, seq_len, d_model = do.shape
+        nheads = _gdn2_nheads(d_model, headdim)
+        aux = _gdn2_bwd_aux(batch, seq_len, nheads, headdim, do.device, do.dtype)
+        grads = bwd_fn(*aux, do.reshape(batch, seq_len, nheads, headdim))
+        out: Tensor = grads[idx]
+        return out
+
+    return adapted
+
+
+def gdn2_bwd_reference_adapter(
+    grad_field: str,
+    *,
+    headdim: int = GDN2_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The autograd oracle behind the same per-gradient single-tensor interface."""
+    idx = GDN2_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(do: Tensor) -> Tensor:
+        batch, seq_len, d_model = do.shape
+        nheads = _gdn2_nheads(d_model, headdim)
+        q, k, v, g, b, w = _gdn2_bwd_aux(batch, seq_len, nheads, headdim, do.device, do.dtype)
+        do4 = do.reshape(batch, seq_len, nheads, headdim)
+        if do.dtype == torch.float32:
+            out = reference_gdn2_backward(q, k, v, g, b, w, do4)[idx]
+        else:
+            # Mixed-precision contract: oracle computes in fp32 from the same
+            # (already rounded) operand bits, rounds once at the output.
+            q32, k32, v32, g32, b32, w32 = (t.to(torch.float32) for t in (q, k, v, g, b, w))
+            out = reference_gdn2_backward(q32, k32, v32, g32, b32, w32, do4.to(torch.float32))[idx]
+            out = out.to(do.dtype) if out is not None else None
+        assert out is not None  # idx is always a grad field, never grad_initial_state
+        return out
+
+    return adapted
+
+
+def verify_gdn2_bwd_op(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    grad_field: str,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    headdim: int = GDN2_HEADDIM,
+) -> dict[str, GateResult]:
+    """Run all 12 contract gates over one gradient-output view of the GDN-2 backward."""
+    return _verify_op_views(
+        lambda saturate: gdn2_bwd_candidate_adapter(
+            bwd_fn, grad_field, headdim=headdim, saturate=saturate
+        ),
+        lambda saturate: gdn2_bwd_reference_adapter(grad_field, headdim=headdim, saturate=saturate),
+        base_overrides=GDN2_BWD_GATE_OVERRIDES.get(grad_field, {}),
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=False,
+    )
+
+
+def verify_gdn2_bwd_op_all_grads(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    headdim: int = GDN2_HEADDIM,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over all six gradient views — the GDN-2 backward's full verdict."""
+    return {
+        grad_field: verify_gdn2_bwd_op(
+            bwd_fn,
+            grad_field=grad_field,
+            device=device,
+            resource_meta=resource_meta,
+            headdim=headdim,
+        )
+        for grad_field in GDN2_BWD_GRAD_FIELDS
     }
 
 

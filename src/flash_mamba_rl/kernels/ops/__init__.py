@@ -10,6 +10,7 @@ from .complex_scan_rope import complex_scan_rope, triton_complex_rope_resource_m
 from .forward_chunked_scan import forward_chunked_scan, triton_scan_resource_meta
 from .fused_block_backward import fused_block_backward, triton_fused_block_bwd_resource_meta
 from .fused_block_forward import fused_block_forward, triton_fused_block_resource_meta
+from .gdn_backward import gdn2_backward
 from .mimo_backward import mimo_backward, triton_mimo_bwd_resource_meta
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "forward_chunked_scan",
     "fused_block_backward",
     "fused_block_forward",
+    "gdn2_backward",
     "mimo_backward",
     "triton_bwd_scan_resource_meta",
     "triton_complex_rope_resource_meta",
