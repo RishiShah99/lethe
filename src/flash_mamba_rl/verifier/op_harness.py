@@ -55,6 +55,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from flash_mamba_rl.kernels.cute.gdn2_assemble import assembled_scalar_gdn2_backward
 from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
@@ -1055,6 +1056,183 @@ def verify_gdn2_bwd_op_all_grads(
             headdim=headdim,
         )
         for grad_field in GDN2_BWD_GRAD_FIELDS
+    }
+
+
+# ---------------------------------------------------------------------------
+# GDN-2 scalar reduction gate: the Phase-2 native-assembly integration credential
+# ---------------------------------------------------------------------------
+
+# The Phase-2 native kernels are SCALAR-GDN (g scalar per token, b = w = beta). The
+# assembly (kernels.cute.gdn2_assemble) is graded here in that regime against the
+# pure-torch refs assembly (the kernels' readable contracts; same wiring, K#1/K#2 on
+# their torch reference paths). This mirrors the stock GDN-2 gate's discipline
+# (candidate vs same-algorithm reference): on a CPU desk run the candidate IS the refs
+# assembly, so all 12 gates verify the assembly's contract compliance (differentiable,
+# deterministic, dtype/exceptional/subnormal-faithful); on a Blackwell box the candidate
+# is the tcgen05 native path, so the gates become a real kernel-vs-reference cross-check
+# (tolerances re-pinned there). Independent VALUE correctness is carried separately by
+# the fp64 oracle test (assembly vs the token-serial oracle, bit-exact) and the chunkwise
+# tests — keeping the reference here structurally matched avoids false EXC/subnormal
+# divergence between two algebraically-equal but op-order-distinct backwards.
+#
+# Views: grad_q/grad_k/grad_v compare channel-wise; grad_g and grad_beta (the combined
+# erase+write gate grad) compare as scalars — the only quantities a scalar kernel
+# recovers. Distinct from the stock channel-wise GDN-2 gate above (eager fallback;
+# the channel-wise crown is Phase 3).
+_GDN2_SCALAR_AUX_SEED = 51217
+GDN2_REDUCTION_VIEWS: tuple[str, ...] = ("grad_q", "grad_k", "grad_v", "grad_g", "grad_beta")
+
+
+def _gdn2_bwd_aux_scalar(
+    batch: int,
+    seq_len: int,
+    nheads: int,
+    d_k: int,
+    d_v: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Scalar-reducible (q, k, v, g, b, w): g channel-constant, ``b = w = beta·1``.
+
+    Same near-integrator decay distribution as ``_gdn2_bwd_aux`` (official Mamba
+    dt-init x per-head negative rate) but with NO per-channel jitter, so g is a single
+    log-decay per token broadcast across d_k; beta is sigmoid-squashed into (0, 1) and
+    broadcast as both the erase (b, key axis) and write (w, value axis) gate. Draw
+    order under ``_GDN2_SCALAR_AUX_SEED`` is pinned.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_GDN2_SCALAR_AUX_SEED)
+    q = torch.randn(batch, seq_len, nheads, d_k, generator=gen)
+    k = torch.randn(batch, seq_len, nheads, d_k, generator=gen)
+    v = torch.randn(batch, seq_len, nheads, d_v, generator=gen)
+    log_lo = math.log(_DT_MIN)
+    log_hi = math.log(_DT_MAX)
+    dt = torch.exp(torch.rand(batch, seq_len, nheads, generator=gen) * (log_hi - log_lo) + log_lo)
+    a_head = -torch.rand(nheads, generator=gen)
+    g_scalar = dt * a_head  # (batch, seq, nheads), <= 0
+    beta = torch.randn(batch, seq_len, nheads, generator=gen).sigmoid()
+    g = g_scalar.unsqueeze(-1).expand(batch, seq_len, nheads, d_k)
+    b = beta.unsqueeze(-1).expand(batch, seq_len, nheads, d_k)
+    w = beta.unsqueeze(-1).expand(batch, seq_len, nheads, d_v)
+
+    def cast(t: Tensor) -> Tensor:
+        return t.to(device=device, dtype=dtype).contiguous()
+
+    return cast(q), cast(k), cast(v), cast(g), cast(b), cast(w)
+
+
+def _gdn2_reduce_candidate(view: str, grads: Any) -> Tensor:
+    """One reduced view from a candidate's six-grad bundle (channel-summed for g/beta)."""
+    if view == "grad_q":
+        out: Tensor = grads[0]
+    elif view == "grad_k":
+        out = grads[1]
+    elif view == "grad_v":
+        out = grads[2]
+    elif view == "grad_g":
+        out = grads[3].sum(-1)
+    else:  # grad_beta = combined erase (grad_b) + write (grad_w)
+        out = grads[4].sum(-1) + grads[5].sum(-1)
+    return out
+
+
+def gdn2_reduction_candidate_adapter(
+    bwd_fn: Gdn2BwdCallable,
+    view: str,
+    *,
+    d_k: int,
+    d_v: int,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of one (possibly channel-summed) gradient of the assembly."""
+
+    def adapted(do: Tensor) -> Tensor:
+        batch, seq_len, d_model = do.shape
+        nheads = _gdn2_nheads(d_model, d_v)
+        aux = _gdn2_bwd_aux_scalar(batch, seq_len, nheads, d_k, d_v, do.device, do.dtype)
+        grads = bwd_fn(*aux, do.reshape(batch, seq_len, nheads, d_v))
+        return _gdn2_reduce_candidate(view, grads)
+
+    return adapted
+
+
+def gdn2_reduction_reference_adapter(
+    view: str,
+    *,
+    d_k: int,
+    d_v: int,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The pure-torch refs assembly behind the same reduced single-tensor interface."""
+
+    def adapted(do: Tensor) -> Tensor:
+        batch, seq_len, d_model = do.shape
+        nheads = _gdn2_nheads(d_model, d_v)
+        q, k, v, g, b, w = _gdn2_bwd_aux_scalar(
+            batch, seq_len, nheads, d_k, d_v, do.device, do.dtype
+        )
+        do4 = do.reshape(batch, seq_len, nheads, d_v)
+        grads = assembled_scalar_gdn2_backward(q, k, v, g, b, w, do4)
+        return _gdn2_reduce_candidate(view, grads)
+
+    return adapted
+
+
+_GDN2_REDUCTION_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    **{f: GDN2_BWD_GATE_OVERRIDES[f] for f in ("grad_q", "grad_k", "grad_v", "grad_g")},
+    "grad_beta": _bwd_view_overrides(
+        ord01_reduction_elements=512,
+        ord03_atol=3e-3,
+        ord03_rtol=3e-3,
+        prc02=_gdn2_prc02(_GDN2_PRC02_ATOL),
+    ),
+}
+
+
+def verify_gdn2_reduction_op(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    view: str,
+    d_k: int = GDN2_HEADDIM,
+    d_v: int = GDN2_HEADDIM,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+) -> dict[str, GateResult]:
+    """All 12 gates over one reduced view of the native scalar-GDN assembly."""
+    return _verify_op_views(
+        lambda saturate: gdn2_reduction_candidate_adapter(
+            bwd_fn, view, d_k=d_k, d_v=d_v, saturate=saturate
+        ),
+        lambda saturate: gdn2_reduction_reference_adapter(
+            view, d_k=d_k, d_v=d_v, saturate=saturate
+        ),
+        base_overrides=_GDN2_REDUCTION_OVERRIDES.get(view, {}),
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=False,
+    )
+
+
+def verify_gdn2_reduction_op_all_grads(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    d_k: int = GDN2_HEADDIM,
+    d_v: int = GDN2_HEADDIM,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over all five reduced views — the assembly's full reduction verdict."""
+    return {
+        view: verify_gdn2_reduction_op(
+            bwd_fn,
+            view=view,
+            d_k=d_k,
+            d_v=d_v,
+            device=device,
+            resource_meta=resource_meta,
+        )
+        for view in GDN2_REDUCTION_VIEWS
     }
 
 
