@@ -1,0 +1,131 @@
+{
+  "claim": "native channel-wise GDN-2 backward wall-clock vs fla/cuLA (correctness+availability, not fastest; ours is host-orchestrated pre-fusion)",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.11.0+cu128",
+    "triton": "3.6.0",
+    "python": "3.12.3"
+  },
+  "dtype": "bfloat16",
+  "runs": [
+    {
+      "shape": {
+        "batch": 1,
+        "seq_len": 512,
+        "nheads": 4,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_native_cw": {
+          "median_ms": 76133.09765625,
+          "std_ms": 177.0584331547659,
+          "min_ms": 76007.8984375,
+          "max_ms": 76258.296875,
+          "n_trials": 2.0,
+          "note": "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
+        },
+        "fla_scalar": {
+          "median_ms": 0.9070079922676086,
+          "std_ms": 0.01595195990703413,
+          "min_ms": 0.8867200016975403,
+          "max_ms": 0.9464960098266602,
+          "n_trials": 15.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      },
+      "fla_over_ours": 1.1913451838815987e-05,
+      "cula_over_ours": null
+    },
+    {
+      "shape": {
+        "batch": 1,
+        "seq_len": 1024,
+        "nheads": 8,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_native_cw": {
+          "median_ms": 307788.015625,
+          "std_ms": 845.0147006048363,
+          "min_ms": 307190.5,
+          "max_ms": 308385.53125,
+          "n_trials": 2.0,
+          "note": "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
+        },
+        "fla_scalar": {
+          "median_ms": 0.9342719912528992,
+          "std_ms": 0.04630438109386956,
+          "min_ms": 0.9120640158653259,
+          "max_ms": 1.1064640283584595,
+          "n_trials": 15.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      },
+      "fla_over_ours": 3.0354397956520475e-06,
+      "cula_over_ours": null
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 2048,
+        "nheads": 8,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "fla_scalar": {
+          "median_ms": 1.039199948310852,
+          "std_ms": 0.023940207185153453,
+          "min_ms": 1.0012160539627075,
+          "max_ms": 1.0696320533752441,
+          "n_trials": 15.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "ours_native_cw": "seq_len 2048 > --ours-max-seqlen 1024: host-orchestrated pre-fusion too slow to time here (gap quantified at the smaller shapes)",
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      }
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 4096,
+        "nheads": 4,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "fla_scalar": {
+          "median_ms": 1.0193599462509155,
+          "std_ms": 0.01836629502856522,
+          "min_ms": 0.9969279766082764,
+          "max_ms": 1.046336054801941,
+          "n_trials": 15.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "ours_native_cw": "seq_len 4096 > --ours-max-seqlen 1024: host-orchestrated pre-fusion too slow to time here (gap quantified at the smaller shapes)",
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      }
+    }
+  ]
+}
