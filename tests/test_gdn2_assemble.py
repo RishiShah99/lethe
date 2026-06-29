@@ -21,7 +21,9 @@ import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
 from flash_mamba_rl.kernels.cute.gdn2_assemble import (
     assemble_gdn2_backward_scalar,
     assembled_scalar_gdn2_backward,
+    k1_reverse_state_cw_ref,
     k1_reverse_state_ref,
+    k2_wy_vjp_cw_ref,
     k2_wy_vjp_ref,
 )
 from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
@@ -122,12 +124,35 @@ class TestWrapperAndDispatch:
         assert gdn2_native.is_available(torch.device("cpu")) is False
         assert gdn2_native.native_gdn2_backward(q, k, v, g_ch, b_g, w_g, do) is None
 
-    def test_native_none_for_channelwise_even_if_available(self, monkeypatch) -> None:
+    def test_native_routes_channelwise_to_crown(self, monkeypatch) -> None:
+        # Phase 3: genuinely channel-wise input dispatches to the crown assembly (was
+        # None in Phase 2). Inject the channel-wise refs for the box kernels.
         monkeypatch.setattr(gdn2_native, "is_available", lambda device=None: True)
-        q, k, v, g, beta, do = _scalar_inputs(1, 64, 2, 128, 64, dtype=torch.float32)
-        # genuinely channel-wise g (per-channel jitter) -> not scalar-reducible.
-        g_ch = g.unsqueeze(-1).expand_as(q).contiguous()
-        g_ch = g_ch - torch.rand_like(g_ch) * 0.01
+        monkeypatch.setattr(
+            gdn2_native, "_load_box_kernels_cw", lambda: (k1_reverse_state_cw_ref, k2_wy_vjp_cw_ref)
+        )
+        b, t, h, d_k, d_v = 1, 128, 2, 128, 128
+        q, k, v, g, beta, do = _scalar_inputs(b, t, h, d_k, d_v, dtype=torch.float32)
+        # genuinely channel-wise gates (per-channel jitter) -> not scalar-reducible.
+        g_ch = g.unsqueeze(-1).expand(b, t, h, d_k).contiguous() - torch.rand(b, t, h, d_k) * 0.01
+        b_g = (
+            beta.unsqueeze(-1).expand(b, t, h, d_k) + torch.rand(b, t, h, d_k) * 0.05
+        ).contiguous()
+        w_g = (
+            beta.unsqueeze(-1).expand(b, t, h, d_v) + torch.rand(b, t, h, d_v) * 0.05
+        ).contiguous()
+        got = gdn2_native.native_gdn2_backward(q, k, v, g_ch, b_g, w_g, do)
+        orc = reference_gdn2_backward(q, k, v, g_ch, b_g, w_g, do)
+        assert got is not None
+        assert _rel(got.grad_q, orc.grad_q) < 1e-4
+        assert _rel(got.grad_b, orc.grad_b) < 1e-4
+        assert _rel(got.grad_w, orc.grad_w) < 1e-4
+
+    def test_native_none_for_channelwise_wrong_dv(self, monkeypatch) -> None:
+        # Channel-wise but d_v not in the kernels' supported set -> None (eager fallback).
+        monkeypatch.setattr(gdn2_native, "is_available", lambda device=None: True)
+        q, k, v, g, beta, do = _scalar_inputs(1, 64, 2, 128, 48, dtype=torch.float32)
+        g_ch = g.unsqueeze(-1).expand_as(q).contiguous() - torch.rand_like(q) * 0.01
         b_g = beta.unsqueeze(-1).expand_as(q).contiguous()
         w_g = beta.unsqueeze(-1).expand_as(v).contiguous()
         assert gdn2_native.native_gdn2_backward(q, k, v, g_ch, b_g, w_g, do) is None

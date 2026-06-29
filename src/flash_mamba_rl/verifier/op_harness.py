@@ -55,7 +55,10 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import assembled_scalar_gdn2_backward
+from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+    assembled_channelwise_gdn2_backward,
+    assembled_scalar_gdn2_backward,
+)
 from flash_mamba_rl.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
@@ -1233,6 +1236,90 @@ def verify_gdn2_reduction_op_all_grads(
             resource_meta=resource_meta,
         )
         for view in GDN2_REDUCTION_VIEWS
+    }
+
+
+# ---------------------------------------------------------------------------
+# GDN-2 channel-wise gate: the Phase-3 crown native-assembly integration credential
+# ---------------------------------------------------------------------------
+
+# The Phase-3 native kernels are channel-wise GDN-2 (per-channel decay g; erase b on the
+# key axis, write w on the value axis). The channel-wise assembly
+# (kernels.cute.gdn2_assemble.assembled_channelwise_gdn2_backward) is graded here against
+# the channel-wise refs assembly (the kernels' readable contracts on their torch paths) —
+# the same candidate-vs-same-algorithm discipline as the scalar reduction gate, so all 12
+# gates verify contract compliance (differentiable, deterministic, dtype/exceptional/
+# subnormal-faithful). On a Blackwell box the candidate is the tcgen05 native path, turning
+# the gates into a real channel-wise kernel-vs-reference cross-check (tolerances re-pinned).
+# Independent VALUE correctness is carried by the fp64 oracle test (channel-wise assembly vs
+# the token-serial GDN-2 oracle, bit-exact) and the channel-wise chunkwise tests. All six
+# per-channel grads are viewed directly (no reduction) — this is the full crown credential,
+# distinct from the scalar reduction gate (5 channel-summed views) above. The channel-wise
+# aux (``_gdn2_bwd_aux``, per-channel g/b/w) is shared with the stock GDN-2 gate.
+
+
+def gdn2_channelwise_reference_adapter(
+    grad_field: str,
+    *,
+    headdim: int = GDN2_HEADDIM,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The channel-wise refs assembly behind the per-gradient single-tensor interface."""
+    idx = GDN2_BWD_GRAD_FIELDS.index(grad_field)
+
+    def adapted(do: Tensor) -> Tensor:
+        batch, seq_len, d_model = do.shape
+        nheads = _gdn2_nheads(d_model, headdim)
+        q, k, v, g, b, w = _gdn2_bwd_aux(batch, seq_len, nheads, headdim, do.device, do.dtype)
+        do4 = do.reshape(batch, seq_len, nheads, headdim)
+        grads = assembled_channelwise_gdn2_backward(q, k, v, g, b, w, do4)
+        out = grads[idx]
+        assert out is not None  # idx is always a grad field, never grad_initial_state
+        return out
+
+    return adapted
+
+
+def verify_gdn2_channelwise_op(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    grad_field: str,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    headdim: int = GDN2_HEADDIM,
+) -> dict[str, GateResult]:
+    """All 12 gates over one per-channel gradient view of the channel-wise assembly."""
+    return _verify_op_views(
+        lambda saturate: gdn2_bwd_candidate_adapter(
+            bwd_fn, grad_field, headdim=headdim, saturate=saturate
+        ),
+        lambda saturate: gdn2_channelwise_reference_adapter(
+            grad_field, headdim=headdim, saturate=saturate
+        ),
+        base_overrides=GDN2_BWD_GATE_OVERRIDES.get(grad_field, {}),
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=False,
+    )
+
+
+def verify_gdn2_channelwise_op_all_grads(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+    headdim: int = GDN2_HEADDIM,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over all six per-channel views — the channel-wise crown's full verdict."""
+    return {
+        grad_field: verify_gdn2_channelwise_op(
+            bwd_fn,
+            grad_field=grad_field,
+            device=device,
+            resource_meta=resource_meta,
+            headdim=headdim,
+        )
+        for grad_field in GDN2_BWD_GRAD_FIELDS
     }
 
 

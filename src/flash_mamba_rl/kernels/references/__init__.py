@@ -19,20 +19,34 @@ from .gdn2_chunkwise import (
     chunkwise_backward,
     chunkwise_forward,
 )
+from .gdn2_chunkwise_cw import (
+    ChunkwiseBackwardCW,
+    ChunkwiseForwardCW,
+    MicroGateBundleCW,
+    build_microgate_bundles_cw,
+    chunkwise_backward_cw,
+    chunkwise_forward_cw,
+)
 from .gdn_backward import Gdn2Grads, reference_gdn2_backward, reference_gdn2_forward
 from .mimo_backward import MimoGrads, reference_mimo_backward, reference_mimo_forward
 
 __all__ = [
     "ChunkwiseBackward",
+    "ChunkwiseBackwardCW",
     "ChunkwiseForward",
+    "ChunkwiseForwardCW",
     "FusedBlockGrads",
     "Gdn2Grads",
     "MicroGateBundle",
+    "MicroGateBundleCW",
     "MimoGrads",
     "SelectiveScanGrads",
     "build_microgate_bundles",
+    "build_microgate_bundles_cw",
     "chunkwise_backward",
+    "chunkwise_backward_cw",
     "chunkwise_forward",
+    "chunkwise_forward_cw",
     "reference_backward_selective_scan",
     "reference_complex_scan_rope",
     "reference_forward_chunked_scan",

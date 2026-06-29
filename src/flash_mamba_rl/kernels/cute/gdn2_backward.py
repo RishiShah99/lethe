@@ -30,15 +30,25 @@ import importlib
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import K1Fn, K2Fn, assembled_scalar_gdn2_backward
+from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+    K1Fn,
+    K1FnCW,
+    K2Fn,
+    K2FnCW,
+    assembled_channelwise_gdn2_backward,
+    assembled_scalar_gdn2_backward,
+)
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
 SUPPORTED_DTYPES: tuple[torch.dtype, ...] = (torch.bfloat16, torch.float16, torch.float32)
 
-# The compiled tcgen05 kernels target these tile dims (scratch/gdn2_bwd_{dhu,wy}.py).
+# The compiled tcgen05 kernels target these tile dims (scratch/gdn2_bwd_{dhu,wy}*.py).
 _KERNEL_D_K = 128
 _KERNEL_D_V = 64
 _KERNEL_CHUNK = 64
+# The channel-wise (Phase-3) kernels route GEMMs through the same (128,64,128) config with
+# N-tiling, so the value axis may be 64 or 128 (the crown target is d_k=d_v=128).
+_KERNEL_D_V_CW: tuple[int, ...] = (64, 128)
 
 
 def is_available(device: torch.device | None = None) -> bool:
@@ -79,6 +89,13 @@ def _load_box_kernels() -> tuple[K1Fn, K2Fn]:
     return k1, k2
 
 
+def _load_box_kernels_cw() -> tuple[K1FnCW, K2FnCW]:
+    """Lazily load the channel-wise (Phase-3) tcgen05 K#1/K#2 kernels (box-only)."""
+    k1: K1FnCW = importlib.import_module("scratch.gdn2_bwd_dhu_cw").run_k1_incB
+    k2: K2FnCW = importlib.import_module("scratch.gdn2_bwd_wy_cw").run_k2
+    return k1, k2
+
+
 def native_gdn2_backward(
     q: Tensor,
     k: Tensor,
@@ -95,18 +112,39 @@ def native_gdn2_backward(
 
     Signature mirrors ``reference_gdn2_backward``. Returns ``None`` (the fallback
     contract) when the kernel is absent, the device is not Blackwell, the dtype is
-    unsupported, the tile dims do not match the kernels, or the regime is channel-wise
-    (Phase 3). Shapes: ``q``/``k``/``g``/``b`` [B, L, H, d_k]; ``v``/``w``/``do``
+    unsupported, or the tile dims do not match the kernels. The scalar-reducible regime
+    (``b = w = beta``, ``g`` channel-constant) routes through the Phase-2 scalar assembly
+    (d_v=64); the genuinely channel-wise regime routes through the Phase-3 crown assembly
+    (d_v in {64, 128}). Shapes: ``q``/``k``/``g``/``b`` [B, L, H, d_k]; ``v``/``w``/``do``
     [B, L, H, d_v].
     """
     if not is_available(q.device) or q.dtype not in SUPPORTED_DTYPES:
         return None
-    if g.shape[-1] != _KERNEL_D_K or w.shape[-1] != _KERNEL_D_V or q.shape[1] % _KERNEL_CHUNK != 0:
+    if g.shape[-1] != _KERNEL_D_K or q.shape[1] % _KERNEL_CHUNK != 0:
         return None
-    if not _is_scalar_reducible(g, b, w):
+
+    if _is_scalar_reducible(g, b, w):
+        if w.shape[-1] != _KERNEL_D_V:  # the scalar tcgen05 kernels are dim-locked to d_v=64
+            return None
+        k1_fn, k2_fn = _load_box_kernels()
+        return assembled_scalar_gdn2_backward(
+            q,
+            k,
+            v,
+            g,
+            b,
+            w,
+            do,
+            scale=scale,
+            use_qk_l2norm=use_qk_l2norm,
+            k1_fn=k1_fn,
+            k2_fn=k2_fn,
+        )
+
+    if w.shape[-1] not in _KERNEL_D_V_CW:
         return None
-    k1_fn, k2_fn = _load_box_kernels()
-    return assembled_scalar_gdn2_backward(
+    k1_cw, k2_cw = _load_box_kernels_cw()
+    return assembled_channelwise_gdn2_backward(
         q,
         k,
         v,
@@ -116,6 +154,6 @@ def native_gdn2_backward(
         do,
         scale=scale,
         use_qk_l2norm=use_qk_l2norm,
-        k1_fn=k1_fn,
-        k2_fn=k2_fn,
+        k1_fn=k1_cw,
+        k2_fn=k2_cw,
     )

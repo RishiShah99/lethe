@@ -44,6 +44,10 @@ import torch
 from torch import Tensor
 
 from flash_mamba_rl.kernels.references.gdn2_chunkwise import ChunkwiseForward, chunkwise_forward
+from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+    ChunkwiseForwardCW,
+    chunkwise_forward_cw,
+)
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
 RCP_LN2 = 1.0 / math.log(2.0)
@@ -58,6 +62,14 @@ K1Fn = Callable[
 K2Fn = Callable[
     [Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor],
     tuple[Tensor, Tensor, Tensor, Tensor],
+]
+
+# Channel-wise (Phase 3) kernel callables. K#1 keeps the scalar arity (g2/g_last are
+# channel-wise tensors); K#2 gains a separate write-gate grad ``dw`` (5 returns).
+K1FnCW = K1Fn
+K2FnCW = Callable[
+    [Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor],
+    tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
 ]
 
 
@@ -432,6 +444,340 @@ def assembled_scalar_gdn2_backward(
         grad_g=grad_g.contiguous(),
         grad_b=grad_b.contiguous(),
         grad_w=grad_w.contiguous(),
+        grad_initial_state=None,
+    )
+    if half:
+        out = Gdn2Grads(
+            grad_q=out.grad_q.to(in_dtype),
+            grad_k=out.grad_k.to(in_dtype),
+            grad_v=out.grad_v.to(in_dtype),
+            grad_g=out.grad_g.to(in_dtype),
+            grad_b=out.grad_b.to(in_dtype),
+            grad_w=out.grad_w.to(in_dtype),
+            grad_initial_state=None,
+        )
+    return out
+
+
+# ===========================================================================
+# Phase 3 — channel-wise (the crown): per-channel decay g, erase b, write w
+# ===========================================================================
+
+
+def k1_reverse_state_cw_ref(
+    q: Tensor,
+    k: Tensor,
+    wy: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Channel-wise K#1 — reverse inter-chunk state scan (B4), kernel statement order.
+
+    The scalar lift with per-channel decay folded *inside* the contractions:
+    ``b_dv = (k (.) decay_end) @ b_dh + dv_local`` (decay on the key axis, no longer a
+    post-multiply), and the carry decays per key channel:
+    ``b_dh = exp2(g_last)[:,None] (.) b_dh + (q (.) gamma)^T do - wy^T b_dv``. ``g2``
+    [B,H,NT,C,d_k]; ``g_last`` [B,H,NT,d_k]. Returns ``(dh, dv2, dh0)``.
+    """
+    b, h, nt, c, _d_k = q.shape
+    d_v = do.shape[-1]
+    gamma = torch.exp2(g2)
+    b_dh = dht.clone()
+    dh = torch.zeros_like(dht).unsqueeze(2).repeat(1, 1, nt, 1, 1)
+    dv2 = torch.zeros(b, h, nt, c, d_v, dtype=q.dtype, device=q.device)
+
+    for it in reversed(range(nt)):
+        dh[:, :, it] = b_dh
+        decay_end = torch.exp2(g_last[:, :, it][..., None, :] - g2[:, :, it])  # [B,H,C,d_k]
+        b_dv = (k[:, :, it] * decay_end) @ b_dh + dv_local[:, :, it]
+        dv2[:, :, it] = b_dv
+        qg = q[:, :, it] * gamma[:, :, it]
+        t = qg.transpose(-1, -2) @ do[:, :, it] - wy[:, :, it].transpose(-1, -2) @ b_dv
+        b_dh = torch.exp2(g_last[:, :, it])[..., :, None] * b_dh + t
+
+    return dh, dv2, b_dh
+
+
+def k2_wy_vjp_cw_ref(
+    k: Tensor,
+    v: Tensor,
+    b: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    t_mat: Tensor,
+    dwy: Tensor,
+    du: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Channel-wise K#2 — WY/triangular-inverse VJP (B6). Returns ``(dk2, dv, db, dw, dg2)``.
+
+    VJP of the channel-wise B1 map ``(k, v, b, w, g) -> (u = T(w (.) v), wy = T(b (.) gamma (.) k))``,
+    ``T = (I + M)^{-1}`` with ``M[i,s] = sum_d (b k)_i[d] k_s[d] exp2(g2_i[d]-g2_s[d])`` (strict
+    lower). The inverse adjoint uses ``T`` reused (never re-inverted): ``dT = du P^T + dwy Q^T``,
+    ``dM = strict_lower(-(T^T dT T^T))``, then ``dM`` and ``dQ``/``dP`` push onto k/v/b/w/g
+    through the per-channel decay. ``dg`` exits reverse-cumsum in raw-g space (key axis).
+    """
+    bsz, hh, nt, c, d_k = k.shape
+    d_v = v.shape[-1]
+
+    def _flat(x: Tensor) -> Tensor:
+        return x.reshape(bsz * hh * nt, *x.shape[3:])
+
+    kf, vf, bf, wf, g2f, tf = (
+        _flat(k),
+        _flat(v),
+        _flat(b),
+        _flat(w),
+        _flat(g2),
+        _flat(t_mat),
+    )
+    dwyf, duf = _flat(dwy), _flat(du)
+    sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=kf.device), -1)
+
+    gamma = torch.exp2(g2f)  # [N,C,d_k]
+    decay_rel = torch.exp2(g2f[:, :, None, :] - g2f[:, None, :, :])  # [N,C,C,d_k]
+    bk = bf * kf  # [N,C,d_k]
+    pwv = wf * vf  # write term P = w (.) v  [N,C,d_v]
+    q_kbg = bk * gamma  # Q = b (.) gamma (.) k  [N,C,d_k]
+
+    tt = tf.transpose(-1, -2)
+    dp = tt @ duf  # [N,C,d_v]
+    dq_wy = tt @ dwyf  # [N,C,d_k]
+    d_t = duf @ pwv.transpose(-1, -2) + dwyf @ q_kbg.transpose(-1, -2)  # [N,C,C]
+    d_m = torch.where(sl, -(tt @ d_t @ tt), torch.zeros_like(d_t))  # [N,C,C]
+
+    dv = dp * wf  # from P = w (.) v
+    dw = dp * vf
+
+    dbk_q = dq_wy * gamma  # from Q's bk factor
+    dg2_q = dq_wy * q_kbg * LN2  # from Q's gamma factor (gamma = exp2(g2))
+
+    dbk_m = torch.einsum("nis,nsd,nisd->nid", d_m, kf, decay_rel)
+    dk_m = torch.einsum("nis,nid,nisd->nsd", d_m, bk, decay_rel)
+    e = torch.einsum("nis,nid,nsd,nisd->nisd", d_m, bk, kf, decay_rel)  # [N,C,C,d_k]
+    dg2_m = LN2 * (e.sum(dim=2) - e.sum(dim=1))  # [N,C,d_k]
+
+    dbk = dbk_q + dbk_m
+    db = dbk * kf
+    dk = dbk * bf + dk_m
+    dg2 = dg2_q + dg2_m
+    dg = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2, [1]), 1), [1])  # reverse-cumsum over C
+
+    def _unflat(x: Tensor, last: int) -> Tensor:
+        return x.reshape(bsz, hh, nt, c, last)
+
+    return (
+        _unflat(dk, d_k),
+        _unflat(dv, d_v),
+        _unflat(db, d_k),
+        _unflat(dw, d_v),
+        _unflat(dg, d_k),
+    )
+
+
+def _stage_b_vjp_cw(
+    fwd: ChunkwiseForwardCW, do: Tensor, *, create_graph: bool
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """VJP of channel-wise Stage B (u, wy, h0 cut as leaves).
+
+    Returns (dq_B, dk_B, dg_B, dwy, du, dh0). Rebuilds the channel-wise recurrence + read
+    with ``u``/``wy`` supplied as fresh leaves so the k/g grads here exclude the B1 map
+    (K#2 owns it). ``g`` is raw per-token channel-wise (the K#2 space).
+    """
+    dtype, dev = fwd.q.dtype, fwd.q.device
+    b, h, nt, c, d_k = fwd.q.shape
+
+    q_sn = fwd.q.detach().clone().requires_grad_(True)
+    k_n = fwd.k.detach().clone().requires_grad_(True)
+    u_lf = fwd.u.detach().clone().requires_grad_(True)
+    wy_lf = fwd.wy.detach().clone().requires_grad_(True)
+    h0_lf = fwd.h_list[0].detach().clone().requires_grad_(True)
+
+    g_tok = torch.diff(
+        fwd.g2 / RCP_LN2, dim=-2, prepend=torch.zeros(b, h, nt, 1, d_k, dtype=dtype, device=dev)
+    )
+    g_lf = g_tok.detach().clone().requires_grad_(True)
+
+    g2 = torch.cumsum(g_lf, dim=-2) * RCP_LN2
+    gamma = torch.exp2(g2)
+    g_last = g2[..., -1, :]
+    lower_incl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=dev), 0)
+    do_c = _to_chunks(do, c)
+
+    o_list: list[Tensor] = []
+    hh = h0_lf
+    for ci in range(nt):
+        gamma_c, g2_c, glast_c = gamma[:, :, ci], g2[:, :, ci], g_last[:, :, ci]
+        decay_rel = torch.exp2(g2_c[..., :, None, :] - g2_c[..., None, :, :])
+        a_qk = torch.einsum("...id,...sd,...isd->...is", q_sn[:, :, ci], k_n[:, :, ci], decay_rel)
+        a_qk = torch.where(lower_incl, a_qk, torch.zeros_like(a_qk))
+        v_new = u_lf[:, :, ci] - wy_lf[:, :, ci] @ hh
+        qg = q_sn[:, :, ci] * gamma_c
+        o_list.append(qg @ hh + a_qk @ v_new)
+        decay_end = torch.exp2(glast_c[..., None, :] - g2_c)
+        k_dec = k_n[:, :, ci] * decay_end
+        hh = torch.exp2(glast_c)[..., :, None] * hh + k_dec.transpose(-1, -2) @ v_new
+
+    o = torch.stack(o_list, dim=2)
+    dq_b, dk_b, dg_b, dwy, du, dh0 = torch.autograd.grad(
+        o, (q_sn, k_n, g_lf, wy_lf, u_lf, h0_lf), do_c, create_graph=create_graph
+    )
+    return dq_b, dk_b, dg_b, dwy, du, dh0
+
+
+@dataclass
+class ChannelwiseGdn2Grads:
+    """Channel-wise GDN-2 backward output: six full channel-wise grads + dh0.
+
+    ``dq``/``dk`` [B,T,H,d_k]; ``dv`` [B,T,H,d_v]; ``dg``/``db`` [B,T,H,d_k] (key axis);
+    ``dw`` [B,T,H,d_v] (value axis); ``dh0`` [B,H,d_k,d_v]. Unlike the scalar path nothing
+    is channel-summed — these are the crown's per-channel gradients.
+    """
+
+    dq: Tensor
+    dk: Tensor
+    dv: Tensor
+    dg: Tensor
+    db: Tensor
+    dw: Tensor
+    dh0: Tensor
+
+
+def assemble_gdn2_backward_channelwise(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    b: Tensor,
+    w: Tensor,
+    do: Tensor,
+    *,
+    chunk_len: int | None = None,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+    k1_fn: K1FnCW | None = None,
+    k2_fn: K2FnCW | None = None,
+    create_graph: bool = False,
+) -> ChannelwiseGdn2Grads:
+    """Assemble the six channel-wise GDN-2 grads from K#1 + K#2 + supporting torch stages.
+
+    Inputs channel-wise: ``q``/``k``/``g``/``b`` [B, T, H, d_k]; ``v``/``w``/``do``
+    [B, T, H, d_v]. ``k1_fn``/``k2_fn`` default to the channel-wise pure-torch references
+    (exact in fp64); pass the compiled tcgen05 kernels on a Blackwell box. The two-stage
+    splice is identical to the scalar path; the erase/write grads come straight from K#2's
+    separate ``db``/``dw`` (no beta split), and ``dg`` sums the B1 and stage-B parts.
+    """
+    k1 = k1_fn if k1_fn is not None else k1_reverse_state_cw_ref
+    k2 = k2_fn if k2_fn is not None else k2_wy_vjp_cw_ref
+    cl = pick_chunk_len(q.shape[1]) if chunk_len is None else chunk_len
+
+    fwd = chunkwise_forward_cw(
+        q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
+    )
+    dq_b, dk_b, dg_b, dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
+
+    do_c = _to_chunks(do, cl)
+    dv_local = fwd.A_qk.transpose(-1, -2) @ do_c
+    dht = torch.zeros_like(fwd.h_list[0])
+
+    def _det(t: Tensor) -> Tensor:
+        return t if create_graph else t.detach()
+
+    _dh, dv2, dh0 = k1(
+        _det(fwd.q),
+        _det(fwd.k),
+        _det(fwd.wy),
+        _det(fwd.g2),
+        _det(fwd.g_last),
+        _det(do_c),
+        _det(dv_local),
+        _det(dht),
+    )
+
+    dk2, dv, db, dw, dg2 = k2(
+        _det(fwd.k),
+        _det(fwd.v),
+        _det(fwd.b),
+        _det(fwd.w_gate),
+        _det(fwd.g2),
+        _det(fwd.T),
+        _det(dwy),
+        _det(dv2),
+    )
+
+    dq_n = _from_chunks(dq_b)
+    dk_n = _from_chunks(dk_b + dk2)
+    dg = _from_chunks(dg_b + dg2)
+    dv_full = _from_chunks(dv)
+    db_full = _from_chunks(db)
+    dw_full = _from_chunks(dw)
+
+    if use_qk_l2norm:
+        s = q.shape[-1] ** -0.5 if scale is None else scale
+        q_lf = q.detach().clone().requires_grad_(True)
+        k_lf = k.detach().clone().requires_grad_(True)
+        q_sn = _l2norm(q_lf) * s
+        k_nn = _l2norm(k_lf)
+        dq, dk = torch.autograd.grad(
+            (q_sn, k_nn), (q_lf, k_lf), (dq_n, dk_n), create_graph=create_graph
+        )
+    else:
+        s = q.shape[-1] ** -0.5 if scale is None else scale
+        dq, dk = dq_n * s, dk_n
+
+    return ChannelwiseGdn2Grads(dq=dq, dk=dk, dv=dv_full, dg=dg, db=db_full, dw=dw_full, dh0=dh0)
+
+
+def assembled_channelwise_gdn2_backward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    b: Tensor,
+    w: Tensor,
+    do: Tensor,
+    *,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+    k1_fn: K1FnCW | None = None,
+    k2_fn: K2FnCW | None = None,
+) -> Gdn2Grads:
+    """GDN-2-signature wrapper around the channel-wise assembly (the crown gate entry).
+
+    Mixed-precision contract (PRC-02): half inputs upcast to fp32 for the forward recompute
+    + supporting stages (the kernels still do their f16-operand GEMMs internally), each grad
+    rounds once at the end. fp64 (the gates' double-backward / gradcheck) runs through with
+    ``create_graph`` following ``do.requires_grad``. Returns all six per-channel grads
+    (``grad_initial_state`` is None — no initial state is fed at the gate).
+    """
+    in_dtype = q.dtype
+    half = in_dtype in (torch.float16, torch.bfloat16)
+    if half:
+        q, k, v, g, b, w, do = (t.to(torch.float32) for t in (q, k, v, g, b, w, do))
+
+    grads = assemble_gdn2_backward_channelwise(
+        q,
+        k,
+        v,
+        g,
+        b,
+        w,
+        do,
+        scale=scale,
+        use_qk_l2norm=use_qk_l2norm,
+        k1_fn=k1_fn,
+        k2_fn=k2_fn,
+        create_graph=do.requires_grad,
+    )
+    out = Gdn2Grads(
+        grad_q=grads.dq,
+        grad_k=grads.dk,
+        grad_v=grads.dv,
+        grad_g=grads.dg,
+        grad_b=grads.db,
+        grad_w=grads.dw,
         grad_initial_state=None,
     )
     if half:
