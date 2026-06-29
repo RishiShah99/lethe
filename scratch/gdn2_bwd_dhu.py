@@ -191,18 +191,31 @@ if _HAVE:
             grid=grid, block=(THREADS, 1, 1)
         )
 
+    _gemm_compiled = None  # cached cute.compile of _gemm_host (the fixed (128,128,64) tile)
+
     def _gemm_aa(a: Tensor, b: Tensor, out: Tensor) -> None:
         """Run increment A's proven (128,64,128) GEMM: ``out[128,64] = a[128,128] @ b[64,128]^T``.
 
         The whole increment-B reverse loop is expressed in this one config (natural
         orientation): GA is increment A's stacked GEMM verbatim, and G1 (k@b_dh) pads
         its M=C=64 output to 128 — both land on the M=128 TMEM fragment the epilogue
-        was proven for (an M=64 accumulator trips ``make_tmem_copy``). Syncs after
-        launch (the loop's interleaved torch ops feed the next GEMM); ``out`` must be a
+        was proven for (an M=64 accumulator trips ``make_tmem_copy``). ``out`` must be a
         fresh, standalone, contiguous tensor (the box write-back lesson).
+
+        THE dispatch fix (the launch-overhead win). Calling the ``@cute.jit`` ``_gemm_host``
+        directly re-traces its host body (tiled-MMA, smem layouts, TMA atoms) on EVERY call
+        — ~190 ms to launch a ~5 us kernel (measured B200, scratch/probe_gemm_overhead.py).
+        Every ``_gemm_aa`` call is the identical (128,128,64) tile, so ``cute.compile`` it
+        ONCE and reuse the compiled executable: ~190 ms/call → ~0.04 ms/call
+        (scratch/probe_gemm_compiled.py). No per-GEMM ``cuda.synchronize`` either — the
+        launch is default-stream ordered against the loop's torch ops that read this ``out``
+        and feed the next GEMM; the caller syncs ONCE at the end of its reverse loop.
         """
-        _gemm_host(_mark(a.contiguous()), _mark(b.contiguous()), _mark(out))
-        torch.cuda.synchronize()
+        global _gemm_compiled
+        ca, cb, cc = _mark(a.contiguous()), _mark(b.contiguous()), _mark(out)
+        if _gemm_compiled is None:
+            _gemm_compiled = cute.compile(_gemm_host, ca, cb, cc)
+        _gemm_compiled(ca, cb, cc)
 
 
 def _mark(t: Tensor) -> object:
@@ -245,7 +258,7 @@ def run_k1(
     for i in range(n_bh):
         ai, bi = a[i].contiguous(), bmat[i].contiguous()
         ci = torch.zeros(d_k, d_v, dtype=torch.float16, device=dev)
-        _gemm_host(_mark(ai), _mark(bi), _mark(ci))
+        _gemm_aa(ai, bi, ci)
         dh0[i] = ci
 
     torch.cuda.synchronize()
