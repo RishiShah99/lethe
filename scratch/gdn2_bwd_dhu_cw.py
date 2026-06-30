@@ -194,5 +194,142 @@ def run_k1_incB_batched(
     )
 
 
+# ------------------------------------------------------------------
+# Lever D — inc-B2 channel-wise: the crown lift of the scalar fused reverse loop.
+# Same fusion (one CTA per (b,hv), reverse it-loop in-kernel, b_dh resident, two GEMMs/chunk
+# on the proven (128,64,128) config, b_ga GMEM round-trip) with the channel-wise glue: the
+# decay folds into the G1 key operand (a_g1 = k⊙decay_end), b_dv adds dv_local directly, and
+# the carry decays per key channel (glast ∈ [d_k]). _run_k1_incB2_modelled is the kernel spec;
+# scratch/k1_incB2_orchestration_check.py grades it vs the fp64 channel-wise bundle.
+# ------------------------------------------------------------------
+
+
+def _incb2_pack_cw(
+    q: Tensor,
+    k: Tensor,
+    wy: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+) -> dict[str, Tensor]:
+    """Host-precompute channel-wise inc-B2 operand buffers, flat over L = n_bh·NT.
+
+    Mirrors :func:`scratch.gdn2_bwd_dhu._incb2_pack_scalar`; the channel-wise differences are
+    the decay folded into the G1 key operand (``a_g1 = (k⊙decay_end)`` padded) and the
+    per-key-channel carry (``glast ∈ [L, d_k]``). dv_local is added raw to b_dv (no post-decay).
+    """
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    n_bh = b * hv
+    ll = n_bh * nt
+    dev = q.device
+
+    gamma = torch.exp2(g2)
+    qg = q * gamma
+    decay_end = torch.exp2(g_last[..., None, :] - g2)  # [B,HV,NT,C,d_k]
+    glast = torch.exp2(g_last)  # [B,HV,NT,d_k]
+    k_dec = k * decay_end
+
+    def _flatL(x: Tensor) -> Tensor:
+        return x.reshape(ll, *x.shape[3:])
+
+    kdL, qgL, wyL, doL = _flatL(k_dec), _flatL(qg), _flatL(wy), _flatL(do)
+    dvlL, geL = _flatL(dv_local), _flatL(glast)
+
+    a_g1 = torch.zeros(ll, d_k, d_k, dtype=q.dtype, device=dev)
+    a_g1[:, :c] = kdL
+    a_ga = torch.cat([qgL, -wyL], dim=1).transpose(-1, -2).contiguous()  # [L, d_k, 2C]
+    b_ga = torch.zeros(ll, d_v, 2 * c, dtype=q.dtype, device=dev)
+    b_ga[:, :, :c] = doL.transpose(-1, -2)
+    return {"a_g1": a_g1, "a_ga": a_ga, "b_ga": b_ga, "dv_local": dvlL, "glast": geL}
+
+
+def _run_k1_incB2_modelled(
+    q: Tensor,
+    k: Tensor,
+    wy: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Pure-torch model of channel-wise inc-B2's in-kernel dataflow (the kernel spec).
+
+    Same statement order + b_ga round-trip as the scalar model; the glue is channel-wise.
+    Device/dtype-agnostic; in fp64 it reproduces the channel-wise K#1 bundle to roundoff.
+    Returns ``(dh, dv2, dh0)`` head-major chunked.
+    """
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    dev = q.device
+    n_bh = b * hv
+    buf = _incb2_pack_cw(q, k, wy, g2, g_last, do, dv_local)
+    a_g1, a_ga, b_ga = buf["a_g1"], buf["a_ga"], buf["b_ga"]
+    dv_local_L, glast = buf["dv_local"], buf["glast"]
+
+    b_dh = dht.reshape(n_bh, d_k, d_v).clone()
+    dh = torch.zeros(n_bh, nt, d_k, d_v, dtype=q.dtype, device=dev)
+    dv2 = torch.zeros(n_bh, nt, c, d_v, dtype=q.dtype, device=dev)
+
+    for i in range(n_bh):
+        for it in reversed(range(nt)):
+            lid = i * nt + it
+            dh[i, it] = b_dh[i]
+            bdv_raw = a_g1[lid] @ b_dh[i]  # [128, d_v]; G1 with decay folded into a_g1
+            b_dv = bdv_raw[:c] + dv_local_L[lid]  # [C, d_v]
+            dv2[i, it] = b_dv
+            b_ga[lid, :, c:] = b_dv.transpose(-1, -2)
+            t = a_ga[lid] @ b_ga[lid].transpose(-1, -2)  # [d_k, d_v]
+            b_dh[i] = glast[lid][:, None] * b_dh[i] + t  # per-key-channel carry
+
+    return (
+        dh.reshape(b, hv, nt, d_k, d_v),
+        dv2.reshape(b, hv, nt, c, d_v),
+        b_dh.reshape(b, hv, d_k, d_v),
+    )
+
+
+def run_k1_incB2(
+    q: Tensor,
+    k: Tensor,
+    wy: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Lever D channel-wise — the fused persistent reverse scan (the crown lift of run_k1_incB2).
+
+    Reuses the scalar module's ``_incb2_kernel`` verbatim; the channel-wise regime lives entirely
+    in the packed buffers (:func:`_incb2_pack_cw` folds decay into ``a_g1`` → the in-kernel G1
+    glue multiplies by ``decay = 1``, and ``glast`` is the real per-key-channel [L, d_k]). Values
+    are desk-gated bit-exact vs the fp64 channel-wise bundle by k1_incB2_orchestration_check.py.
+    Returns ``(dh, dv2, dh0)`` head-major chunked. BOX-UNTESTED — ``run_k1_incB`` stays default.
+    """
+    if not is_available():
+        raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
+    from scratch.gdn2_bwd_dhu import _incb2_launch
+
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    n_bh = b * hv
+    buf = _incb2_pack_cw(q, k, wy, g2, g_last, do, dv_local)
+    b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
+    decay = torch.ones(n_bh * nt, c, dtype=torch.float32, device=q.device)  # folded into a_g1
+    dh, dv2, dh0 = _incb2_launch(
+        buf["a_g1"], buf["a_ga"], buf["b_ga"], b_dh, decay, buf["dv_local"], buf["glast"],
+        n_bh, nt, c, d_k, d_v,
+    )
+    return (
+        dh.reshape(b, hv, nt, d_k, d_v),
+        dv2.reshape(b, hv, nt, c, d_v),
+        dh0.reshape(b, hv, d_k, d_v),
+    )
+
+
 # Lever B batched path is the default; run_k1_incB_serial stays as the proven fallback.
+# inc-B2 (run_k1_incB2 above, the fused kernel) supersedes both once box-green.
 run_k1_incB = run_k1_incB_batched

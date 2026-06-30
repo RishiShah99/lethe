@@ -580,7 +580,427 @@ def run_k1_incB_batched(
     )
 
 
+# ------------------------------------------------------------------
+# Lever D — inc-B2: the reverse it-loop fused into ONE persistent kernel per (b,hv).
+#
+# Lever B batched the (b,hv) groups but the reverse it-loop stays a sequential chain of
+# batched-GEMM launches + torch glue (NT iterations → the residual gap that grows with NT).
+# inc-B2 collapses that chain: one CTA owns one (b,hv) and runs the whole reverse scan
+# in-kernel, b_dh resident across chunks. Two GEMMs/chunk land on the SAME proven (128,64,128)
+# config as inc-A/inc-B-host — G1 (k@b_dh, M=C padded to 128) and GA ([qg|−w]@[do|b_dv]^T) —
+# so the only new mechanics are loop fusion + the GMEM round-trip of b_dh / b_dv (no SIMT
+# smem-fill of an MMA operand exists on Blackwell; scratch/gdn2_cfa_smoke.py is the evidence).
+#
+# The packing + glue are IDENTICAL in value to run_k1_incB_host (box-proven); what is new and
+# desk-validatable is the flat-L operand marshalling and the b_ga round-trip layout the kernel
+# reads. _run_k1_incB2_modelled runs that exact dataflow in torch — the spec the DSL kernel
+# transcribes, and the target of scratch/k1_incB2_orchestration_check.py.
+# ------------------------------------------------------------------
+
+
+def _incb2_pack_scalar(
+    q: Tensor,
+    k: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+) -> dict[str, Tensor]:
+    """Host-precompute inc-B2's per-chunk operand buffers, flattened over L = n_bh·NT.
+
+    Returns the four static GEMM-operand / glue buffers the persistent kernel TMAs in its
+    reverse loop (chunk ``it`` of group ``i`` is the flat tile ``i·NT + it``):
+
+      a_g1  [L, 128, 128]  k padded M=C→128, K=d_k          (G1 operand A)
+      a_ga  [L, 128, 128]  [qg | −w]^T = [d_k, 2C]          (GA operand A)
+      b_ga  [L, d_v, 2C]   [do^T | 0]; the 0 half is b_dv^T written in-kernel (GA operand B)
+      decay [L, C] · dv_local [L, C, d_v] · glast [L]       (the per-chunk SIMT glue)
+
+    Everything is the same orientation run_k1_incB_host feeds ``_gemm_aa`` (out = a @ b^T),
+    so the kernel inherits the box-proven packing; only the flat-L stacking is new.
+    """
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    n_bh = b * hv
+    ll = n_bh * nt
+    dev = q.device
+
+    gamma = torch.exp2(g2)
+    qg = q * gamma[..., None]
+    decay = torch.exp2(g_last[..., None] - g2)  # [B,HV,NT,C]
+    glast = torch.exp2(g_last)  # [B,HV,NT]
+
+    def _flatL(x: Tensor) -> Tensor:
+        return x.reshape(ll, *x.shape[3:])
+
+    kL, qgL, wL, doL = _flatL(k), _flatL(qg), _flatL(w), _flatL(do)
+    decL, dvlL, geL = _flatL(decay), _flatL(dv_local), glast.reshape(ll)
+
+    a_g1 = torch.zeros(ll, d_k, d_k, dtype=q.dtype, device=dev)
+    a_g1[:, :c] = kL
+    a_ga = torch.cat([qgL, -wL], dim=1).transpose(-1, -2).contiguous()  # [L, d_k, 2C]
+    b_ga = torch.zeros(ll, d_v, 2 * c, dtype=q.dtype, device=dev)
+    b_ga[:, :, :c] = doL.transpose(-1, -2)  # do^T; the [:, :, C:] half is b_dv^T in-kernel
+    return {
+        "a_g1": a_g1, "a_ga": a_ga, "b_ga": b_ga,
+        "decay": decL, "dv_local": dvlL, "glast": geL,
+    }
+
+
+def _run_k1_incB2_modelled(
+    q: Tensor,
+    k: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Pure-torch model of inc-B2's exact in-kernel dataflow (the kernel's spec).
+
+    Runs the reverse scan on the flat-L packed buffers in the same statement order the
+    persistent kernel uses, with the b_ga round-trip (write b_dv^T into b_ga's second half,
+    then read the full [do^T | b_dv^T] tile back as GA's B operand). The two ``@`` stand in
+    for the kernel's two tcgen05 GEMMs (out = a @ b^T). Device/dtype-agnostic; in fp64 it
+    reproduces the K#1 bundle to roundoff. Returns ``(dh, dv2, dh0)`` head-major chunked.
+    """
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    dev = q.device
+    n_bh = b * hv
+    buf = _incb2_pack_scalar(q, k, w, g2, g_last, do, dv_local)
+    a_g1, a_ga, b_ga = buf["a_g1"], buf["a_ga"], buf["b_ga"]
+    decay, dv_local_L, glast = buf["decay"], buf["dv_local"], buf["glast"]
+
+    b_dh = dht.reshape(n_bh, d_k, d_v).clone()
+    dh = torch.zeros(n_bh, nt, d_k, d_v, dtype=q.dtype, device=dev)
+    dv2 = torch.zeros(n_bh, nt, c, d_v, dtype=q.dtype, device=dev)
+
+    for i in range(n_bh):
+        for it in reversed(range(nt)):
+            lid = i * nt + it
+            dh[i, it] = b_dh[i]
+            bdv_raw = a_g1[lid] @ b_dh[i]  # [128, d_v], rows[:C] real (G1: a @ b_dh)
+            b_dv = bdv_raw[:c] * decay[lid][:, None] + dv_local_L[lid]  # [C, d_v]
+            dv2[i, it] = b_dv
+            b_ga[lid, :, c:] = b_dv.transpose(-1, -2)  # round-trip: b_dv^T into the 2nd half
+            t = a_ga[lid] @ b_ga[lid].transpose(-1, -2)  # [d_k, d_v] (GA: a @ b^T)
+            b_dh[i] = glast[lid] * b_dh[i] + t
+
+    return (
+        dh.reshape(b, hv, nt, d_k, d_v),
+        dv2.reshape(b, hv, nt, c, d_v),
+        b_dh.reshape(b, hv, d_k, d_v),
+    )
+
+
+if _HAVE:
+    # ------------------------------------------------------------------
+    # inc-B2 — the fused persistent reverse-loop kernel (box-burst v0).
+    #
+    # One CTA per (b,hv) (grid-z = n_bh); the reverse it-loop runs INSIDE. Each chunk fires
+    # the two proven (128,64,128) GEMMs (G1, GA) through _gemm_step — byte-identical mainloop +
+    # epilogue to the silicon-verified _gemm_kernel_b, only the L coordinate is selected
+    # dynamically per chunk. b_dh is resident across chunks via a GMEM round-trip: the SIMT carry
+    # writes it back (natural b_dh for output/carry + transposed b_dhT for G1's TMA operand), and
+    # b_dv^T is written into b_ga's second half for GA — both re-read by TMA next, so a proxy
+    # fence + barrier gates each round-trip (no SIMT smem-fill of an MMA operand exists on
+    # Blackwell; gdn2_cfa_smoke.py is the evidence). Values == run_k1_incB_host == the fp64 oracle
+    # (locked by scratch/k1_incB2_orchestration_check.py); the kernel only transcribes that flow.
+    #
+    # BOX VALIDATION CHECKLIST (the only unknowns left — everything numeric is desk-gated):
+    #   1. dynamic-L TMA: local_tile coord (0,0,None,lid) with lid a loop var (vs grid-z bidz).
+    #   2. round-trip fence: cute.arch.fence_proxy_async() + barrier between the SIMT store to a
+    #      GMEM scratch and the TMA that re-reads it (generic-proxy → async-proxy visibility).
+    #   3. pipeline/tmem reuse across 2·NT GEMMs: ACCUMULATE reset to False at each GEMM start;
+    #      tmem allocated once before the loop, freed after.
+    # ------------------------------------------------------------------
+    def _gemm_step(
+        tiled_mma: cute.TiledMma,
+        tma_a: cute.CopyAtom, mA: cute.Tensor, a_l: cutlass.Int32,
+        tma_b: cute.CopyAtom, mB: cute.Tensor, b_l: cutlass.Int32,
+        mC: cute.Tensor, c_l: cutlass.Int32,
+        sA: cute.Tensor, sB: cute.Tensor, tCtAcc: cute.Tensor,
+        ab_prod, ab_cons, acc_prod, acc_cons,  # noqa: ANN001 (pipeline participants)
+        tidx: cutlass.Int32, warp_idx: cutlass.Int32,
+    ) -> None:
+        """One proven (128,64,128) GEMM ``mC[..,c_l] = mA[..,a_l] @ mB[..,b_l]^T`` into tCtAcc.
+
+        Faithful to ``_gemm_kernel_b``'s mainloop + TMEM→RMEM→GMEM epilogue; the L mode is the
+        per-call dynamic coord (a_l / b_l / c_l differ between G1 and GA and the resident state).
+        ACCUMULATE is reset so the shared TMEM accumulator starts fresh each call.
+        """
+        gA = cute.local_tile(mA, _MNK_TILER, (0, 0, None, a_l), proj=(1, None, 1))
+        gB = cute.local_tile(mB, _MNK_TILER, (0, 0, None, b_l), proj=(None, 1, 1))
+        gC = cute.local_tile(mC, _MNK_TILER, (0, 0, None, c_l), proj=(1, 1, None))
+        thr_mma = tiled_mma.get_slice(0)
+        tCgC = thr_mma.partition_C(gC)
+
+        tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
+            tma_a, 0, cute.make_layout(1),
+            cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
+        )
+        tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
+            tma_b, 0, cute.make_layout(1),
+            cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
+        )
+        tCrA = tiled_mma.make_fragment_A(sA)
+        tCrB = tiled_mma.make_fragment_B(sB)
+
+        sub = 1
+        epi_tiler = ((cute.size(tCtAcc, mode=[0, 0]), cute.size(tCtAcc, mode=[0, 1]) // sub),)
+        tCtAcc_epi = cute.zipped_divide(tCtAcc, epi_tiler)
+        gC_epi = cute.zipped_divide(tCgC, epi_tiler)
+        tmem_atom = cute.make_copy_atom(tcgen05.Ld32x32bOp(tcgen05.Repetition.x64), _acc)
+        tmem_copy = tcgen05.make_tmem_copy(tmem_atom, tCtAcc_epi[None, 0])
+        tmem_thr = tmem_copy.get_slice(tidx)
+        tDtC = tmem_thr.partition_S(tCtAcc_epi)
+        tDgC = tmem_thr.partition_D(gC_epi)
+        tCrAcc = cute.make_rmem_tensor(tDgC[None, None, 0].shape, _acc)
+        tCrC = cute.make_rmem_tensor(tDgC[None, None, 0].shape, _io)
+
+        nk = cute.size(gA, mode=[2])
+        if warp_idx == 0:
+            acc_empty = acc_prod.acquire_and_advance()
+            tiled_mma.set(tcgen05.Field.ACCUMULATE, False)  # fresh accumulator each GEMM
+            for _kt in cutlass.range(nk, prefetch_stages=AB_STAGES - 1):
+                ab_e = ab_prod.acquire_and_advance()
+                cute.copy(tma_a, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                cute.copy(tma_b, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                ab_f = ab_cons.wait_and_advance()
+                for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
+                    cc = (None, None, kb, ab_f.index)
+                    cute.gemm(tiled_mma, tCtAcc, tCrA[cc], tCrB[cc], tCtAcc)
+                    tiled_mma.set(tcgen05.Field.ACCUMULATE, True)
+                ab_f.release()
+            acc_empty.commit()
+
+        acc_f = acc_cons.wait_and_advance()
+        for i in cutlass.range(cute.size(tDtC, mode=[2])):
+            cute.copy(tmem_copy, tDtC[None, None, i], tCrAcc)
+            tCrC.store(tCrAcc.load().to(_io))
+            cute.autovec_copy(tCrC, tDgC[None, None, i])
+        acc_f.release()
+        pipeline.sync(barrier_id=1)
+
+    @cute.kernel
+    def _incb2_kernel(
+        tiled_mma: cute.TiledMma,
+        tma_ag1: cute.CopyAtom, m_ag1: cute.Tensor,
+        tma_aga: cute.CopyAtom, m_aga: cute.Tensor,
+        tma_bdhT: cute.CopyAtom, m_bdhT: cute.Tensor,
+        tma_bga: cute.CopyAtom, m_bga: cute.Tensor,
+        m_bdv: cute.Tensor, m_t: cute.Tensor,
+        m_bdh: cute.Tensor, m_dh: cute.Tensor, m_dv2: cute.Tensor,
+        m_decay: cute.Tensor, m_dvl: cute.Tensor, m_glast: cute.Tensor,
+        a_layout: cute.ComposedLayout, b_layout: cute.ComposedLayout,
+        nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
+    ) -> None:
+        tidx, _, _ = cute.arch.thread_idx()
+        warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
+        _, _, bh = cute.arch.block_idx()
+
+        smem = utils.SmemAllocator()
+        storage = smem.allocate(_Smem)
+        sA = smem.allocate_tensor(_io, a_layout.outer, byte_alignment=128, swizzle=a_layout.inner)
+        sB = smem.allocate_tensor(_io, b_layout.outer, byte_alignment=128, swizzle=b_layout.inner)
+
+        tmem_bar = pipeline.NamedBarrier(barrier_id=1, num_threads=THREADS)
+        tmem = utils.TmemAllocator(storage.tmem_buf.ptr, barrier_for_retrieve=tmem_bar)
+        tmem.allocate(512)
+
+        if warp_idx == 0:
+            cpasync.prefetch_descriptor(tma_ag1)
+            cpasync.prefetch_descriptor(tma_aga)
+            cpasync.prefetch_descriptor(tma_bdhT)
+            cpasync.prefetch_descriptor(tma_bga)
+
+        nbytes = cute.size_in_bytes(_io, cute.select(a_layout, mode=[0, 1, 2])) + cute.size_in_bytes(
+            _io, cute.select(b_layout, mode=[0, 1, 2])
+        )
+        ab_prod, ab_cons = pipeline.PipelineTmaUmma.create(
+            num_stages=AB_STAGES,
+            producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
+            consumer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
+            tx_count=nbytes,
+            barrier_storage=storage.ab_mbar.data_ptr(),
+        ).make_participants()
+        acc_prod, acc_cons = pipeline.PipelineUmmaAsync.create(
+            num_stages=1,
+            producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
+            consumer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread, THREADS),
+            barrier_storage=storage.acc_mbar.data_ptr(),
+        ).make_participants()
+
+        acc_shape = tiled_mma.partition_shape_C(_MNK_TILER[:2])
+        tCtAcc = tiled_mma.make_fragment_C(acc_shape)
+        tmem.wait_for_alloc()
+        tCtAcc = cute.make_tensor(tmem.retrieve_ptr(_acc), tCtAcc.layout)
+        tmem.relinquish_alloc_permit()
+
+        for it in cutlass.range(nt):
+            i_t = nt - 1 - it
+            lid = bh * nt + i_t
+
+            # dh[lid] = current natural b_dh (read before this chunk's carry updates it)
+            for e in cutlass.range(tidx, D_K * d_v, THREADS):
+                r, col = e // d_v, e % d_v
+                m_dh[lid, r, col] = m_bdh[bh, r, col]
+            cute.arch.barrier()
+
+            # G1: bdv_raw[128,d_v] = a_g1[lid] @ b_dh^T[bh]  (resident b_dhT is the TMA operand)
+            _gemm_step(
+                tiled_mma, tma_ag1, m_ag1, lid, tma_bdhT, m_bdhT, bh, m_bdv, bh,
+                sA, sB, tCtAcc, ab_prod, ab_cons, acc_prod, acc_cons, tidx, warp_idx,
+            )
+
+            # SIMT glue: b_dv = bdv_raw[:C]·decay + dv_local; write dv2 + b_ga's b_dv^T half.
+            for e in cutlass.range(tidx, c * d_v, THREADS):
+                r, col = e // d_v, e % d_v
+                val = m_bdv[bh, r, col] * m_decay[lid, r] + m_dvl[lid, r, col]
+                m_dv2[lid, r, col] = val
+                m_bga[lid, col, c + r] = val  # b_dv^T into the second half (round-trip)
+            cute.arch.barrier()
+            cute.arch.fence_proxy_async()  # SIMT store → TMA read visibility (box item #2)
+
+            # GA: t[d_k,d_v] = [qg|−w]^T[lid] @ [do|b_dv]^T[lid]
+            _gemm_step(
+                tiled_mma, tma_aga, m_aga, lid, tma_bga, m_bga, lid, m_t, bh,
+                sA, sB, tCtAcc, ab_prod, ab_cons, acc_prod, acc_cons, tidx, warp_idx,
+            )
+
+            # SIMT carry: b_dh = exp2(g_last)·b_dh + t; write natural b_dh + transposed b_dhT.
+            for e in cutlass.range(tidx, D_K * d_v, THREADS):
+                r, col = e // d_v, e % d_v
+                val = m_glast[lid, r] * m_bdh[bh, r, col] + m_t[bh, r, col]
+                m_bdh[bh, r, col] = val
+                m_bdhT[bh, col, r] = val.to(_io)  # transposed operand for next chunk's G1
+            cute.arch.barrier()
+            cute.arch.fence_proxy_async()
+
+        tmem.free(tmem.retrieve_ptr(_acc))
+
+    @cute.jit
+    def _incb2_host(
+        m_ag1: cute.Tensor, m_aga: cute.Tensor, m_bdhT: cute.Tensor, m_bga: cute.Tensor,
+        m_bdv: cute.Tensor, m_t: cute.Tensor, m_bdh: cute.Tensor,
+        m_dh: cute.Tensor, m_dv2: cute.Tensor,
+        m_decay: cute.Tensor, m_dvl: cute.Tensor, m_glast: cute.Tensor,
+        n_bh: cutlass.Constexpr, nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
+    ) -> None:
+        op = tcgen05.MmaF16BF16Op(
+            _io, _acc, _MNK_INST, tcgen05.CtaGroup.ONE, tcgen05.OperandSource.SMEM,
+            cute.nvgpu.OperandMajorMode.K, cute.nvgpu.OperandMajorMode.K,
+        )
+        tiled_mma = cute.make_tiled_mma(op)
+        a_layout = sm100_utils.make_smem_layout_a(tiled_mma, _MNK_TILER, m_ag1.element_type, AB_STAGES)
+        b_layout = sm100_utils.make_smem_layout_b(tiled_mma, _MNK_TILER, m_bga.element_type, AB_STAGES)
+        a1 = cute.select(a_layout, mode=[0, 1, 2])
+        b1 = cute.select(b_layout, mode=[0, 1, 2])
+        op_tma = cute.nvgpu.cpasync.CopyBulkTensorTileG2SOp(tcgen05.CtaGroup.ONE)
+        at_ag1, t_ag1 = cute.nvgpu.make_tiled_tma_atom_A(op_tma, m_ag1, a1, _MNK_TILER, tiled_mma)
+        at_aga, t_aga = cute.nvgpu.make_tiled_tma_atom_A(op_tma, m_aga, a1, _MNK_TILER, tiled_mma)
+        at_bdhT, t_bdhT = cute.nvgpu.make_tiled_tma_atom_B(op_tma, m_bdhT, b1, _MNK_TILER, tiled_mma)
+        at_bga, t_bga = cute.nvgpu.make_tiled_tma_atom_B(op_tma, m_bga, b1, _MNK_TILER, tiled_mma)
+        _incb2_kernel(
+            tiled_mma, at_ag1, t_ag1, at_aga, t_aga, at_bdhT, t_bdhT, at_bga, t_bga,
+            m_bdv, m_t, m_bdh, m_dh, m_dv2, m_decay, m_dvl, m_glast,
+            a_layout, b_layout, nt, c, d_v,
+        ).launch(grid=(1, 1, n_bh), block=(THREADS, 1, 1))
+
+    _incb2_cache: dict[tuple[int, int, int, int], object] = {}  # cute.compile keyed (n_bh,nt,c,d_v)
+
+
+def _mark_simt(t: Tensor) -> object:
+    """Mark a plain contiguous tensor for in-kernel SIMT element access (no TMA atom)."""
+    return from_dlpack(t.contiguous(), assumed_align=16).mark_layout_dynamic(leading_dim=t.ndim - 1)
+
+
+def _incb2_launch(
+    a_g1: Tensor, a_ga: Tensor, b_ga: Tensor, b_dh: Tensor,
+    decay: Tensor, dvl: Tensor, glast: Tensor,
+    n_bh: int, nt: int, c: int, d_k: int, d_v: int,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Mark the inc-B2 operands, compile-cache :func:`_incb2_host`, launch once, return flat.
+
+    Shared by the scalar and channel-wise launchers — the regime difference lives entirely in
+    the packed buffers (cw folds decay into ``a_g1`` and passes ``decay = 1``; ``glast`` is
+    [L, d_k] in both, broadcast for scalar). ``b_dh`` is the resident state (mutated in place).
+    """
+    dev = a_g1.device
+    f16, f32 = torch.float16, torch.float32
+    ll = n_bh * nt
+
+    m_ag1 = _mark_b(a_g1.to(f16))  # [128,128,L] TMA operand A (G1)
+    m_aga = _mark_b(a_ga.to(f16))  # [128,128,L] TMA operand A (GA)
+    m_bga = _mark_b(b_ga.to(f16))  # [d_v,2C,L] TMA operand B (GA); 2nd half written in-kernel
+    b_dhT = b_dh.transpose(-1, -2).contiguous().to(f16)  # [n_bh,d_v,d_k] resident G1 operand
+    bdv_raw = torch.zeros(n_bh, d_k, d_v, dtype=f16, device=dev)  # G1 epilogue landing
+    t_scr = torch.zeros(n_bh, d_k, d_v, dtype=f16, device=dev)  # GA epilogue landing
+    dh = torch.zeros(ll, d_k, d_v, dtype=f16, device=dev)
+    dv2 = torch.zeros(ll, c, d_v, dtype=f16, device=dev)
+
+    args = (
+        m_ag1, m_aga, _mark_b(b_dhT), m_bga, _mark_b(bdv_raw), _mark_b(t_scr),
+        _mark_simt(b_dh), _mark_simt(dh), _mark_simt(dv2),
+        _mark_simt(decay.to(f32)), _mark_simt(dvl.to(f32)), _mark_simt(glast.to(f32)),
+        n_bh, nt, c, d_v,
+    )
+    key = (n_bh, nt, c, d_v)
+    ex = _incb2_cache.get(key)
+    if ex is None:
+        ex = cute.compile(_incb2_host, *args)
+        _incb2_cache[key] = ex
+    ex(*args)
+    torch.cuda.synchronize()
+    return (
+        dh.reshape(n_bh, nt, d_k, d_v),
+        dv2.reshape(n_bh, nt, c, d_v),
+        b_dh.reshape(n_bh, d_k, d_v),
+    )
+
+
+def run_k1_incB2(
+    q: Tensor,
+    k: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Lever D — the fused persistent reverse-state scan (one CTA per (b,hv), loop in-kernel).
+
+    Host-packs the flat-L operand buffers (:func:`_incb2_pack_scalar`) and launches
+    :func:`_incb2_kernel` ONCE for all n_bh groups; the reverse it-loop and the b_dh / b_dv
+    round-trips run in-kernel. The per-chunk values are the box-proven inc-B-host packing,
+    desk-gated bit-exact vs the fp64 oracle by scratch/k1_incB2_orchestration_check.py. Returns
+    ``(dh, dv2, dh0)`` head-major chunked. BOX-UNTESTED — staged for the focused B200 burst;
+    ``run_k1_incB`` stays the proven batched default until this is micro-gated GO.
+    """
+    if not _HAVE:
+        raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    n_bh = b * hv
+    buf = _incb2_pack_scalar(q, k, w, g2, g_last, do, dv_local)
+    b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
+    glast = buf["glast"][:, None].expand(n_bh * nt, d_k).contiguous()  # [L] scalar → [L,d_k]
+    dh, dv2, dh0 = _incb2_launch(
+        buf["a_g1"], buf["a_ga"], buf["b_ga"], b_dh, buf["decay"], buf["dv_local"], glast,
+        n_bh, nt, c, d_k, d_v,
+    )
+    return (
+        dh.reshape(b, hv, nt, d_k, d_v),
+        dv2.reshape(b, hv, nt, c, d_v),
+        dh0.reshape(b, hv, d_k, d_v),
+    )
+
+
 # Lever B is the default reverse-state path (batched over the (b,hv) groups). The per-group
 # host loop (run_k1_incB_host) stays as the proven fallback; --mode incB_host exercises it.
-# inc-B2 (the in-kernel fused reverse loop) supersedes both once authored.
+# inc-B2 (the fused persistent reverse loop, run_k1_incB2 above) supersedes both once box-green.
 run_k1_incB = run_k1_incB_batched

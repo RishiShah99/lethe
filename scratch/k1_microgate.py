@@ -41,7 +41,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bundle", type=str, required=True)
     ap.add_argument("--mode", type=str, default="incA",
-                    choices=["incA", "incB_host", "incB"])
+                    choices=["incA", "incB_host", "incB", "incB2"])
     ap.add_argument("--atol", type=float, default=2e-2)  # bf16 floor (fla test_gdn.py-class)
     ap.add_argument("--rtol", type=float, default=2e-2)
     ap.add_argument("--out", type=str, default="results/k1_microgate.json")
@@ -59,6 +59,7 @@ def main() -> None:
             "incA": kmod.run_k1,
             "incB_host": kmod.run_k1_incB_host,
             "incB": getattr(kmod, "run_k1_incB", kmod.run_k1_incB_host),
+            "incB2": kmod.run_k1_incB2,
         }[args.mode]
         out["kernel_available"] = kmod.is_available()
         payload = torch.load(args.bundle, weights_only=False)
