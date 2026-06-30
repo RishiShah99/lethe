@@ -710,15 +710,29 @@ if _HAVE:
     # Blackwell; gdn2_cfa_smoke.py is the evidence). Values == run_k1_incB_host == the fp64 oracle
     # (locked by scratch/k1_incB2_orchestration_check.py); the kernel only transcribes that flow.
     #
-    # BOX STATUS (2026-06-30, B200): COMPILES (cute.compile succeeds); FAILS at launch with a
-    # SIGSEGV that reproduces even at NT=1 — so the fault is in the per-chunk fused machinery, not
-    # cross-iteration carry or large-index bounds. compute-sanitizer was inconclusive (its driver
-    # hooks broke: spurious cuGetProcAddress_v2 errors). Silicon-fixed already: SIMT-store dtype
-    # casts (fp32→_io); the if→scf.if AST preprocess (GEMMs inlined, not a helper); the dual TMA /
-    # SIMT views over shared storage (_mark_b vs _mark_simt); the fence API name (fence_proxy).
-    # NEXT-BURST suspects to bisect (drop one at a time): the two GEMMs SHARING one pipeline + TMEM
-    # accumulator (vs a fresh lifecycle per GEMM); the b_ga / b_dhT round-trip fence sufficiency for
-    # the TMA bulk proxy; the dynamic-L local_tile coord (0,0,None,lid) with an arithmetic lid.
+    # BOX STATUS (2026-06-30, B200): COMPILES (cute.compile succeeds); FAILS at launch with a hard
+    # host SIGSEGV (core dumped) that survives CUDA_LAUNCH_BLOCKING=1 and is NOT caught by the
+    # microgate try/except → it fires inside ex(*args) (the launch), not a recoverable CUDA error.
+    # BISECTED via the `bisect` Constexpr knob (--bisect {0,1,2,3,4}; const_expr-guarded so each
+    # value compiles only the taken branch). The lever-B batched GEMM is GO=True on the same box
+    # (toolchain healthy). RULED OUT — all of these still SIGSEGV at NT=1:
+    #   #1 two GEMMs sharing one pipeline + TMEM accumulator  (bisect=1 G1-only crashes)
+    #   #2 the b_ga / b_dhT round-trip + proxy fence          (bisect=2 no-round-trip crashes)
+    #   #3 the dynamic-L local_tile coord (0,0,None,lid)      (bisect=3 plain `bh` coord crashes)
+    #      relinquish_alloc_permit ordering                   (bisect=4 relinquish-after-mainloop crashes)
+    # ⇒ The fault is the MINIMAL machinery: ONE tcgen05 GEMM (TMEM acc + async pipelines, allocated
+    #   OUTSIDE the loop and used INSIDE) wrapped in `for it in cutlass.range(nt)`, even at NT=1. The
+    #   proven _gemm_kernel_b runs the byte-identical body straight-line and works. NEXT (desk-first):
+    #   minimal repro = wrap _gemm_kernel_b's mainloop+epilogue in `cutlass.range(1)`; study a
+    #   reference looped-tcgen05 kernel (CuTeDSL persistent-GEMM / flash-attn) for the correct in-loop
+    #   TMEM/pipeline idiom (likely: retrieve the TMEM ptr / make_fragment_C INSIDE the loop so the
+    #   accumulator handle is region-local, not captured across the scf.for boundary). DO NOT grind
+    #   blind on the spot box. Debugger tooling (compute-sanitizer + cuda-gdb) is UNUSABLE on this box:
+    #   both halt on the DSL's import-time cuGetProcAddress_v2 broken hook, never reaching the kernel.
+    # Silicon-fixed already: SIMT-store dtype casts (fp32→_io); the if→scf.if AST preprocess (GEMMs
+    # inlined, not a helper; ALSO: bisect `if`s need cutlass.const_expr or they ICE as scf.if with the
+    # make_tmem_copy atom live across scf.yield); the dual TMA / SIMT views over shared storage
+    # (_mark_b vs _mark_simt); the fence API name (fence_proxy).
     # ------------------------------------------------------------------
     # The two GEMMs are INLINED in _incb2_kernel's loop (below): the DSL's if→scf.if AST
     # preprocess only reaches the @cute.kernel's own body, so `if warp_idx == 0` cannot live
@@ -737,7 +751,9 @@ if _HAVE:
         m_bdhT_s: cute.Tensor, m_bga_s: cute.Tensor, m_bdv_s: cute.Tensor, m_t_s: cute.Tensor,
         a_layout: cute.ComposedLayout, b_layout: cute.ComposedLayout,
         nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
+        bisect: cutlass.Constexpr,
     ) -> None:
+        # bisect: 0 full · 1 G1-only · 2 G1+GA no round-trips (the launch-SIGSEGV bisection knob).
         # m_bdhT / m_bga / m_bdv / m_t are the TMA / epilogue views (mark_b, permuted [R,S,L]);
         # the _s twins are natural-layout SIMT views over the SAME storage (the glue indexes [L,R,S]).
         tidx, _, _ = cute.arch.thread_idx()
@@ -780,7 +796,8 @@ if _HAVE:
         tCtAcc = tiled_mma.make_fragment_C(acc_shape)
         tmem.wait_for_alloc()
         tCtAcc = cute.make_tensor(tmem.retrieve_ptr(_acc), tCtAcc.layout)
-        tmem.relinquish_alloc_permit()
+        if cutlass.const_expr(bisect != 4):
+            tmem.relinquish_alloc_permit()
 
         for it in cutlass.range(nt):
             i_t = nt - 1 - it
@@ -793,7 +810,10 @@ if _HAVE:
             cute.arch.barrier()
 
             # ===== G1: m_bdv[·,bh] = m_ag1[·,lid] @ m_bdhT[·,bh]^T (proven (128,64,128) body) =====
-            gA = cute.local_tile(m_ag1, _MNK_TILER, (0, 0, None, lid), proj=(1, None, 1))
+            if cutlass.const_expr(bisect == 3):
+                gA = cute.local_tile(m_ag1, _MNK_TILER, (0, 0, None, bh), proj=(1, None, 1))
+            else:
+                gA = cute.local_tile(m_ag1, _MNK_TILER, (0, 0, None, lid), proj=(1, None, 1))
             gB = cute.local_tile(m_bdhT, _MNK_TILER, (0, 0, None, bh), proj=(None, 1, 1))
             gC = cute.local_tile(m_bdv, _MNK_TILER, (0, 0, None, bh), proj=(1, 1, None))
             thr_mma = tiled_mma.get_slice(0)
@@ -832,6 +852,8 @@ if _HAVE:
                         tiled_mma.set(tcgen05.Field.ACCUMULATE, True)
                     ab_f.release()
                 acc_empty.commit()
+            if cutlass.const_expr(bisect == 4):
+                tmem.relinquish_alloc_permit()  # proven-ordering probe: relinquish after mainloop
             acc_f = acc_cons.wait_and_advance()
             for i in cutlass.range(cute.size(tDtC, mode=[2])):
                 cute.copy(tmem_copy, tDtC[None, None, i], tCrAcc)
@@ -840,69 +862,74 @@ if _HAVE:
             acc_f.release()
             pipeline.sync(barrier_id=1)
 
-            # SIMT glue: b_dv = bdv_raw[:C]·decay + dv_local; write dv2 + b_ga's b_dv^T half.
-            for e in cutlass.range(tidx, c * d_v, THREADS):
-                r, col = e // d_v, e % d_v
-                val = m_bdv_s[bh, r, col].to(_acc) * m_decay[lid, r] + m_dvl[lid, r, col]
-                m_dv2[lid, r, col] = val.to(_io)
-                m_bga_s[lid, col, c + r] = val.to(_io)  # b_dv^T into the second half (round-trip)
-            cute.arch.barrier()
-            cute.arch.fence_proxy("async.global")  # SIMT global store → TMA (async-proxy) read
+            if cutlass.const_expr(bisect == 0 or bisect == 2):
+                # SIMT glue: b_dv = bdv_raw[:C]·decay + dv_local; write dv2 + b_ga's b_dv^T half.
+                for e in cutlass.range(tidx, c * d_v, THREADS):
+                    r, col = e // d_v, e % d_v
+                    val = m_bdv_s[bh, r, col].to(_acc) * m_decay[lid, r] + m_dvl[lid, r, col]
+                    m_dv2[lid, r, col] = val.to(_io)
+                    if cutlass.const_expr(bisect == 0):
+                        m_bga_s[lid, col, c + r] = val.to(_io)  # b_dv^T → 2nd half (round-trip)
+                cute.arch.barrier()
+                if cutlass.const_expr(bisect == 0):
+                    cute.arch.fence_proxy("async.global")  # SIMT store → TMA (async-proxy) read
 
-            # ===== GA: m_t[·,bh] = m_aga[·,lid] @ m_bga[·,lid]^T =====
-            gA = cute.local_tile(m_aga, _MNK_TILER, (0, 0, None, lid), proj=(1, None, 1))
-            gB = cute.local_tile(m_bga, _MNK_TILER, (0, 0, None, lid), proj=(None, 1, 1))
-            gC = cute.local_tile(m_t, _MNK_TILER, (0, 0, None, bh), proj=(1, 1, None))
-            thr_mma = tiled_mma.get_slice(0)
-            tCgC = thr_mma.partition_C(gC)
-            tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
-                tma_aga, 0, cute.make_layout(1),
-                cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
-            )
-            tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
-                tma_bga, 0, cute.make_layout(1),
-                cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
-            )
-            tCrA = tiled_mma.make_fragment_A(sA)
-            tCrB = tiled_mma.make_fragment_B(sB)
-            tCtAcc_epi = cute.zipped_divide(tCtAcc, epi_tiler)
-            gC_epi = cute.zipped_divide(tCgC, epi_tiler)
-            tmem_copy = tcgen05.make_tmem_copy(tmem_atom, tCtAcc_epi[None, 0])
-            tmem_thr = tmem_copy.get_slice(tidx)
-            tDtC = tmem_thr.partition_S(tCtAcc_epi)
-            tDgC = tmem_thr.partition_D(gC_epi)
-            tCrAcc = cute.make_rmem_tensor(tDgC[None, None, 0].shape, _acc)
-            tCrC = cute.make_rmem_tensor(tDgC[None, None, 0].shape, _io)
-            if warp_idx == 0:
-                acc_empty = acc_prod.acquire_and_advance()
-                tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
-                for _kt in cutlass.range(cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1):
-                    ab_e = ab_prod.acquire_and_advance()
-                    cute.copy(tma_aga, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
-                    cute.copy(tma_bga, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
-                    ab_f = ab_cons.wait_and_advance()
-                    for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
-                        cc = (None, None, kb, ab_f.index)
-                        cute.gemm(tiled_mma, tCtAcc, tCrA[cc], tCrB[cc], tCtAcc)
-                        tiled_mma.set(tcgen05.Field.ACCUMULATE, True)
-                    ab_f.release()
-                acc_empty.commit()
-            acc_f = acc_cons.wait_and_advance()
-            for i in cutlass.range(cute.size(tDtC, mode=[2])):
-                cute.copy(tmem_copy, tDtC[None, None, i], tCrAcc)
-                tCrC.store(tCrAcc.load().to(_io))
-                cute.autovec_copy(tCrC, tDgC[None, None, i])
-            acc_f.release()
-            pipeline.sync(barrier_id=1)
+                # ===== GA: m_t[·,bh] = m_aga[·,lid] @ m_bga[·,lid]^T =====
+                gA = cute.local_tile(m_aga, _MNK_TILER, (0, 0, None, lid), proj=(1, None, 1))
+                gB = cute.local_tile(m_bga, _MNK_TILER, (0, 0, None, lid), proj=(None, 1, 1))
+                gC = cute.local_tile(m_t, _MNK_TILER, (0, 0, None, bh), proj=(1, 1, None))
+                thr_mma = tiled_mma.get_slice(0)
+                tCgC = thr_mma.partition_C(gC)
+                tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
+                    tma_aga, 0, cute.make_layout(1),
+                    cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
+                )
+                tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
+                    tma_bga, 0, cute.make_layout(1),
+                    cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
+                )
+                tCrA = tiled_mma.make_fragment_A(sA)
+                tCrB = tiled_mma.make_fragment_B(sB)
+                tCtAcc_epi = cute.zipped_divide(tCtAcc, epi_tiler)
+                gC_epi = cute.zipped_divide(tCgC, epi_tiler)
+                tmem_copy = tcgen05.make_tmem_copy(tmem_atom, tCtAcc_epi[None, 0])
+                tmem_thr = tmem_copy.get_slice(tidx)
+                tDtC = tmem_thr.partition_S(tCtAcc_epi)
+                tDgC = tmem_thr.partition_D(gC_epi)
+                tCrAcc = cute.make_rmem_tensor(tDgC[None, None, 0].shape, _acc)
+                tCrC = cute.make_rmem_tensor(tDgC[None, None, 0].shape, _io)
+                if warp_idx == 0:
+                    acc_empty = acc_prod.acquire_and_advance()
+                    tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
+                    for _kt in cutlass.range(cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1):
+                        ab_e = ab_prod.acquire_and_advance()
+                        cute.copy(tma_aga, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                        cute.copy(tma_bga, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                        ab_f = ab_cons.wait_and_advance()
+                        for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
+                            cc = (None, None, kb, ab_f.index)
+                            cute.gemm(tiled_mma, tCtAcc, tCrA[cc], tCrB[cc], tCtAcc)
+                            tiled_mma.set(tcgen05.Field.ACCUMULATE, True)
+                        ab_f.release()
+                    acc_empty.commit()
+                acc_f = acc_cons.wait_and_advance()
+                for i in cutlass.range(cute.size(tDtC, mode=[2])):
+                    cute.copy(tmem_copy, tDtC[None, None, i], tCrAcc)
+                    tCrC.store(tCrAcc.load().to(_io))
+                    cute.autovec_copy(tCrC, tDgC[None, None, i])
+                acc_f.release()
+                pipeline.sync(barrier_id=1)
 
-            # SIMT carry: b_dh = exp2(g_last)·b_dh + t; write natural b_dh + transposed b_dhT.
-            for e in cutlass.range(tidx, D_K * d_v, THREADS):
-                r, col = e // d_v, e % d_v
-                val = m_glast[lid, r] * m_bdh[bh, r, col] + m_t_s[bh, r, col].to(_acc)
-                m_bdh[bh, r, col] = val
-                m_bdhT_s[bh, col, r] = val.to(_io)  # transposed operand for next chunk's G1
-            cute.arch.barrier()
-            cute.arch.fence_proxy("async.global")  # b_dhT round-trip → next chunk's G1 TMA
+                # SIMT carry: b_dh = exp2(g_last)·b_dh + t; write natural b_dh + transposed b_dhT.
+                for e in cutlass.range(tidx, D_K * d_v, THREADS):
+                    r, col = e // d_v, e % d_v
+                    val = m_glast[lid, r] * m_bdh[bh, r, col] + m_t_s[bh, r, col].to(_acc)
+                    m_bdh[bh, r, col] = val
+                    if cutlass.const_expr(bisect == 0):
+                        m_bdhT_s[bh, col, r] = val.to(_io)  # transposed operand for next G1
+                cute.arch.barrier()
+                if cutlass.const_expr(bisect == 0):
+                    cute.arch.fence_proxy("async.global")  # b_dhT round-trip → next chunk's G1 TMA
 
         tmem.free(tmem.retrieve_ptr(_acc))
 
@@ -914,6 +941,7 @@ if _HAVE:
         m_decay: cute.Tensor, m_dvl: cute.Tensor, m_glast: cute.Tensor,
         m_bdhT_s: cute.Tensor, m_bga_s: cute.Tensor, m_bdv_s: cute.Tensor, m_t_s: cute.Tensor,
         n_bh: cutlass.Constexpr, nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
+        bisect: cutlass.Constexpr,
     ) -> None:
         op = tcgen05.MmaF16BF16Op(
             _io, _acc, _MNK_INST, tcgen05.CtaGroup.ONE, tcgen05.OperandSource.SMEM,
@@ -933,10 +961,10 @@ if _HAVE:
             tiled_mma, at_ag1, t_ag1, at_aga, t_aga, at_bdhT, t_bdhT, at_bga, t_bga,
             m_bdv, m_t, m_bdh, m_dh, m_dv2, m_decay, m_dvl, m_glast,
             m_bdhT_s, m_bga_s, m_bdv_s, m_t_s,
-            a_layout, b_layout, nt, c, d_v,
+            a_layout, b_layout, nt, c, d_v, bisect,
         ).launch(grid=(1, 1, n_bh), block=(THREADS, 1, 1))
 
-    _incb2_cache: dict[tuple[int, int, int, int], object] = {}  # cute.compile keyed (n_bh,nt,c,d_v)
+    _incb2_cache: dict[tuple[int, ...], object] = {}  # cute.compile keyed (n_bh,nt,c,d_v,bisect)
 
 
 def _mark_simt(t: Tensor) -> object:
@@ -948,6 +976,8 @@ def _incb2_launch(
     a_g1: Tensor, a_ga: Tensor, b_ga: Tensor, b_dh: Tensor,
     decay: Tensor, dvl: Tensor, glast: Tensor,
     n_bh: int, nt: int, c: int, d_k: int, d_v: int,
+    *,
+    bisect: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Mark the inc-B2 operands, compile-cache :func:`_incb2_host`, launch once, return flat.
 
@@ -977,9 +1007,9 @@ def _incb2_launch(
         _mark_simt(b_dh), _mark_simt(dh), _mark_simt(dv2),
         _mark_simt(decay.to(f32)), _mark_simt(dvl.to(f32)), _mark_simt(glast.to(f32)),
         _mark_simt(b_dhT), _mark_simt(b_ga_16), _mark_simt(bdv_raw), _mark_simt(t_scr),
-        n_bh, nt, c, d_v,
+        n_bh, nt, c, d_v, bisect,
     )
-    key = (n_bh, nt, c, d_v)
+    key = (n_bh, nt, c, d_v, bisect)
     ex = _incb2_cache.get(key)
     if ex is None:
         ex = cute.compile(_incb2_host, *args)
@@ -1002,6 +1032,8 @@ def run_k1_incB2(
     do: Tensor,
     dv_local: Tensor,
     dht: Tensor,
+    *,
+    bisect: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Lever D — the fused persistent reverse-state scan (one CTA per (b,hv), loop in-kernel).
 
@@ -1023,6 +1055,7 @@ def run_k1_incB2(
     dh, dv2, dh0 = _incb2_launch(
         buf["a_g1"], buf["a_ga"], buf["b_ga"], b_dh, buf["decay"], buf["dv_local"], glast,
         n_bh, nt, c, d_k, d_v,
+        bisect=bisect,
     )
     return (
         dh.reshape(b, hv, nt, d_k, d_v),

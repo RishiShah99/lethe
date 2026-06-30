@@ -42,6 +42,10 @@ def main() -> None:
     ap.add_argument("--bundle", type=str, required=True)
     ap.add_argument("--mode", type=str, default="incA",
                     choices=["incA", "incB_host", "incB", "incB2"])
+    ap.add_argument("--bisect", type=int, default=0, choices=[0, 1, 2, 3, 4],
+                    help="incB2 SIGSEGV bisection: 0 full, 1 G1-only, 2 G1+GA no round-trips, "
+                         "3 G1-only with bh (not arithmetic lid) TMA coord, "
+                         "4 G1-only with relinquish after mainloop")
     ap.add_argument("--atol", type=float, default=2e-2)  # bf16 floor (fla test_gdn.py-class)
     ap.add_argument("--rtol", type=float, default=2e-2)
     ap.add_argument("--out", type=str, default="results/k1_microgate.json")
@@ -67,10 +71,13 @@ def main() -> None:
         exp = payload["expected"]
         out["meta"] = payload["meta"]
 
+        extra = {"bisect": args.bisect} if args.mode == "incB2" else {}
         dh, dv2, dh0 = runner(
             inp["q"], inp["k"], inp["w"], inp["g2"], inp["g_last"],
             inp["do"], inp["dv_local"], inp["dht"],
+            **extra,
         )
+        out["bisect"] = args.bisect
         checks = [
             _compare("dh", dh, exp["dh"], args.atol, args.rtol),
             _compare("dv2", dv2, exp["dv2"], args.atol, args.rtol),
