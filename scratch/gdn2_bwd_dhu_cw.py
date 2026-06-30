@@ -70,7 +70,7 @@ def run_k1_cw_ref(
     return dh, dv2, b_dh
 
 
-def run_k1_incB(
+def run_k1_incB_serial(
     q: Tensor,
     k: Tensor,
     wy: Tensor,
@@ -82,12 +82,12 @@ def run_k1_incB(
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Channel-wise K#1 step 1 — host-orchestrated reverse scan; GEMMs on tcgen05.
 
-    ``b_dh in [d_k, d_v]`` fp32 carried across the reverse chunk loop. Per chunk, two
-    matmuls route through the proven (128,64,128) GEMM via :func:`gdn2_bwd_wy._mm_tc`:
-    G1 ``(k (.) decay_end) @ b_dh`` (the key-axis decay folded into the operand) and GA
-    ``[qg | -wy] @ [do | b_dv]^T``. The carry ``b_dh = exp2(g_last)[:,None] (.) b_dh + GA``
-    decays per key channel. BOX-UNTESTED (math de-risked via run_k1_cw_ref). Returns
-    ``(dh, dv2, dh0)`` head-major chunked.
+    The proven per-(b,hv) fallback. ``b_dh in [d_k, d_v]`` fp32 carried across the reverse
+    chunk loop. Per chunk, two matmuls route through the proven (128,64,128) GEMM via
+    :func:`gdn2_bwd_wy._mm_tc`: G1 ``(k (.) decay_end) @ b_dh`` (key-axis decay folded into
+    the operand) and GA ``[qg | -wy] @ [do | b_dv]^T``. The carry
+    ``b_dh = exp2(g_last)[:,None] (.) b_dh + GA`` decays per key channel. Returns
+    ``(dh, dv2, dh0)`` head-major chunked. Lever B's :func:`run_k1_incB_batched` is the default.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -132,3 +132,67 @@ def run_k1_incB(
         dv2.reshape(b, hv, nt, c, d_v),
         b_dh.reshape(b, hv, d_k, d_v),
     )
+
+
+def run_k1_incB_batched(
+    q: Tensor,
+    k: Tensor,
+    wy: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Lever B — channel-wise reverse scan with the (b,hv) groups batched per step.
+
+    Same recurrence as :func:`run_k1_incB_serial` (identical math), but the ``for i in
+    range(n_bh)`` host loop collapses into the batch dim: per reverse chunk ``it`` the two
+    matmuls (G1 ``(k (.) decay_end)@b_dh``, GA ``[qg|−wy]@[do|b_dv]^T``) run ONCE over all
+    n_bh groups via :func:`gdn2_bwd_dhu._bmm_tc` (d_v in {64,128} via its N-tiling). The
+    ``it`` loop stays sequential — it carries ``b_dh``. Returns ``(dh, dv2, dh0)``.
+    """
+    if not is_available():
+        raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
+    from scratch.gdn2_bwd_dhu import _bmm_tc
+
+    b, hv, nt, c, d_k = q.shape
+    d_v = do.shape[-1]
+    dev = q.device
+    n_bh = b * hv
+
+    gamma = torch.exp2(g2)
+    qg = q * gamma
+    decay_end = torch.exp2(g_last[..., None, :] - g2)  # [B,HV,NT,C,d_k]
+    glast_exp = torch.exp2(g_last)  # [B,HV,NT,d_k]
+    k_dec = k * decay_end  # pre-scaled key for G1 (operand <= |k|)
+
+    def _flat(x: Tensor) -> Tensor:
+        return x.reshape(n_bh, *x.shape[2:])
+
+    kdf, qgf, wyf, dof = _flat(k_dec), _flat(qg), _flat(wy), _flat(do)
+    dvlf, gef = _flat(dv_local), _flat(glast_exp)
+    b_dh = _flat(dht).contiguous().float()  # [n_bh, d_k, d_v] resident
+
+    dh = torch.zeros(n_bh, nt, d_k, d_v, dtype=torch.float32, device=dev)
+    dv2 = torch.zeros(n_bh, nt, c, d_v, dtype=torch.float32, device=dev)
+
+    for it in reversed(range(nt)):
+        dh[:, it] = b_dh
+        b_dv = _bmm_tc(kdf[:, it], b_dh) + dvlf[:, it]  # [n_bh,C,d_v]
+        dv2[:, it] = b_dv
+        a_ga = torch.cat([qgf[:, it], -wyf[:, it]], dim=1).transpose(-1, -2)  # [n_bh,d_k,2C]
+        b_ga = torch.cat([dof[:, it], b_dv], dim=1)  # [n_bh,2C,d_v]
+        t = _bmm_tc(a_ga, b_ga)  # [n_bh,d_k,d_v]
+        b_dh = gef[:, it][:, :, None] * b_dh + t
+
+    torch.cuda.synchronize()
+    return (
+        dh.reshape(b, hv, nt, d_k, d_v),
+        dv2.reshape(b, hv, nt, c, d_v),
+        b_dh.reshape(b, hv, d_k, d_v),
+    )
+
+
+# Lever B batched path is the default; run_k1_incB_serial stays as the proven fallback.
+run_k1_incB = run_k1_incB_batched

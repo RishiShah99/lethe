@@ -1,0 +1,60 @@
+{
+  "device": "NVIDIA B200",
+  "bundle": "k1_bundle_nt4.pt",
+  "mode": "incB",
+  "kernel_available": true,
+  "meta": {
+    "scale": 0.08838834764831845,
+    "chunk_len": 64,
+    "B": 1,
+    "H": 1,
+    "NT": 4,
+    "C": 64,
+    "d_k": 128,
+    "d_v": 64
+  },
+  "checks": [
+    {
+      "name": "dh",
+      "shape": [
+        1,
+        1,
+        4,
+        128,
+        64
+      ],
+      "max_abs": 3.6794692277908325e-05,
+      "max_rel": 1.2813552618026733,
+      "finite": true,
+      "passed": true
+    },
+    {
+      "name": "dv2",
+      "shape": [
+        1,
+        1,
+        4,
+        64,
+        64
+      ],
+      "max_abs": 2.1219253540039062e-05,
+      "max_rel": 0.43635615706443787,
+      "finite": true,
+      "passed": true
+    },
+    {
+      "name": "dh0",
+      "shape": [
+        1,
+        1,
+        128,
+        64
+      ],
+      "max_abs": 4.1563063859939575e-05,
+      "max_rel": 2.9506266117095947,
+      "finite": true,
+      "passed": true
+    }
+  ],
+  "GO": true
+}

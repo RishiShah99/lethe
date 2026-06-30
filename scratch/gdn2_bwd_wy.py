@@ -133,16 +133,16 @@ def _mm_tc(x: Tensor, y: Tensor) -> Tensor:
     return out
 
 
-def run_k2(
+def run_k2_serial(
     k: Tensor, v: Tensor, beta: Tensor, g2: Tensor, t_mat: Tensor, dw: Tensor, du: Tensor
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """K#2 step 1 — host-orchestrated WY-VJP; the 7 GEMMs/chunk on tcgen05, glue in fp32.
 
-    BOX-UNTESTED (authored desk-side; both math and numerics de-risked — see the module
-    docstring). Mirrors ``gdn2_bwd_dhu.run_k1_incB_host``: every matmul routes through the
-    proven (128,64,128) GEMM via :func:`_mm_tc`; decay/ratio scalings, masks and the
-    reverse-cumsum stay fp32 torch (the verified numeric split). Returns ``(dk2, dv, db,
-    dg2)`` head-major chunked, matching the K#2 bundle's expected outputs.
+    The proven per-chunk fallback (silicon-verified). Mirrors
+    ``gdn2_bwd_dhu.run_k1_incB_host``: every matmul routes through the proven (128,64,128)
+    GEMM via :func:`_mm_tc`; decay/ratio scalings, masks and the reverse-cumsum stay fp32
+    torch (the verified numeric split). Returns ``(dk2, dv, db, dg2)`` head-major chunked.
+    Lever B's :func:`run_k2_batched` is the default; this stays for fallback/debug.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -197,3 +197,65 @@ def run_k2(
         dbf.reshape(b, h, nt, c),
         dgf.reshape(b, h, nt, c),
     )
+
+
+def run_k2_batched(
+    k: Tensor, v: Tensor, beta: Tensor, g2: Tensor, t_mat: Tensor, dw: Tensor, du: Tensor
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Lever B — WY-VJP with all n_idx=b*h*nt chunks batched into one GEMM per matmul-step.
+
+    The WY-VJP is per-chunk independent (no carry), so this is :func:`run_k2_ref`'s structure
+    verbatim with each ``@`` replaced by ONE batched tcgen05 GEMM (:func:`_bmm_tc`) over all
+    chunks; the glue (ratio/masks/reductions/reverse-cumsum) is already batched in the ref and
+    stays fp32 torch. Collapses ~7·n_idx single-CTA launches into ~one batched launch per
+    matmul-step — the biggest, lowest-risk lever-B win. Returns ``(dk2, dv, db, dg2)``.
+    """
+    if not is_available():
+        raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
+    from scratch.gdn2_bwd_dhu import _bmm_tc
+
+    b, h, nt, c, _ = k.shape
+    d_k, d_v = k.shape[-1], v.shape[-1]
+
+    def _flat(x: Tensor) -> Tensor:
+        return x.reshape(b * h * nt, *x.shape[3:])
+
+    kf, vf, betaf, g2f, tf = _flat(k), _flat(v), _flat(beta), _flat(g2), _flat(t_mat)
+    dwf, duf = _flat(dw), _flat(du)
+    sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=k.device), -1)
+
+    gamma = torch.exp2(g2f)
+    bv = betaf[..., None] * vf
+    bgk = (betaf * gamma)[..., None] * kf
+    ratio = gamma[..., :, None] / gamma[..., None, :]
+
+    kk = _bmm_tc(kf, kf.transpose(-1, -2))
+    tt = tf.transpose(-1, -2)
+    dbv = _bmm_tc(tt, duf)
+    dbgk = _bmm_tc(tt, dwf)
+    d_t = _bmm_tc(duf, bv.transpose(-1, -2)) + _bmm_tc(dwf, bgk.transpose(-1, -2))
+    d_a = -_bmm_tc(tt, _bmm_tc(d_t, tt))
+    d_m = torch.where(sl, d_a, torch.zeros_like(d_a))
+
+    d_kk = d_m * betaf[..., :, None] * ratio
+    dk2 = _bmm_tc(d_kk + d_kk.transpose(-1, -2), kf) + (betaf * gamma)[..., None] * dbgk
+    dv = betaf[..., None] * dbv
+    p = (dbgk * kf).sum(-1)
+    r = (dbv * vf).sum(-1)
+    db = r + gamma * p + (d_m * (ratio * kk)).sum(-1)
+
+    e = (d_m * betaf[..., :, None] * kk) * ratio
+    dg2_total = LN2 * (e.sum(-1) - e.sum(-2)) + (betaf * p) * LN2 * gamma
+    dg = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2_total, [-1]), -1), [-1])
+
+    torch.cuda.synchronize()
+    return (
+        dk2.reshape(b, h, nt, c, d_k),
+        dv.reshape(b, h, nt, c, d_v),
+        db.reshape(b, h, nt, c),
+        dg.reshape(b, h, nt, c),
+    )
+
+
+# Lever B batched path is the default; run_k2_serial stays as the proven per-chunk fallback.
+run_k2 = run_k2_batched

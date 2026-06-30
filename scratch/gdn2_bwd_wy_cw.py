@@ -110,7 +110,7 @@ def run_k2_cw_ref(
     )
 
 
-def run_k2(
+def run_k2_serial(
     k: Tensor,
     v: Tensor,
     b: Tensor,
@@ -122,11 +122,12 @@ def run_k2(
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Channel-wise K#2 step 1 — host-orchestrated WY-VJP; un-decayed GEMMs on tcgen05.
 
-    Mirrors ``gdn2_bwd_wy.run_k2``: the six un-decayed matmuls (dp, dq_wy, dT's two GEMMs,
-    dM's two GEMMs) route through the proven (128,64,128) GEMM via :func:`gdn2_bwd_wy._mm_tc`;
-    the decay-weighted pushes (dbk_m, dk_m, E -> dg2_m via ``decay_rel`` <= 1) and the
-    reverse-cumsum stay fp32 torch. Per-chunk independent. BOX-UNTESTED (math de-risked via
-    run_k2_cw_ref). Returns ``(dk2, dv, db, dw, dg2)`` head-major chunked.
+    The proven per-chunk fallback (silicon-verified). Mirrors ``gdn2_bwd_wy.run_k2_serial``:
+    the six un-decayed matmuls (dp, dq_wy, dT's two GEMMs, dM's two GEMMs) route through the
+    proven (128,64,128) GEMM via :func:`gdn2_bwd_wy._mm_tc`; the decay-weighted pushes
+    (dbk_m, dk_m, E -> dg2_m via ``decay_rel`` <= 1) and the reverse-cumsum stay fp32 torch.
+    Per-chunk independent. Returns ``(dk2, dv, db, dw, dg2)`` head-major chunked. Lever B's
+    :func:`run_k2_batched` is the default; this stays for fallback/debug.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -188,3 +189,75 @@ def run_k2(
         dwf.reshape(bsz, hh, nt, c, d_v),
         dgf.reshape(bsz, hh, nt, c, d_k),
     )
+
+
+def run_k2_batched(
+    k: Tensor,
+    v: Tensor,
+    b: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    t_mat: Tensor,
+    dwy: Tensor,
+    du: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Lever B — channel-wise WY-VJP with all n_idx chunks batched into one GEMM per step.
+
+    :func:`run_k2_cw_ref`'s structure verbatim with each un-decayed ``@`` replaced by ONE
+    batched tcgen05 GEMM (:func:`gdn2_bwd_dhu._bmm_tc`) over all chunks; the decay-weighted
+    pushes (``decay_rel`` einsums) and the reverse-cumsum are already batched in the ref and
+    stay fp32 torch. Per-chunk independent (no carry). Returns ``(dk2, dv, db, dw, dg2)``.
+    """
+    if not is_available():
+        raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
+    from scratch.gdn2_bwd_dhu import _bmm_tc
+
+    bsz, hh, nt, c, d_k = k.shape
+    d_v = v.shape[-1]
+
+    def _flat(x: Tensor) -> Tensor:
+        return x.reshape(bsz * hh * nt, *x.shape[3:])
+
+    kf, vf, bf, wf, g2f, tf = _flat(k), _flat(v), _flat(b), _flat(w), _flat(g2), _flat(t_mat)
+    dwyf, duf = _flat(dwy), _flat(du)
+    sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=kf.device), -1)
+
+    gamma = torch.exp2(g2f)
+    decay_rel = torch.exp2(g2f[:, :, None, :] - g2f[:, None, :, :])
+    bk = bf * kf
+    pwv = wf * vf
+    q_kbg = bk * gamma
+
+    tt = tf.transpose(-1, -2)
+    dp = _bmm_tc(tt, duf)
+    dq_wy = _bmm_tc(tt, dwyf)
+    d_t = _bmm_tc(duf, pwv.transpose(-1, -2)) + _bmm_tc(dwyf, q_kbg.transpose(-1, -2))
+    d_m = torch.where(sl, -_bmm_tc(tt, _bmm_tc(d_t, tt)), torch.zeros_like(d_t))
+
+    dv = dp * wf
+    dw = dp * vf
+    dbk_q = dq_wy * gamma
+    dg2_q = dq_wy * q_kbg * LN2
+    dbk_m = torch.einsum("nis,nsd,nisd->nid", d_m, kf, decay_rel)
+    dk_m = torch.einsum("nis,nid,nisd->nsd", d_m, bk, decay_rel)
+    e = torch.einsum("nis,nid,nsd,nisd->nisd", d_m, bk, kf, decay_rel)
+    dg2_m = LN2 * (e.sum(dim=2) - e.sum(dim=1))
+
+    dbk = dbk_q + dbk_m
+    db = dbk * kf
+    dk = dbk * bf + dk_m
+    dg2 = dg2_q + dg2_m
+    dg = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2, [1]), 1), [1])
+
+    torch.cuda.synchronize()
+    return (
+        dk.reshape(bsz, hh, nt, c, d_k),
+        dv.reshape(bsz, hh, nt, c, d_v),
+        db.reshape(bsz, hh, nt, c, d_k),
+        dw.reshape(bsz, hh, nt, c, d_v),
+        dg.reshape(bsz, hh, nt, c, d_k),
+    )
+
+
+# Lever B batched path is the default; run_k2_serial stays as the proven per-chunk fallback.
+run_k2 = run_k2_batched
