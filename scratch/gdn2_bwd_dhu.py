@@ -30,6 +30,7 @@ import torch
 from torch import Tensor
 
 try:
+    import cuda.bindings.driver as cuda_driver
     import cutlass
     import cutlass.cute as cute
     import cutlass.pipeline as pipeline
@@ -41,6 +42,18 @@ try:
     _HAVE = True
 except ImportError:  # pragma: no cover - CPU dev box
     _HAVE = False
+
+
+def _cur_stream() -> "cuda_driver.CUstream":
+    """torch's current CUDA stream as a CuTe-DSL ``CUstream``.
+
+    Threading this into every ``.launch(stream=…)`` is what makes the launches
+    CUDA-graph-capturable: with ``stream=None`` the DSL creates its OWN stream and
+    SYNCS after each launch (``_execute_cuda``), so capture sees an empty graph and
+    eager pays a hidden per-launch sync. During ``torch.cuda.graph`` capture this
+    returns the (non-default) capture stream, so the launches record into the graph.
+    """
+    return cuda_driver.CUstream(torch.cuda.current_stream().cuda_stream)
 
 CHUNK = 64
 D_K = 128
@@ -330,7 +343,9 @@ if _HAVE:
         tmem.free(tmem.retrieve_ptr(_acc))
 
     @cute.jit
-    def _gemm_host_b(a: cute.Tensor, b: cute.Tensor, c: cute.Tensor) -> None:
+    def _gemm_host_b(
+        a: cute.Tensor, b: cute.Tensor, c: cute.Tensor, stream: cuda_driver.CUstream
+    ) -> None:
         op = tcgen05.MmaF16BF16Op(
             _io, _acc, _MNK_INST, tcgen05.CtaGroup.ONE, tcgen05.OperandSource.SMEM,
             cute.nvgpu.OperandMajorMode.K, cute.nvgpu.OperandMajorMode.K,
@@ -349,7 +364,7 @@ if _HAVE:
             c.layout.shape[2],
         )
         _gemm_kernel_b(tiled_mma, a_atom, a_t, b_atom, b_t, c, a_layout, b_layout).launch(
-            grid=grid, block=(THREADS, 1, 1)
+            grid=grid, block=(THREADS, 1, 1), stream=stream
         )
 
     _gemm_b_cache: dict[int, object] = {}  # cute.compile of _gemm_host_b, keyed by batch size Z
@@ -360,15 +375,16 @@ if _HAVE:
         ``a`` [Z,128,128], ``b`` [Z,64,128], ``out`` [Z,128,64] — contiguous, batch-first.
         Collapses Z single-CTA launches into ONE grid-z launch. Carries the dispatch win:
         ``cute.compile`` ONCE per batch size Z (M/N/K fixed at 128/64/128) and reuse.
-        ``out`` must be a fresh contiguous tensor (the box write-back lesson).
+        ``out`` must be a fresh contiguous tensor (the box write-back lesson). The launch
+        rides torch's current stream (:func:`_cur_stream`) so it is CUDA-graph-capturable.
         """
         z = int(a.shape[0])
         ca, cb, cc = _mark_b(a), _mark_b(b), _mark_b(out)
         ex = _gemm_b_cache.get(z)
         if ex is None:
-            ex = cute.compile(_gemm_host_b, ca, cb, cc)
+            ex = cute.compile(_gemm_host_b, ca, cb, cc, _cur_stream())
             _gemm_b_cache[z] = ex
-        ex(ca, cb, cc)
+        ex(ca, cb, cc, _cur_stream())
 
     def _mark_b(t: Tensor) -> object:
         """Mark a batch-first [Z,R,S] tensor as a cute [R,S,L] tensor (L = largest stride).
