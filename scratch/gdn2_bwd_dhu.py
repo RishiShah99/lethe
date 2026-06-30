@@ -26,6 +26,9 @@ atomics. Off-box this imports cleanly and compiles nothing.
 """
 # NB: no `from __future__ import annotations` — PEP 563 stringizes @cute.struct fields.
 
+import contextlib
+from collections.abc import Iterator
+
 import torch
 from torch import Tensor
 
@@ -54,6 +57,33 @@ def _cur_stream() -> "cuda_driver.CUstream":
     returns the (non-default) capture stream, so the launches record into the graph.
     """
     return cuda_driver.CUstream(torch.cuda.current_stream().cuda_stream)
+
+
+GRAPH_CAPTURE = False  # True inside a CUDA-graph capture → kernel-boundary syncs become no-ops
+
+
+@contextlib.contextmanager
+def graph_capture() -> Iterator[None]:
+    """Mark the cw backward as inside a ``torch.cuda.graph`` capture.
+
+    A ``torch.cuda.synchronize()`` inside a capture region is illegal and aborts the
+    capture; ordering is instead carried by the stream and the caller syncs ONCE after
+    replay. Under this context :func:`maybe_sync` (the per-kernel syncs in the cw run
+    fns) becomes a no-op.
+    """
+    global GRAPH_CAPTURE
+    prev = GRAPH_CAPTURE
+    GRAPH_CAPTURE = True
+    try:
+        yield
+    finally:
+        GRAPH_CAPTURE = prev
+
+
+def maybe_sync() -> None:
+    """``torch.cuda.synchronize()`` unless inside a graph capture (:func:`graph_capture`)."""
+    if not GRAPH_CAPTURE:
+        torch.cuda.synchronize()
 
 CHUNK = 64
 D_K = 128

@@ -36,6 +36,7 @@ import math
 
 import torch
 from scratch.gdn2_bwd_dhu import is_available as _k1_available
+from scratch.gdn2_bwd_dhu import maybe_sync
 from torch import Tensor
 
 LN2 = math.log(2.0)
@@ -249,7 +250,7 @@ def run_k2_batched(
     dg2 = dg2_q + dg2_m
     dg = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2, [1]), 1), [1])
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dk.reshape(bsz, hh, nt, c, d_k),
         dv.reshape(bsz, hh, nt, c, d_v),

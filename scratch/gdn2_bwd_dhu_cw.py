@@ -28,6 +28,7 @@ Off-box this imports cleanly and compiles nothing.
 
 import torch
 from scratch.gdn2_bwd_dhu import is_available as _k1_available
+from scratch.gdn2_bwd_dhu import maybe_sync
 from torch import Tensor
 
 
@@ -186,7 +187,7 @@ def run_k1_incB_batched(
         t = _bmm_tc(a_ga, b_ga)  # [n_bh,d_k,d_v]
         b_dh = gef[:, it][:, :, None] * b_dh + t
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dh.reshape(b, hv, nt, d_k, d_v),
         dv2.reshape(b, hv, nt, c, d_v),
