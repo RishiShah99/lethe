@@ -43,8 +43,8 @@ def main() -> None:
     ap.add_argument("--mode", type=str, default="incA",
                     choices=["incA", "incB_host", "incB", "incB2"])
     ap.add_argument("--bisect", type=int, default=0, choices=[0, 1, 2, 3, 4],
-                    help="incB2 SIGSEGV bisection: 0 full, 1 G1-only, 2 G1+GA no round-trips, "
-                         "3 G1-only with bh (not arithmetic lid) TMA coord, "
+                    help="incB2 SIGSEGV bisection (handle now bound in-loop): 0 full, 1 G1-only, "
+                         "2 G1+GA no round-trips, 3 G1-only with bh (not arithmetic lid) TMA coord, "
                          "4 G1-only with relinquish after mainloop")
     ap.add_argument("--atol", type=float, default=2e-2)  # bf16 floor (fla test_gdn.py-class)
     ap.add_argument("--rtol", type=float, default=2e-2)

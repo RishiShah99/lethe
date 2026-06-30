@@ -753,7 +753,11 @@ if _HAVE:
         nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
         bisect: cutlass.Constexpr,
     ) -> None:
-        # bisect: 0 full · 1 G1-only · 2 G1+GA no round-trips (the launch-SIGSEGV bisection knob).
+        # bisect: 0 full · 1 G1-only · 2 G1+GA no round-trips · 3 G1 plain-bh coord · 4 G1
+        # relinquish-after-mainloop. The TMEM accumulator handle is now bound IN-LOOP and
+        # unconditionally (the loop_gemm_repro.py `loopfix` idiom; the prior outside-bound handle
+        # was not the launch fault — repro `loop` proved loop-wrapping a GEMM is fine). The bisect
+        # knob keeps isolating the residual launch-SIGSEGV across the per-chunk feature set.
         # m_bdhT / m_bga / m_bdv / m_t are the TMA / epilogue views (mark_b, permuted [R,S,L]);
         # the _s twins are natural-layout SIMT views over the SAME storage (the glue indexes [L,R,S]).
         tidx, _, _ = cute.arch.thread_idx()
@@ -793,13 +797,18 @@ if _HAVE:
         ).make_participants()
 
         acc_shape = tiled_mma.partition_shape_C(_MNK_TILER[:2])
-        tCtAcc = tiled_mma.make_fragment_C(acc_shape)
+        tCtAcc_frag = tiled_mma.make_fragment_C(acc_shape)  # layout carrier (pure, no TMEM ptr)
         tmem.wait_for_alloc()
-        tCtAcc = cute.make_tensor(tmem.retrieve_ptr(_acc), tCtAcc.layout)
         if cutlass.const_expr(bisect != 4):
             tmem.relinquish_alloc_permit()
 
-        for it in cutlass.range(nt):
+        # range_constexpr UNROLLS the reverse loop (nt is Constexpr) → NO dynamic scf.for. The
+        # tcgen05 epilogue copy atom (make_tmem_copy) cannot live in a dynamic scf.for in this DSL
+        # (inside → launch-SIGSEGV; hoisted-and-used-inside → "live after conversion" ICE; proven on
+        # scratch/loop_tile_repro.py). Unrolling makes each chunk the proven straight-line body; the
+        # b_dh carry rides through GMEM (m_bdh) across the unrolled iterations.
+        for it in cutlass.range_constexpr(nt):
+            tCtAcc = cute.make_tensor(tmem.retrieve_ptr(_acc), tCtAcc_frag.layout)
             i_t = nt - 1 - it
             lid = bh * nt + i_t
 
