@@ -320,6 +320,17 @@ def test_fused_eager_targets_enforce_chunk_divisibility() -> None:
         fused_block_backward(*inputs, dy, conv_kernel_size=4, chunk_size=64)
 
 
+def test_scan_eager_targets_enforce_chunk_divisibility() -> None:
+    # The eager scan SFT targets must raise on a non-dividing seq_len, exactly
+    # like the reference — not run a flat loop that silently accepts it.
+    inputs = _scan_inputs()  # seq_len = 64
+    with pytest.raises(ValueError, match="divisible"):
+        forward_chunked_scan(*inputs, chunk_size=48)
+    dy = torch.randn(2, 64, 8, generator=torch.Generator().manual_seed(7))
+    with pytest.raises(ValueError, match="divisible"):
+        backward_selective_scan(*inputs, dy, chunk_size=48)
+
+
 def test_c6_half_grads_match_dtype() -> None:
     inputs = tuple(t.to(torch.bfloat16) for t in _fused_inputs())
     dy = torch.randn(2, 32, 8).to(torch.bfloat16)

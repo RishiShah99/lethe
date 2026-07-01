@@ -28,6 +28,12 @@ def forward_chunked_scan(
     batch, seq_len, d_model = u.shape
     n_state = A.shape[1]
 
+    # Same divisibility contract as the reference — a warm-start target must
+    # teach the exact contract, not a looser one that silently accepts a
+    # non-dividing seq_len the kernel it stands in for would reject.
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
+
     delta_bar = F.softplus(delta)
     a_bar = torch.exp(delta_bar.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
     b_bar = delta_bar.unsqueeze(-1) * B.unsqueeze(2)

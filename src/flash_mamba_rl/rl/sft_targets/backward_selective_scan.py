@@ -42,6 +42,13 @@ def backward_selective_scan(
     if out_dtype in (torch.float16, torch.bfloat16):
         u, delta, A, B, C, D, dy = (t.to(torch.float32) for t in (u, delta, A, B, C, D, dy))
 
+    # Same divisibility contract as the reference — a warm-start target must
+    # teach the exact contract, not a looser one that silently accepts a
+    # non-dividing seq_len the kernel it stands in for would reject.
+    seq_len = u.shape[1]
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
+
     u_l = u.detach().requires_grad_(True)
     delta_l = delta.detach().requires_grad_(True)
     a_l = A.detach().requires_grad_(True)
