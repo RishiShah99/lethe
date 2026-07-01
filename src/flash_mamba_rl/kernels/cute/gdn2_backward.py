@@ -69,12 +69,17 @@ def is_available(device: torch.device | None = None) -> bool:
 
 
 def _is_scalar_reducible(g: Tensor, b: Tensor, w: Tensor) -> bool:
-    """True iff ``g`` is channel-constant and ``b == w == beta·1`` (the Phase-2 regime)."""
+    """True iff ``g`` is channel-constant and ``b == w == beta·1`` (the Phase-2 regime).
+
+    Phase-2 broadcasts a scalar across the channel axis *exactly* (``expand``), so the
+    test is bitwise equality — ``allclose`` would misroute a merely *near*-constant
+    channel-wise input to the scalar assembly, silently returning the wrong grad_g/b/w.
+    """
     return bool(
-        torch.allclose(g, g[..., :1].expand_as(g))
-        and torch.allclose(b, b[..., :1].expand_as(b))
-        and torch.allclose(w, w[..., :1].expand_as(w))
-        and torch.allclose(b[..., 0], w[..., 0])
+        torch.equal(g, g[..., :1].expand_as(g))
+        and torch.equal(b, b[..., :1].expand_as(b))
+        and torch.equal(w, w[..., :1].expand_as(w))
+        and torch.equal(b[..., 0], w[..., 0])
     )
 
 

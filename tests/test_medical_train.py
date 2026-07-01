@@ -181,6 +181,22 @@ class TestCheckpointResume:
         opt_state = fresh.optimizer.state_dict()["state"]
         assert opt_state  # optimizer momentum buffers restored
 
+    def test_resume_round_trips_rng_state(self, tmp_path: object) -> None:
+        import os
+
+        trainer = _trainer(tmp_path)
+        ds = _SyntheticECG(8)
+        for _ in range(3):
+            trainer.train_step(ds.signals, ds.labels)
+        trainer.save_checkpoint()
+        saved = torch.load(os.path.join(str(tmp_path), "trainer_state.pt"), weights_only=False)
+        saved_cpu_rng = saved["rng_states"][0]["cpu"]
+
+        torch.rand(123)  # perturb the global RNG so load must actively restore it
+        fresh = _trainer(tmp_path)
+        assert fresh.load_checkpoint()
+        assert torch.equal(torch.get_rng_state(), saved_cpu_rng)
+
     def test_resume_restores_model_weights(self, tmp_path: object) -> None:
         trainer = _trainer(tmp_path)
         ds = _SyntheticECG(8)

@@ -35,6 +35,7 @@ from tests.cheating_kernels import (
     inf_propagation_bug,
     memoizes_first_input,
     nan_on_extremes,
+    nan_on_subnormal,
     no_op_via_side_channel,
     nondeterministic,
     parallel_reduction_bug,
@@ -246,6 +247,18 @@ class TestSubnormalFlushBug:
     def test_caught(self) -> None:
         _assert_caught_by_some_gate(
             subnormal_flush_bug.cheating_op,
+            expected_gates=("gate_exc_02_subnormal_handling",),
+        )
+
+
+class TestNanOnSubnormal:
+    def test_caught(self) -> None:
+        # Regression: a candidate that mints NaN only on subnormal-magnitude
+        # inputs used to slip past EXC-02 (matching zero-mask + NaN max_err).
+        # EXC-02 is the sole gate that feeds all-subnormal probes, so it must be
+        # the rejector — no other gate exercises this input regime.
+        _assert_caught_by_some_gate(
+            nan_on_subnormal.cheating_op,
             expected_gates=("gate_exc_02_subnormal_handling",),
         )
 

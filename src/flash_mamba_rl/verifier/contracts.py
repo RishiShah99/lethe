@@ -720,11 +720,26 @@ def gate_exc_02_subnormal_handling(
             },
         )
 
-    nonzero_mask = ~zero_ref
+    # A candidate that mints NaN/Inf on subnormal inputs must be rejected even
+    # when the zero-mask agrees — NaN != 0 satisfies it, and a NaN ``max_err``
+    # would slip past the ``> atol`` check below (``NaN > atol`` is False).
+    nonfinite_ref = ~torch.isfinite(out_ref)
+    nonfinite_cand = ~torch.isfinite(out_cand)
+    if not torch.equal(nonfinite_ref, nonfinite_cand):
+        return GateResult(
+            passed=False,
+            reason="non-finite (NaN/Inf) handling disagrees with reference",
+            details={
+                "ref_nonfinite": int(nonfinite_ref.sum().item()),
+                "cand_nonfinite": int(nonfinite_cand.sum().item()),
+            },
+        )
+
+    nonzero_mask = ~zero_ref & ~nonfinite_ref
     if nonzero_mask.any():
         diff = (out_ref[nonzero_mask].float() - out_cand[nonzero_mask].float()).abs()
         max_err = diff.max().item()
-        if max_err > atol:
+        if not math.isfinite(max_err) or max_err > atol:
             return GateResult(
                 passed=False,
                 reason=f"subnormal non-zero values disagree: max_err={max_err:.3e}",

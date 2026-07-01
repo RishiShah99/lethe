@@ -407,6 +407,20 @@ class TestGateExc02SubnormalHandling:
         result = gate_exc_02_subnormal_handling(_flush, _identity)
         assert result.passed is False
 
+    def test_fail_when_candidate_mints_nan_matching_zero_mask(self) -> None:
+        """Regression: NaN minted where the reference is non-zero used to pass.
+
+        The zero-mask still agrees (NaN != 0) and ``max_err`` becomes NaN, which
+        slips past ``NaN > atol == False``. The non-finite mask-agreement check
+        must reject it.
+        """
+
+        def _nan_mint(t: torch.Tensor) -> torch.Tensor:
+            return torch.where(t == 0, t, torch.full_like(t, float("nan")))
+
+        result = gate_exc_02_subnormal_handling(_nan_mint, _identity)
+        assert result.passed is False
+
 
 class TestGateRes01MemoryResidency:
     def test_pass_for_identity(self) -> None:

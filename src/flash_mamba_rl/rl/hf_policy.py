@@ -72,6 +72,10 @@ class SamplingSettings:
     max_new_tokens: int = 4096
     batch_size: int = 4
 
+    def __post_init__(self) -> None:
+        if self.temperature <= 0:
+            raise ValueError(f"temperature must be > 0, got {self.temperature}")
+
 
 class HFPolicy:
     """A trainable HF causal LM (optionally LoRA-wrapped) kernel-generation policy.
@@ -288,6 +292,8 @@ class HFPolicy:
         pred = logits[:, prompt_len - 1 : prompt_len + t_max - 1, :]
         targets = full[:, prompt_len : prompt_len + t_max]
         temp = self.sampling.temperature if temperature is None else temperature
+        if temp <= 0:
+            raise ValueError(f"temperature must be > 0, got {temp}")
         log_probs = torch.log_softmax(pred.float() / temp, dim=-1)
         gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
         return gathered * mask, mask

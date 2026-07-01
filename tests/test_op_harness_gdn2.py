@@ -17,6 +17,7 @@ from flash_mamba_rl.verifier.op_harness import (
     GDN2_BWD_GATE_OVERRIDES,
     GDN2_BWD_GRAD_FIELDS,
     GDN2_HEADDIM,
+    _gdn2_reduce_candidate,
     gdn2_bwd_candidate_adapter,
     gdn2_bwd_reference_adapter,
     verify_gdn2_bwd_op,
@@ -157,3 +158,17 @@ class TestGdn2Prc02Discrimination:
             **kwargs,
         )
         assert not cheat.passed, f"bf16-state cheat slipped past PRC-02: {cheat.details}"
+
+
+class TestGdn2ReduceCandidate:
+    def test_grad_beta_combines_erase_and_write(self) -> None:
+        grads = tuple(torch.randn(2, 4, 3, 5) for _ in range(6))
+        out = _gdn2_reduce_candidate("grad_beta", grads)
+        assert torch.equal(out, grads[4].sum(-1) + grads[5].sum(-1))
+
+    def test_unknown_view_raises(self) -> None:
+        # A typo'd view must NOT fall through to the beta reduction (a green
+        # result from an operator-wiring error); it must raise.
+        grads = tuple(torch.randn(2, 4, 3, 5) for _ in range(6))
+        with pytest.raises(ValueError, match="grad_typo"):
+            _gdn2_reduce_candidate("grad_typo", grads)

@@ -132,6 +132,16 @@ def manual_log_probs(
     ]
 
 
+class TestSamplingSettings:
+    def test_nonpositive_temperature_raises(self) -> None:
+        for temp in (0.0, -1.0):
+            with pytest.raises(ValueError, match="temperature must be > 0"):
+                SamplingSettings(temperature=temp)
+
+    def test_default_temperature_ok(self) -> None:
+        assert SamplingSettings().temperature > 0
+
+
 class TestGenerate:
     def test_returns_n_completions_batched(self) -> None:
         model = StubModel(completion="ok!")
@@ -221,6 +231,14 @@ class TestLogProbs:
         lp, mask = policy.completion_log_probs("p", ["abc"], temperature=1.0)
         want = manual_log_probs(model, "p", "abc", temperature=1.0)
         torch.testing.assert_close(lp[0][mask[0]], want)
+
+    def test_nonpositive_temperature_override_raises(self) -> None:
+        # A caller-supplied temperature<=0 would NaN-poison the whole GRPO
+        # update via log_softmax(logits/temp); it must be rejected up front.
+        policy = make_policy()
+        for temp in (0.0, -0.5):
+            with pytest.raises(ValueError, match="temperature must be > 0"):
+                policy.completion_log_probs("p", ["abc"], temperature=temp)
 
     def test_append_eos_false_drops_stop_token(self) -> None:
         model = StubModel()

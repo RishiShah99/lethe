@@ -1135,8 +1135,10 @@ def _gdn2_reduce_candidate(view: str, grads: Any) -> Tensor:
         out = grads[2]
     elif view == "grad_g":
         out = grads[3].sum(-1)
-    else:  # grad_beta = combined erase (grad_b) + write (grad_w)
+    elif view == "grad_beta":  # combined erase (grad_b) + write (grad_w)
         out = grads[4].sum(-1) + grads[5].sum(-1)
+    else:
+        raise ValueError(view)
     return out
 
 

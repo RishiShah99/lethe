@@ -228,9 +228,30 @@ class MedicalTrainer:
     # Checkpointing (spot box: model + optimizer + step + RNG)
     # ------------------------------------------------------------------
 
+    def _local_rng_state(self) -> dict[str, Tensor]:
+        """This rank's CPU RNG (+ its *own* CUDA device's RNG, if on cuda)."""
+        rng: dict[str, Tensor] = {"cpu": torch.get_rng_state()}
+        if self.device.type == "cuda":
+            rng["cuda"] = torch.cuda.get_rng_state(self.device)
+        return rng
+
+    def _all_rng_states(self) -> list[dict[str, Tensor]]:
+        """Per-rank RNG states, index = rank (collective; every rank participates)."""
+        local = self._local_rng_state()
+        if not self._dist:
+            return [local]
+        gathered: list[dict[str, Tensor]] = [{} for _ in range(self.world_size)]
+        torch.distributed.all_gather_object(gathered, local)
+        return gathered
+
     def save_checkpoint(self) -> None:
         """Step-stamped model file + atomic ``trainer_state.pt`` commit point."""
         cfg = self.config
+        # Per-rank RNG is gathered on every rank (a collective), then written by
+        # rank 0 — restoring the *current device's* stream per rank, so resume
+        # neither depends on the machine's GPU count nor collapses all ranks onto
+        # rank 0's RNG (identical dropout masks).
+        rng_states = self._all_rng_states()
         if self.rank == 0:
             os.makedirs(cfg.checkpoint_dir, exist_ok=True)
             model_name = f"model_step_{self.step_idx}.pt"
@@ -239,10 +260,8 @@ class MedicalTrainer:
                 "step": self.step_idx,
                 "model_name": model_name,
                 "optimizer": self.optimizer.state_dict(),
-                "torch_rng": torch.get_rng_state(),
+                "rng_states": rng_states,
             }
-            if torch.cuda.is_available():
-                state["cuda_rng"] = torch.cuda.get_rng_state_all()
             tmp = os.path.join(cfg.checkpoint_dir, "trainer_state.pt.tmp")
             torch.save(state, tmp)
             os.replace(tmp, os.path.join(cfg.checkpoint_dir, "trainer_state.pt"))
@@ -260,10 +279,16 @@ class MedicalTrainer:
         model_path = os.path.join(self.config.checkpoint_dir, str(state["model_name"]))
         self._core.load_state_dict(torch.load(model_path, map_location=self.device))
         self.optimizer.load_state_dict(state["optimizer"])
-        torch.set_rng_state(state["torch_rng"])
-        if torch.cuda.is_available() and "cuda_rng" in state:
-            torch.cuda.set_rng_state_all(state["cuda_rng"])
+        self._restore_rng_state(state["rng_states"])
         return True
+
+    def _restore_rng_state(self, rng_states: list[dict[str, Tensor]]) -> None:
+        if self.rank >= len(rng_states):
+            return  # resumed with more ranks than were saved — keep the seeded RNG
+        local = rng_states[self.rank]
+        torch.set_rng_state(local["cpu"])
+        if self.device.type == "cuda" and "cuda" in local:
+            torch.cuda.set_rng_state(local["cuda"], self.device)
 
     def _prune_models(self, *, keep: str) -> None:
         prefix = "model_step_"
