@@ -138,6 +138,10 @@ def launch_forward_scan(
     block_d = min(64, triton.next_power_of_2(d_model))
     if config is not None and config.block_d is not None:
         block_d = config.block_d
+        # The grid tiles D with a power-of-two mask (default is next_power_of_2);
+        # a non-positive or non-pow2 override breaks that invariant.
+        if block_d < 1 or block_d & (block_d - 1):
+            raise ValueError(f"block_d override {block_d} must be a positive power of two")
 
     u_c = u.contiguous()
     delta_c = delta.contiguous()

@@ -491,6 +491,10 @@ def launch_fused_block_backward(
     chunk_k = _chunk_k(l_out)
     if config is not None and config.chunk_k is not None:
         chunk_k = config.chunk_k
+        # A direct override that does not divide l_out drops the tail chunk
+        # (uninitialised grads); the default _chunk_k always divides.
+        if l_out % chunk_k != 0:
+            raise ValueError(f"chunk_k override {chunk_k} must divide output length {l_out}")
     n_chunks = l_out // chunk_k
     n_d_blocks = triton.cdiv(d_model, block_d)
 
@@ -614,8 +618,7 @@ def launch_fused_block_backward(
         **extra,
     )
 
-    block_t_x = max(1, _NORM_TILE // block_d_norm)
-    grid_x = (batch, triton.cdiv(seq_in, block_t_x), triton.cdiv(d_model, block_d_norm))
+    grid_x = (batch, triton.cdiv(seq_in, block_t), triton.cdiv(d_model, block_d_norm))
     _conv_x_bwd_kernel[grid_x](
         dconv,
         conv_w_c,
@@ -624,7 +627,7 @@ def launch_fused_block_backward(
         l_out,
         d_model,
         CONV_K=conv_k,
-        BLOCK_T=block_t_x,
+        BLOCK_T=block_t,
         BLOCK_D=block_d_norm,
         num_warps=num_warps_norm,
     )

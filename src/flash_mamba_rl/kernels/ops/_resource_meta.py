@@ -26,8 +26,9 @@ def collect_resource_meta(jit_fn: Any) -> dict[str, int] | None:
     if isinstance(caches, dict):
         for entry in caches.values():
             # 3.x: device_caches[device] is a tuple whose first slot is the
-            # signature -> CompiledKernel dict.
-            cache_dict = entry[0] if isinstance(entry, tuple) else entry
+            # signature -> CompiledKernel dict. An empty tuple is cache drift —
+            # skip it (indexing would raise, violating the return-None contract).
+            cache_dict = entry[0] if isinstance(entry, tuple) and entry else entry
             if isinstance(cache_dict, dict):
                 compiled.extend(cache_dict.values())
     legacy = getattr(jit_fn, "cache", None)

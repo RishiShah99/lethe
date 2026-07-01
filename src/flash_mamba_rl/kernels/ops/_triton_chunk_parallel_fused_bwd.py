@@ -573,11 +573,10 @@ def launch_fused_block_backward_chunk_parallel(
         num_warps=warps, **extra,
     )  # fmt: skip
 
-    block_t_x = max(1, _NORM_TILE // block_d_norm)
-    grid_x = (batch, triton.cdiv(seq_in, block_t_x), triton.cdiv(d_model, block_d_norm))
+    grid_x = (batch, triton.cdiv(seq_in, block_t), triton.cdiv(d_model, block_d_norm))
     _conv_x_bwd_kernel[grid_x](
         dconv, conv_w_c, grad_x, seq_in, l_out, d_model,
-        CONV_K=conv_k, BLOCK_T=block_t_x, BLOCK_D=block_d_norm, num_warps=num_warps_norm,
+        CONV_K=conv_k, BLOCK_T=block_t, BLOCK_D=block_d_norm, num_warps=num_warps_norm,
     )  # fmt: skip
 
     grad_a = ga_part.sum(dim=(0, 1)).to(a.dtype)

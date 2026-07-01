@@ -58,10 +58,16 @@ def benchmark(
     """
     import torch  # local import keeps the module importable without torch on PATH
 
-    use_cuda = torch.cuda.is_available()
-
     def call_inputs(i: int) -> tuple[Any, ...]:
         return inputs_factory(i) if inputs_factory is not None else inputs
+
+    # Choose the CUDA-event timer from the tensors actually fed, not the host:
+    # a CPU candidate on a CUDA host would otherwise be "timed" on an empty
+    # stream (elapsed_time ~ 0), fabricating a speedup.
+    probe = call_inputs(-1)
+    use_cuda = torch.cuda.is_available() and any(
+        isinstance(a, torch.Tensor) and a.is_cuda for a in probe
+    )
 
     # ---- Warm-up ----
     for w in range(warmup):

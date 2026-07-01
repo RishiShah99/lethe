@@ -54,6 +54,8 @@ def _binary_auc(scores: Tensor, labels: Tensor) -> float | None:
     n_neg = float(labels.numel()) - n_pos
     if n_pos == 0.0 or n_neg == 0.0:
         return None
+    if not torch.isfinite(scores).all():
+        return None  # NaN/Inf logits sort unpredictably -> skip rather than emit AUC ∉ [0,1]
     ranks = _average_ranks(scores.to(torch.float64))
     pos_rank_sum = float(ranks[labels > 0.5].sum().item())
     return (pos_rank_sum - n_pos * (n_pos + 1.0) / 2.0) / (n_pos * n_neg)
@@ -170,7 +172,13 @@ class MedicalTrainer:
 
     @torch.no_grad()
     def evaluate(self, loader: Iterable[tuple[Tensor, Tensor]]) -> dict[str, float]:
-        """Mean BCE loss + macro-AUC over *loader* (all-gathered across ranks)."""
+        """Mean BCE loss + macro-AUC over *loader* (all-gathered across ranks).
+
+        Under DDP the caller MUST pass a non-overlapping shard per rank (e.g. a
+        ``DistributedSampler`` with ``drop_last`` or a manual slice). This gathers
+        and concatenates each rank's logits with no dedupe, so a default padded
+        sampler double-counts the eval tail and biases the metrics.
+        """
         self.model.eval()
         logits_chunks: list[Tensor] = []
         label_chunks: list[Tensor] = []

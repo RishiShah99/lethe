@@ -123,6 +123,13 @@ class TestMacroAUC:
         logits = torch.randn(4, 2)
         assert macro_auc(logits, labels) != macro_auc(logits, labels)  # nan
 
+    def test_nonfinite_scores_skip_class(self) -> None:
+        # A class with NaN/Inf logits must be skipped, never emit AUC ∉ [0, 1].
+        labels = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        logits = torch.tensor([[-1.0, float("nan")], [1.0, 0.2], [-0.5, float("inf")], [2.0, 0.7]])
+        auc = macro_auc(logits, labels)  # only class 0 (finite) is evaluable
+        assert auc == 1.0
+
 
 class TestTrainStep:
     def test_one_step_lowers_loss(self, tmp_path: object) -> None:
