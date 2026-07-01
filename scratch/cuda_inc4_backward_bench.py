@@ -19,7 +19,7 @@ from flash_mamba_rl.kernels.ops import backward_selective_scan
 from flash_mamba_rl.verifier.timing import benchmark
 
 SHAPES = [(8, 2048, 4096, 128), (8, 4096, 4096, 128), (2, 16384, 4096, 128)]
-CUDA_CFGS = [(4, 8), (8, 8), (4, 16), (8, 16), (4, 4)]  # (items, block_d)
+CUDA_CFGS = [(4, 4), (4, 8), (8, 8), (4, 16)]  # (items, block_d); (8,16) over 227KB smem
 
 
 def _inputs(b, length, d, n, dev):  # type: ignore[no-untyped-def]
