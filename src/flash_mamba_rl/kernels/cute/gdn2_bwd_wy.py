@@ -50,6 +50,7 @@ import torch
 from torch import Tensor
 
 from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available as _k1_available
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import maybe_sync
 
 LN2 = math.log(2.0)
 RCP_LN2 = 1.0 / LN2
@@ -191,7 +192,7 @@ def run_k2_serial(
         dg2_total = LN2 * (e.sum(-1) - e.sum(-2)) + (bi * p) * LN2 * gamma
         dgf[i] = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2_total, [-1]), -1), [-1])
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dk2.reshape(b, h, nt, c, d_k),
         dvf.reshape(b, h, nt, c, d_v),
@@ -249,7 +250,7 @@ def run_k2_batched(
     dg2_total = LN2 * (e.sum(-1) - e.sum(-2)) + (betaf * p) * LN2 * gamma
     dg = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2_total, [-1]), -1), [-1])
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dk2.reshape(b, h, nt, c, d_k),
         dv.reshape(b, h, nt, c, d_v),

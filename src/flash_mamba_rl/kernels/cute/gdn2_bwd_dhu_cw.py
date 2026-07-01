@@ -128,7 +128,7 @@ def run_k1_incB_serial(
             t = _mm_tc(a_ga.transpose(0, 1), b_ga)  # [d_k, d_v]
             b_dh[i] = gef[i, it][:, None] * b_dh[i] + t
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dh.reshape(b, hv, nt, d_k, d_v),
         dv2.reshape(b, hv, nt, c, d_v),

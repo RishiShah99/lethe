@@ -183,7 +183,7 @@ def run_k2_serial(
         dg2 = dg2_q + dg2_m
         dgf[i] = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2, [0]), 0), [0])
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dk2.reshape(bsz, hh, nt, c, d_k),
         dvf.reshape(bsz, hh, nt, c, d_v),

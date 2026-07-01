@@ -537,7 +537,7 @@ def run_k1(
         _gemm_aa(ai, bi, ci)
         dh0[i] = ci
 
-    torch.cuda.synchronize()
+    maybe_sync()
 
     dh = torch.zeros(b, hv, nt, d_k, d_v, dtype=torch.float16, device=dev)
     dv2 = dv_local.to(torch.float16).clone()
@@ -604,7 +604,7 @@ def run_k1_incB_host(
             _gemm_aa(a_ga, b_ga, t)
             b_dh[i] = gef[i, it] * b_dh[i] + t.float()
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dh.reshape(b, hv, nt, d_k, d_v),
         dv2.reshape(b, hv, nt, c, d_v),
@@ -661,7 +661,7 @@ def run_k1_incB_batched(
         t = _bmm_tc(a_ga, b_ga)  # [n_bh,d_k,d_v]
         b_dh = gef[:, it][:, None, None] * b_dh + t
 
-    torch.cuda.synchronize()
+    maybe_sync()
     return (
         dh.reshape(b, hv, nt, d_k, d_v),
         dv2.reshape(b, hv, nt, c, d_v),
