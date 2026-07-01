@@ -96,6 +96,36 @@ class TestSelectorGeomean:
         assert n <= valid
         assert n >= valid - 5  # at most 5 degenerate rows
 
+    def test_missing_chunk_parallel_measurement_dropped_not_misattributed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When the selector picks chunk_parallel but that measurement is absent,
+        # the row is dropped — never credited the serial speedup, which would
+        # inflate the >=2.1x geomean gate.
+        entries = [
+            {  # saturated corner routes to serial -> contributes its 2.0x
+                "op": "backward_selective_scan",
+                "seq_len": 512,
+                "batch": 8,
+                "width": 4096,
+                "winner": "serial",
+                "best_serial": {"speedup": 2.0},
+            },
+            {  # routes to chunk_parallel but chunk_parallel not benched -> drop
+                "op": "backward_selective_scan",
+                "seq_len": 16384,
+                "batch": 1,
+                "width": 1024,
+                "winner": "serial",
+                "best_serial": {"speedup": 9.0},
+            },
+        ]
+        (tmp_path / "scan_mode_boundary.json").write_text(json.dumps(entries))
+        monkeypatch.setattr(repro, "RESULTS_DIR", tmp_path)
+        gm, n = repro.compute_selector_geomean()
+        assert n == 1  # the chunk_parallel-routed row with no bc measurement is dropped
+        assert gm == pytest.approx(2.0)
+
 
 class TestAuditHeadline:
     def test_audit_json_exists(self) -> None:

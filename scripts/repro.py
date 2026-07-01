@@ -166,7 +166,11 @@ def compute_selector_geomean() -> tuple[float, int]:
             continue
         is_fwd = e.get("op") == "forward_chunked_scan"
         mode = _default_scan_mode(e["seq_len"], e["batch"], e["width"], is_forward=is_fwd)
-        sp = bs if mode == "serial" else (bc if bc > 0 else bs)
+        # Credit the speedup of the mode the selector actually picks. If that
+        # measurement is missing (e.g. chunk_parallel chosen but not benched),
+        # sp<=0 drops the row — never fall back to the other mode's number, which
+        # would misattribute the serial speedup to a chunk_parallel choice.
+        sp = bs if mode == "serial" else bc
         if sp > 0:
             speedups.append(sp)
 

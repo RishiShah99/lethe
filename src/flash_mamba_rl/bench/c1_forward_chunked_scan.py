@@ -31,6 +31,8 @@ from flash_mamba_rl.kernels.ops import forward_chunked_scan, triton_scan_resourc
 from flash_mamba_rl.kernels.references import reference_forward_chunked_scan
 from flash_mamba_rl.verifier.timing import benchmark
 
+from .c2_backward_selective_scan import _parity_stats
+
 try:
     from mamba_ssm.ops.selective_scan_interface import (
         selective_scan_fn,
@@ -132,7 +134,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
     }
     impls: dict[str, Any] = row["impls"]
     skipped: dict[str, str] = row["skipped"]
-    parity: dict[str, float] = row["parity"]
+    parity: dict[str, Any] = row["parity"]
 
     y_ours = forward_chunked_scan(*args, chunk_size=64)
     impls["ours_triton"] = _time(
@@ -142,9 +144,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
     if _HAS_MAMBA:
         official_args = _official_layout(args)
         y_official = selective_scan_fn(*official_args, delta_softplus=True)
-        parity["ours_vs_official_max_err"] = float(
-            (y_ours.float() - y_official.transpose(1, 2).float()).abs().max().item()
-        )
+        parity["ours_vs_official"] = _parity_stats(y_ours, y_official.transpose(1, 2))
         impls["official_cuda"] = _time(
             lambda: selective_scan_fn(*official_args, delta_softplus=True),
             warmup=10,
@@ -164,9 +164,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
     if spec.seq_len <= _REFERENCE_LOOP_MAX_SEQ and dtype == torch.float32:
         y_ref = reference_forward_chunked_scan(*args, chunk_size=64)
-        parity["ours_vs_reference_max_err"] = float(
-            (y_ours.float() - y_ref.float()).abs().max().item()
-        )
+        parity["ours_vs_reference"] = _parity_stats(y_ours, y_ref)
         impls["reference_loop"] = _time(
             lambda: reference_forward_chunked_scan(*args, chunk_size=64), warmup=1, trials=3
         )
