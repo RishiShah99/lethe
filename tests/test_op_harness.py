@@ -373,6 +373,32 @@ class TestScanHarness:
         for seq_len in (8, 16, 32, 64, 128, 256, 512, 1024):
             assert seq_len % SCAN_CHUNK_SIZE == 0
 
+    def test_prc02_rerun_is_rng_deterministic_and_neutral(self) -> None:
+        # Regression (review HIGH): the saturation-free PRC-02 re-run must
+        # inherit the per-gate seed + RNG save/restore bracket (it now routes
+        # through run_all_gates), not draw its probe from the ambient global
+        # stream. Calling the gate directly made the AUTHORITATIVE PRC-02
+        # verdict — which gates the speedup reward — a function of ambient RNG
+        # (max_err drifts across rollouts, flipping thin-margin candidates) and
+        # leaked RNG state past the verify() call.
+        gate = "gate_prc_02_mixed_precision_accumulation"
+
+        def prc02_under(seed: int) -> tuple[bool, float]:
+            torch.manual_seed(seed)
+            result = verify_scan_op(forward_chunked_scan)[gate]
+            return result.passed, result.details["max_err"]
+
+        assert prc02_under(1234) == prc02_under(9999), (
+            "PRC-02 re-run verdict/max_err depends on ambient RNG"
+        )
+
+        torch.manual_seed(7)
+        before = torch.randn(8)
+        torch.manual_seed(7)
+        verify_scan_op(forward_chunked_scan)
+        after = torch.randn(8)
+        assert torch.equal(before, after), "verify() leaked global RNG state"
+
 
 def _bwd_via_autograd(
     fwd_fn: Callable[..., torch.Tensor],

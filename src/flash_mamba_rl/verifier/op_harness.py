@@ -70,7 +70,6 @@ from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backwa
 from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
 from flash_mamba_rl.verifier.contracts import (
     GateResult,
-    gate_prc_02_mixed_precision_accumulation,
     run_all_gates,
 )
 
@@ -151,24 +150,21 @@ def _verify_op_views(
     )
     if not saturation_rerun:
         return results
-    prc02_kwargs: dict[str, Any] = {
-        "device": device,
-        **base_overrides.get("gate_prc_02_mixed_precision_accumulation", {}),
-    }
-    try:
-        results["gate_prc_02_mixed_precision_accumulation"] = (
-            gate_prc_02_mixed_precision_accumulation(
-                candidate_factory(False),
-                reference_factory(False),
-                **prc02_kwargs,
-            )
-        )
-    except Exception as exc:  # mirror run_all_gates' crash containment
-        results["gate_prc_02_mixed_precision_accumulation"] = GateResult(
-            passed=False,
-            reason=f"gate crashed: {type(exc).__name__}: {exc}",
-            details={"exception_type": type(exc).__name__},
-        )
+    # Route the saturation-free re-run through run_all_gates so it inherits the
+    # per-gate seed and the RNG save/restore bracket. Calling the gate directly
+    # drew its probe from the un-seeded global stream — making the authoritative
+    # PRC-02 verdict (which gates the speedup reward) nondeterministic on
+    # thin-margin candidates, and leaking RNG state past run_all_gates' restore.
+    gate = "gate_prc_02_mixed_precision_accumulation"
+    prc02_override = base_overrides.get(gate)
+    rerun = run_all_gates(
+        candidate_factory(False),
+        reference_factory(False),
+        device=device,
+        gate_names=[gate],
+        gate_overrides={gate: prc02_override} if prc02_override else None,
+    )
+    results[gate] = rerun[gate]
     return results
 
 
