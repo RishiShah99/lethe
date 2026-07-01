@@ -13,7 +13,7 @@ import time
 
 import torch
 
-from scratch.gdn2_bwd_dhu import _gemm_host, _mark, is_available
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _gemm_host, _mark, is_available
 
 if not is_available():
     raise SystemExit("not an sm_100 box")

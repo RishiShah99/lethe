@@ -35,9 +35,10 @@ reverse carry). BOX-UNTESTED (math de-risked). fp16 GEMM operands, fp32 accumula
 import math
 
 import torch
-from scratch.gdn2_bwd_dhu import is_available as _k1_available
-from scratch.gdn2_bwd_dhu import maybe_sync
 from torch import Tensor
+
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available as _k1_available
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import maybe_sync
 
 LN2 = math.log(2.0)
 RCP_LN2 = 1.0 / LN2
@@ -132,7 +133,7 @@ def run_k2_serial(
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
-    from scratch.gdn2_bwd_wy import _mm_tc
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import _mm_tc
 
     bsz, hh, nt, c, d_k = k.shape
     d_v = v.shape[-1]
@@ -211,7 +212,7 @@ def run_k2_batched(
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
-    from scratch.gdn2_bwd_dhu import _bmm_tc
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _bmm_tc
 
     bsz, hh, nt, c, d_k = k.shape
     d_v = v.shape[-1]

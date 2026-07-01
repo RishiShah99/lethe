@@ -78,6 +78,9 @@ ignore = ["E501"]  # line length handled by formatter
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cheating_kernels/*" = ["F841", "B007"]  # intentionally-broken kernels
+# The tcgen05 DSL kernels use Unicode math (−, exp2 sums) in their docstrings/
+# comments to mirror the reference derivation; keep the notation verbatim.
+"src/flash_mamba_rl/kernels/cute/gdn2_bwd_*.py" = ["RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -90,5 +93,17 @@ no_implicit_optional = true
 files = ["src/flash_mamba_rl"]
 
 [[tool.mypy.overrides]]
-module = ["triton.*", "wfdb.*", "pandas.*", "mamba_ssm.*", "causal_conv1d.*", "transformers.*", "peft.*", "fla.*", "cula.*", "kda.*"]
+module = ["triton.*", "wfdb.*", "pandas.*", "mamba_ssm.*", "causal_conv1d.*", "transformers.*", "peft.*", "fla.*", "cula.*", "kda.*", "cutlass.*", "cuda.*"]
 ignore_missing_imports = true
+
+# The native tcgen05 DSL kernels are box-only: they import cutlass/cute under a
+# guarded try and use @cute.jit / @cute.struct constructs that strict mypy cannot
+# type. They are exercised on-silicon (the crown gate), never statically. Skip them.
+[[tool.mypy.overrides]]
+module = [
+    "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu",
+    "flash_mamba_rl.kernels.cute.gdn2_bwd_wy",
+    "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw",
+    "flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw",
+]
+ignore_errors = true

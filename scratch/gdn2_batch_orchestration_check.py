@@ -12,10 +12,10 @@ to confirm the tcgen05 batched GEMM numerics (the same (128,64,128) config Phase
 
 from __future__ import annotations
 
-import scratch.gdn2_bwd_dhu as k1mod
-import scratch.gdn2_bwd_dhu_cw as k1cw
-import scratch.gdn2_bwd_wy as k2mod
-import scratch.gdn2_bwd_wy_cw as k2cw
+import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as k1mod
+import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as k1cw
+import flash_mamba_rl.kernels.cute.gdn2_bwd_wy as k2mod
+import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw as k2cw
 import torch
 
 from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles

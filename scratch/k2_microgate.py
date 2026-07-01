@@ -50,7 +50,7 @@ def main() -> None:
         payload = torch.load(args.bundle, weights_only=False)
         out["meta"] = payload["meta"]
         try:
-            from scratch.gdn2_bwd_wy import is_available, run_k2  # noqa: PLC0415
+            from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import is_available, run_k2  # noqa: PLC0415
         except ImportError:
             out["kernel_available"] = False
             out["note"] = "scratch/gdn2_bwd_wy not authored yet; bundle validated only"

@@ -14,10 +14,10 @@ Also asserts the in-file ``*_cw_ref`` specs equal the assembly's closed forms bi
 
 from __future__ import annotations
 
-import scratch.gdn2_bwd_dhu as k1base
-import scratch.gdn2_bwd_dhu_cw as k1cw
-import scratch.gdn2_bwd_wy as k2mod
-import scratch.gdn2_bwd_wy_cw as k2cw
+import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as k1base
+import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as k1cw
+import flash_mamba_rl.kernels.cute.gdn2_bwd_wy as k2mod
+import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw as k2cw
 import torch
 
 from flash_mamba_rl.kernels.cute.gdn2_assemble import (

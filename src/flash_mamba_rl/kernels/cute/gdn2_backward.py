@@ -42,7 +42,7 @@ from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
 SUPPORTED_DTYPES: tuple[torch.dtype, ...] = (torch.bfloat16, torch.float16, torch.float32)
 
-# The compiled tcgen05 kernels target these tile dims (scratch/gdn2_bwd_{dhu,wy}*.py).
+# The compiled tcgen05 kernels target these tile dims (gdn2_bwd_{dhu,wy}*.py, this package).
 _KERNEL_D_K = 128
 _KERNEL_D_V = 64
 _KERNEL_CHUNK = 64
@@ -86,18 +86,19 @@ def _is_scalar_reducible(g: Tensor, b: Tensor, w: Tensor) -> bool:
 def _load_box_kernels() -> tuple[K1Fn, K2Fn]:
     """Lazily load the tcgen05 K#1/K#2 kernels (box-only; importlib keeps src typed).
 
-    The DSL kernel files live in ``scratch/`` (box bring-up, still depth-polished);
-    on a Blackwell box ``scratch`` is on ``PYTHONPATH``. Returns ``(run_k1_incB, run_k2)``.
+    The DSL kernel modules live beside this shim but import ``cutlass`` only under a
+    guarded ``try`` — so they stay off the package's import graph and are pulled in
+    lazily, on a Blackwell box, exactly when dispatched. Returns ``(run_k1_incB, run_k2)``.
     """
-    k1: K1Fn = importlib.import_module("scratch.gdn2_bwd_dhu").run_k1_incB
-    k2: K2Fn = importlib.import_module("scratch.gdn2_bwd_wy").run_k2
+    k1: K1Fn = importlib.import_module("flash_mamba_rl.kernels.cute.gdn2_bwd_dhu").run_k1_incB
+    k2: K2Fn = importlib.import_module("flash_mamba_rl.kernels.cute.gdn2_bwd_wy").run_k2
     return k1, k2
 
 
 def _load_box_kernels_cw() -> tuple[K1FnCW, K2FnCW]:
     """Lazily load the channel-wise (Phase-3) tcgen05 K#1/K#2 kernels (box-only)."""
-    k1: K1FnCW = importlib.import_module("scratch.gdn2_bwd_dhu_cw").run_k1_incB
-    k2: K2FnCW = importlib.import_module("scratch.gdn2_bwd_wy_cw").run_k2
+    k1: K1FnCW = importlib.import_module("flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw").run_k1_incB
+    k2: K2FnCW = importlib.import_module("flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw").run_k2
     return k1, k2
 
 

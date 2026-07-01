@@ -27,9 +27,10 @@ Off-box this imports cleanly and compiles nothing.
 # NB: no `from __future__ import annotations` — keep consistent with the DSL kernel files.
 
 import torch
-from scratch.gdn2_bwd_dhu import is_available as _k1_available
-from scratch.gdn2_bwd_dhu import maybe_sync
 from torch import Tensor
+
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available as _k1_available
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import maybe_sync
 
 
 def is_available() -> bool:
@@ -92,7 +93,7 @@ def run_k1_incB_serial(
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
-    from scratch.gdn2_bwd_wy import _mm_tc
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import _mm_tc
 
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
@@ -155,7 +156,7 @@ def run_k1_incB_batched(
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
-    from scratch.gdn2_bwd_dhu import _bmm_tc
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _bmm_tc
 
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
@@ -216,7 +217,7 @@ def _incb2_pack_cw(
 ) -> dict[str, Tensor]:
     """Host-precompute channel-wise inc-B2 operand buffers, flat over L = n_bh·NT.
 
-    Mirrors :func:`scratch.gdn2_bwd_dhu._incb2_pack_scalar`; the channel-wise differences are
+    Mirrors :func:`flash_mamba_rl.kernels.cute.gdn2_bwd_dhu._incb2_pack_scalar`; the channel-wise differences are
     the decay folded into the G1 key operand (``a_g1 = (k⊙decay_end)`` padded) and the
     per-key-channel carry (``glast ∈ [L, d_k]``). dv_local is added raw to b_dv (no post-decay).
     """
@@ -312,7 +313,7 @@ def run_k1_incB2(
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
-    from scratch.gdn2_bwd_dhu import _incb2_launch
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _incb2_launch
 
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
@@ -321,8 +322,18 @@ def run_k1_incB2(
     b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
     decay = torch.ones(n_bh * nt, c, dtype=torch.float32, device=q.device)  # folded into a_g1
     dh, dv2, dh0 = _incb2_launch(
-        buf["a_g1"], buf["a_ga"], buf["b_ga"], b_dh, decay, buf["dv_local"], buf["glast"],
-        n_bh, nt, c, d_k, d_v,
+        buf["a_g1"],
+        buf["a_ga"],
+        buf["b_ga"],
+        b_dh,
+        decay,
+        buf["dv_local"],
+        buf["glast"],
+        n_bh,
+        nt,
+        c,
+        d_k,
+        d_v,
     )
     return (
         dh.reshape(b, hv, nt, d_k, d_v),

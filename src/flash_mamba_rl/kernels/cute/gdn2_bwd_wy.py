@@ -47,8 +47,9 @@ atomics. Off-box this imports cleanly and compiles nothing.
 import math
 
 import torch
-from scratch.gdn2_bwd_dhu import is_available as _k1_available
 from torch import Tensor
+
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available as _k1_available
 
 LN2 = math.log(2.0)
 RCP_LN2 = 1.0 / LN2
@@ -114,7 +115,7 @@ def _mm_tc(x: Tensor, y: Tensor) -> Tensor:
     M-pad to 128, K-pad to 128, N split into 64-wide tiles — every K#2 matmul lands on
     the ONE proven config. fp16 operands / fp32 accumulate (the verified numeric path).
     """
-    from scratch.gdn2_bwd_dhu import _gemm_aa
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _gemm_aa
 
     f16, dev = torch.float16, x.device
     m, kk = x.shape
@@ -212,7 +213,7 @@ def run_k2_batched(
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
-    from scratch.gdn2_bwd_dhu import _bmm_tc
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _bmm_tc
 
     b, h, nt, c, _ = k.shape
     d_k, d_v = k.shape[-1], v.shape[-1]

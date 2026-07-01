@@ -14,12 +14,12 @@ import time
 
 import torch
 
-from scratch.gdn2_bwd_dhu import is_available
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available
 
 if not is_available():
     raise SystemExit("not an sm_100 box")
 
-from scratch.gdn2_bwd_dhu import _gemm_aa  # noqa: E402
+from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _gemm_aa  # noqa: E402
 
 dev = torch.device("cuda")
 f16 = torch.float16

@@ -28,7 +28,7 @@ from __future__ import annotations
 import torch
 
 # pure-torch K#2 (the validated WY-VJP spec)
-from scratch.gdn2_bwd_wy import run_k2_ref
+from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import run_k2_ref
 
 # pure-torch K#1 (the increment-B reverse loop, kernel statement order)
 from scratch.k1_incB_desk_check import reverse_loop

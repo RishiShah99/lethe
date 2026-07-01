@@ -85,6 +85,7 @@ def maybe_sync() -> None:
     if not GRAPH_CAPTURE:
         torch.cuda.synchronize()
 
+
 CHUNK = 64
 D_K = 128
 D_V = 64
@@ -139,9 +140,9 @@ if _HAVE:
             cpasync.prefetch_descriptor(tma_a)
             cpasync.prefetch_descriptor(tma_b)
 
-        nbytes = cute.size_in_bytes(_io, cute.select(a_layout, mode=[0, 1, 2])) + cute.size_in_bytes(
-            _io, cute.select(b_layout, mode=[0, 1, 2])
-        )
+        nbytes = cute.size_in_bytes(
+            _io, cute.select(a_layout, mode=[0, 1, 2])
+        ) + cute.size_in_bytes(_io, cute.select(b_layout, mode=[0, 1, 2]))
         ab_prod, ab_cons = pipeline.PipelineTmaUmma.create(
             num_stages=AB_STAGES,
             producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
@@ -167,12 +168,18 @@ if _HAVE:
         tCtAcc = tiled_mma.make_fragment_C(acc_shape)
 
         tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
-            tma_a, 0, cute.make_layout(1),
-            cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
+            tma_a,
+            0,
+            cute.make_layout(1),
+            cute.group_modes(sA, 0, 3),
+            cute.group_modes(thr_mma.partition_A(gA), 0, 3),
         )
         tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
-            tma_b, 0, cute.make_layout(1),
-            cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
+            tma_b,
+            0,
+            cute.make_layout(1),
+            cute.group_modes(sB, 0, 3),
+            cute.group_modes(thr_mma.partition_B(gB), 0, 3),
         )
 
         tmem.wait_for_alloc()
@@ -195,8 +202,18 @@ if _HAVE:
             acc_empty = acc_prod.acquire_and_advance()
             for _kt in cutlass.range(nk, prefetch_stages=AB_STAGES - 1):
                 ab_e = ab_prod.acquire_and_advance()
-                cute.copy(tma_a, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
-                cute.copy(tma_b, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                cute.copy(
+                    tma_a,
+                    tAgA[(None, ab_e.count)],
+                    tAsA[(None, ab_e.index)],
+                    tma_bar_ptr=ab_e.barrier,
+                )
+                cute.copy(
+                    tma_b,
+                    tBgB[(None, ab_e.count)],
+                    tBsB[(None, ab_e.index)],
+                    tma_bar_ptr=ab_e.barrier,
+                )
                 ab_f = ab_cons.wait_and_advance()
                 for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
                     c = (None, None, kb, ab_f.index)
@@ -218,8 +235,13 @@ if _HAVE:
     @cute.jit
     def _gemm_host(a: cute.Tensor, b: cute.Tensor, c: cute.Tensor) -> None:
         op = tcgen05.MmaF16BF16Op(
-            _io, _acc, _MNK_INST, tcgen05.CtaGroup.ONE, tcgen05.OperandSource.SMEM,
-            cute.nvgpu.OperandMajorMode.K, cute.nvgpu.OperandMajorMode.K,
+            _io,
+            _acc,
+            _MNK_INST,
+            tcgen05.CtaGroup.ONE,
+            tcgen05.OperandSource.SMEM,
+            cute.nvgpu.OperandMajorMode.K,
+            cute.nvgpu.OperandMajorMode.K,
         )
         tiled_mma = cute.make_tiled_mma(op)
         a_layout = sm100_utils.make_smem_layout_a(tiled_mma, _MNK_TILER, a.element_type, AB_STAGES)
@@ -296,9 +318,9 @@ if _HAVE:
             cpasync.prefetch_descriptor(tma_a)
             cpasync.prefetch_descriptor(tma_b)
 
-        nbytes = cute.size_in_bytes(_io, cute.select(a_layout, mode=[0, 1, 2])) + cute.size_in_bytes(
-            _io, cute.select(b_layout, mode=[0, 1, 2])
-        )
+        nbytes = cute.size_in_bytes(
+            _io, cute.select(a_layout, mode=[0, 1, 2])
+        ) + cute.size_in_bytes(_io, cute.select(b_layout, mode=[0, 1, 2]))
         ab_prod, ab_cons = pipeline.PipelineTmaUmma.create(
             num_stages=AB_STAGES,
             producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
@@ -324,12 +346,18 @@ if _HAVE:
         tCtAcc = tiled_mma.make_fragment_C(acc_shape)
 
         tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
-            tma_a, 0, cute.make_layout(1),
-            cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
+            tma_a,
+            0,
+            cute.make_layout(1),
+            cute.group_modes(sA, 0, 3),
+            cute.group_modes(thr_mma.partition_A(gA), 0, 3),
         )
         tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
-            tma_b, 0, cute.make_layout(1),
-            cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
+            tma_b,
+            0,
+            cute.make_layout(1),
+            cute.group_modes(sB, 0, 3),
+            cute.group_modes(thr_mma.partition_B(gB), 0, 3),
         )
 
         tmem.wait_for_alloc()
@@ -352,8 +380,18 @@ if _HAVE:
             acc_empty = acc_prod.acquire_and_advance()
             for _kt in cutlass.range(nk, prefetch_stages=AB_STAGES - 1):
                 ab_e = ab_prod.acquire_and_advance()
-                cute.copy(tma_a, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
-                cute.copy(tma_b, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                cute.copy(
+                    tma_a,
+                    tAgA[(None, ab_e.count)],
+                    tAsA[(None, ab_e.index)],
+                    tma_bar_ptr=ab_e.barrier,
+                )
+                cute.copy(
+                    tma_b,
+                    tBgB[(None, ab_e.count)],
+                    tBsB[(None, ab_e.index)],
+                    tma_bar_ptr=ab_e.barrier,
+                )
                 ab_f = ab_cons.wait_and_advance()
                 for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
                     c = (None, None, kb, ab_f.index)
@@ -377,8 +415,13 @@ if _HAVE:
         a: cute.Tensor, b: cute.Tensor, c: cute.Tensor, stream: cuda_driver.CUstream
     ) -> None:
         op = tcgen05.MmaF16BF16Op(
-            _io, _acc, _MNK_INST, tcgen05.CtaGroup.ONE, tcgen05.OperandSource.SMEM,
-            cute.nvgpu.OperandMajorMode.K, cute.nvgpu.OperandMajorMode.K,
+            _io,
+            _acc,
+            _MNK_INST,
+            tcgen05.CtaGroup.ONE,
+            tcgen05.OperandSource.SMEM,
+            cute.nvgpu.OperandMajorMode.K,
+            cute.nvgpu.OperandMajorMode.K,
         )
         tiled_mma = cute.make_tiled_mma(op)
         a_layout = sm100_utils.make_smem_layout_a(tiled_mma, _MNK_TILER, a.element_type, AB_STAGES)
@@ -478,7 +521,7 @@ def run_k1(
         raise NotImplementedError("increment A is NT=1 only; the reverse loop is increment B")
 
     gamma = torch.exp2(g2)
-    qg = (q * gamma[..., None])  # [B,HV,1,C,d_k]
+    qg = q * gamma[..., None]  # [B,HV,1,C,d_k]
     # A = [qg | −w] along C -> [n_bh, d_k, 2C] (K-major: contraction 2C contiguous).
     a = torch.cat([qg, -w], dim=3).reshape(b * hv, c * 2, d_k).transpose(1, 2).contiguous()
     bmat = torch.cat([do, dv_local], dim=3).reshape(b * hv, c * 2, d_v).transpose(1, 2).contiguous()
@@ -689,8 +732,12 @@ def _incb2_pack_scalar(
     b_ga = torch.zeros(ll, d_v, 2 * c, dtype=q.dtype, device=dev)
     b_ga[:, :, :c] = doL.transpose(-1, -2)  # do^T; the [:, :, C:] half is b_dv^T in-kernel
     return {
-        "a_g1": a_g1, "a_ga": a_ga, "b_ga": b_ga,
-        "decay": decL, "dv_local": dvlL, "glast": geL,
+        "a_g1": a_g1,
+        "a_ga": a_ga,
+        "b_ga": b_ga,
+        "decay": decL,
+        "dv_local": dvlL,
+        "glast": geL,
     }
 
 
@@ -787,16 +834,31 @@ if _HAVE:
     @cute.kernel
     def _incb2_kernel(
         tiled_mma: cute.TiledMma,
-        tma_ag1: cute.CopyAtom, m_ag1: cute.Tensor,
-        tma_aga: cute.CopyAtom, m_aga: cute.Tensor,
-        tma_bdhT: cute.CopyAtom, m_bdhT: cute.Tensor,
-        tma_bga: cute.CopyAtom, m_bga: cute.Tensor,
-        m_bdv: cute.Tensor, m_t: cute.Tensor,
-        m_bdh: cute.Tensor, m_dh: cute.Tensor, m_dv2: cute.Tensor,
-        m_decay: cute.Tensor, m_dvl: cute.Tensor, m_glast: cute.Tensor,
-        m_bdhT_s: cute.Tensor, m_bga_s: cute.Tensor, m_bdv_s: cute.Tensor, m_t_s: cute.Tensor,
-        a_layout: cute.ComposedLayout, b_layout: cute.ComposedLayout,
-        nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
+        tma_ag1: cute.CopyAtom,
+        m_ag1: cute.Tensor,
+        tma_aga: cute.CopyAtom,
+        m_aga: cute.Tensor,
+        tma_bdhT: cute.CopyAtom,
+        m_bdhT: cute.Tensor,
+        tma_bga: cute.CopyAtom,
+        m_bga: cute.Tensor,
+        m_bdv: cute.Tensor,
+        m_t: cute.Tensor,
+        m_bdh: cute.Tensor,
+        m_dh: cute.Tensor,
+        m_dv2: cute.Tensor,
+        m_decay: cute.Tensor,
+        m_dvl: cute.Tensor,
+        m_glast: cute.Tensor,
+        m_bdhT_s: cute.Tensor,
+        m_bga_s: cute.Tensor,
+        m_bdv_s: cute.Tensor,
+        m_t_s: cute.Tensor,
+        a_layout: cute.ComposedLayout,
+        b_layout: cute.ComposedLayout,
+        nt: cutlass.Constexpr,
+        c: cutlass.Constexpr,
+        d_v: cutlass.Constexpr,
         bisect: cutlass.Constexpr,
     ) -> None:
         # bisect: 0 full · 1 G1-only · 2 G1+GA no round-trips · 3 G1 plain-bh coord · 4 G1
@@ -825,9 +887,9 @@ if _HAVE:
             cpasync.prefetch_descriptor(tma_bdhT)
             cpasync.prefetch_descriptor(tma_bga)
 
-        nbytes = cute.size_in_bytes(_io, cute.select(a_layout, mode=[0, 1, 2])) + cute.size_in_bytes(
-            _io, cute.select(b_layout, mode=[0, 1, 2])
-        )
+        nbytes = cute.size_in_bytes(
+            _io, cute.select(a_layout, mode=[0, 1, 2])
+        ) + cute.size_in_bytes(_io, cute.select(b_layout, mode=[0, 1, 2]))
         ab_prod, ab_cons = pipeline.PipelineTmaUmma.create(
             num_stages=AB_STAGES,
             producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
@@ -874,12 +936,18 @@ if _HAVE:
             thr_mma = tiled_mma.get_slice(0)
             tCgC = thr_mma.partition_C(gC)
             tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
-                tma_ag1, 0, cute.make_layout(1),
-                cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
+                tma_ag1,
+                0,
+                cute.make_layout(1),
+                cute.group_modes(sA, 0, 3),
+                cute.group_modes(thr_mma.partition_A(gA), 0, 3),
             )
             tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
-                tma_bdhT, 0, cute.make_layout(1),
-                cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
+                tma_bdhT,
+                0,
+                cute.make_layout(1),
+                cute.group_modes(sB, 0, 3),
+                cute.group_modes(thr_mma.partition_B(gB), 0, 3),
             )
             tCrA = tiled_mma.make_fragment_A(sA)
             tCrB = tiled_mma.make_fragment_B(sB)
@@ -898,8 +966,18 @@ if _HAVE:
                 tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
                 for _kt in cutlass.range(cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1):
                     ab_e = ab_prod.acquire_and_advance()
-                    cute.copy(tma_ag1, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
-                    cute.copy(tma_bdhT, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                    cute.copy(
+                        tma_ag1,
+                        tAgA[(None, ab_e.count)],
+                        tAsA[(None, ab_e.index)],
+                        tma_bar_ptr=ab_e.barrier,
+                    )
+                    cute.copy(
+                        tma_bdhT,
+                        tBgB[(None, ab_e.count)],
+                        tBsB[(None, ab_e.index)],
+                        tma_bar_ptr=ab_e.barrier,
+                    )
                     ab_f = ab_cons.wait_and_advance()
                     for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
                         cc = (None, None, kb, ab_f.index)
@@ -936,12 +1014,18 @@ if _HAVE:
                 thr_mma = tiled_mma.get_slice(0)
                 tCgC = thr_mma.partition_C(gC)
                 tAsA, tAgA = cute.nvgpu.cpasync.tma_partition(
-                    tma_aga, 0, cute.make_layout(1),
-                    cute.group_modes(sA, 0, 3), cute.group_modes(thr_mma.partition_A(gA), 0, 3),
+                    tma_aga,
+                    0,
+                    cute.make_layout(1),
+                    cute.group_modes(sA, 0, 3),
+                    cute.group_modes(thr_mma.partition_A(gA), 0, 3),
                 )
                 tBsB, tBgB = cute.nvgpu.cpasync.tma_partition(
-                    tma_bga, 0, cute.make_layout(1),
-                    cute.group_modes(sB, 0, 3), cute.group_modes(thr_mma.partition_B(gB), 0, 3),
+                    tma_bga,
+                    0,
+                    cute.make_layout(1),
+                    cute.group_modes(sB, 0, 3),
+                    cute.group_modes(thr_mma.partition_B(gB), 0, 3),
                 )
                 tCrA = tiled_mma.make_fragment_A(sA)
                 tCrB = tiled_mma.make_fragment_B(sB)
@@ -956,10 +1040,22 @@ if _HAVE:
                 if warp_idx == 0:
                     acc_empty = acc_prod.acquire_and_advance()
                     tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
-                    for _kt in cutlass.range(cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1):
+                    for _kt in cutlass.range(
+                        cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1
+                    ):
                         ab_e = ab_prod.acquire_and_advance()
-                        cute.copy(tma_aga, tAgA[(None, ab_e.count)], tAsA[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
-                        cute.copy(tma_bga, tBgB[(None, ab_e.count)], tBsB[(None, ab_e.index)], tma_bar_ptr=ab_e.barrier)
+                        cute.copy(
+                            tma_aga,
+                            tAgA[(None, ab_e.count)],
+                            tAsA[(None, ab_e.index)],
+                            tma_bar_ptr=ab_e.barrier,
+                        )
+                        cute.copy(
+                            tma_bga,
+                            tBgB[(None, ab_e.count)],
+                            tBsB[(None, ab_e.index)],
+                            tma_bar_ptr=ab_e.barrier,
+                        )
                         ab_f = ab_cons.wait_and_advance()
                         for kb in cutlass.range_constexpr(cute.size(tCrA, mode=[2])):
                             cc = (None, None, kb, ab_f.index)
@@ -990,33 +1086,81 @@ if _HAVE:
 
     @cute.jit
     def _incb2_host(
-        m_ag1: cute.Tensor, m_aga: cute.Tensor, m_bdhT: cute.Tensor, m_bga: cute.Tensor,
-        m_bdv: cute.Tensor, m_t: cute.Tensor, m_bdh: cute.Tensor,
-        m_dh: cute.Tensor, m_dv2: cute.Tensor,
-        m_decay: cute.Tensor, m_dvl: cute.Tensor, m_glast: cute.Tensor,
-        m_bdhT_s: cute.Tensor, m_bga_s: cute.Tensor, m_bdv_s: cute.Tensor, m_t_s: cute.Tensor,
-        n_bh: cutlass.Constexpr, nt: cutlass.Constexpr, c: cutlass.Constexpr, d_v: cutlass.Constexpr,
+        m_ag1: cute.Tensor,
+        m_aga: cute.Tensor,
+        m_bdhT: cute.Tensor,
+        m_bga: cute.Tensor,
+        m_bdv: cute.Tensor,
+        m_t: cute.Tensor,
+        m_bdh: cute.Tensor,
+        m_dh: cute.Tensor,
+        m_dv2: cute.Tensor,
+        m_decay: cute.Tensor,
+        m_dvl: cute.Tensor,
+        m_glast: cute.Tensor,
+        m_bdhT_s: cute.Tensor,
+        m_bga_s: cute.Tensor,
+        m_bdv_s: cute.Tensor,
+        m_t_s: cute.Tensor,
+        n_bh: cutlass.Constexpr,
+        nt: cutlass.Constexpr,
+        c: cutlass.Constexpr,
+        d_v: cutlass.Constexpr,
         bisect: cutlass.Constexpr,
     ) -> None:
         op = tcgen05.MmaF16BF16Op(
-            _io, _acc, _MNK_INST, tcgen05.CtaGroup.ONE, tcgen05.OperandSource.SMEM,
-            cute.nvgpu.OperandMajorMode.K, cute.nvgpu.OperandMajorMode.K,
+            _io,
+            _acc,
+            _MNK_INST,
+            tcgen05.CtaGroup.ONE,
+            tcgen05.OperandSource.SMEM,
+            cute.nvgpu.OperandMajorMode.K,
+            cute.nvgpu.OperandMajorMode.K,
         )
         tiled_mma = cute.make_tiled_mma(op)
-        a_layout = sm100_utils.make_smem_layout_a(tiled_mma, _MNK_TILER, m_ag1.element_type, AB_STAGES)
-        b_layout = sm100_utils.make_smem_layout_b(tiled_mma, _MNK_TILER, m_bga.element_type, AB_STAGES)
+        a_layout = sm100_utils.make_smem_layout_a(
+            tiled_mma, _MNK_TILER, m_ag1.element_type, AB_STAGES
+        )
+        b_layout = sm100_utils.make_smem_layout_b(
+            tiled_mma, _MNK_TILER, m_bga.element_type, AB_STAGES
+        )
         a1 = cute.select(a_layout, mode=[0, 1, 2])
         b1 = cute.select(b_layout, mode=[0, 1, 2])
         op_tma = cute.nvgpu.cpasync.CopyBulkTensorTileG2SOp(tcgen05.CtaGroup.ONE)
         at_ag1, t_ag1 = cute.nvgpu.make_tiled_tma_atom_A(op_tma, m_ag1, a1, _MNK_TILER, tiled_mma)
         at_aga, t_aga = cute.nvgpu.make_tiled_tma_atom_A(op_tma, m_aga, a1, _MNK_TILER, tiled_mma)
-        at_bdhT, t_bdhT = cute.nvgpu.make_tiled_tma_atom_B(op_tma, m_bdhT, b1, _MNK_TILER, tiled_mma)
+        at_bdhT, t_bdhT = cute.nvgpu.make_tiled_tma_atom_B(
+            op_tma, m_bdhT, b1, _MNK_TILER, tiled_mma
+        )
         at_bga, t_bga = cute.nvgpu.make_tiled_tma_atom_B(op_tma, m_bga, b1, _MNK_TILER, tiled_mma)
         _incb2_kernel(
-            tiled_mma, at_ag1, t_ag1, at_aga, t_aga, at_bdhT, t_bdhT, at_bga, t_bga,
-            m_bdv, m_t, m_bdh, m_dh, m_dv2, m_decay, m_dvl, m_glast,
-            m_bdhT_s, m_bga_s, m_bdv_s, m_t_s,
-            a_layout, b_layout, nt, c, d_v, bisect,
+            tiled_mma,
+            at_ag1,
+            t_ag1,
+            at_aga,
+            t_aga,
+            at_bdhT,
+            t_bdhT,
+            at_bga,
+            t_bga,
+            m_bdv,
+            m_t,
+            m_bdh,
+            m_dh,
+            m_dv2,
+            m_decay,
+            m_dvl,
+            m_glast,
+            m_bdhT_s,
+            m_bga_s,
+            m_bdv_s,
+            m_t_s,
+            a_layout,
+            b_layout,
+            nt,
+            c,
+            d_v,
+            bisect,
         ).launch(grid=(1, 1, n_bh), block=(THREADS, 1, 1))
 
     _incb2_cache: dict[tuple[int, ...], object] = {}  # cute.compile keyed (n_bh,nt,c,d_v,bisect)
@@ -1028,9 +1172,18 @@ def _mark_simt(t: Tensor) -> object:
 
 
 def _incb2_launch(
-    a_g1: Tensor, a_ga: Tensor, b_ga: Tensor, b_dh: Tensor,
-    decay: Tensor, dvl: Tensor, glast: Tensor,
-    n_bh: int, nt: int, c: int, d_k: int, d_v: int,
+    a_g1: Tensor,
+    a_ga: Tensor,
+    b_ga: Tensor,
+    b_dh: Tensor,
+    decay: Tensor,
+    dvl: Tensor,
+    glast: Tensor,
+    n_bh: int,
+    nt: int,
+    c: int,
+    d_k: int,
+    d_v: int,
     *,
     bisect: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
@@ -1057,12 +1210,27 @@ def _incb2_launch(
     dv2 = torch.zeros(ll, c, d_v, dtype=f16, device=dev)
 
     args = (
-        _mark_b(a_g1_16), _mark_b(a_ga_16), _mark_b(b_dhT), _mark_b(b_ga_16),
-        _mark_b(bdv_raw), _mark_b(t_scr),
-        _mark_simt(b_dh), _mark_simt(dh), _mark_simt(dv2),
-        _mark_simt(decay.to(f32)), _mark_simt(dvl.to(f32)), _mark_simt(glast.to(f32)),
-        _mark_simt(b_dhT), _mark_simt(b_ga_16), _mark_simt(bdv_raw), _mark_simt(t_scr),
-        n_bh, nt, c, d_v, bisect,
+        _mark_b(a_g1_16),
+        _mark_b(a_ga_16),
+        _mark_b(b_dhT),
+        _mark_b(b_ga_16),
+        _mark_b(bdv_raw),
+        _mark_b(t_scr),
+        _mark_simt(b_dh),
+        _mark_simt(dh),
+        _mark_simt(dv2),
+        _mark_simt(decay.to(f32)),
+        _mark_simt(dvl.to(f32)),
+        _mark_simt(glast.to(f32)),
+        _mark_simt(b_dhT),
+        _mark_simt(b_ga_16),
+        _mark_simt(bdv_raw),
+        _mark_simt(t_scr),
+        n_bh,
+        nt,
+        c,
+        d_v,
+        bisect,
     )
     key = (n_bh, nt, c, d_v, bisect)
     ex = _incb2_cache.get(key)
@@ -1108,8 +1276,18 @@ def run_k1_incB2(
     b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
     glast = buf["glast"][:, None].expand(n_bh * nt, d_k).contiguous()  # [L] scalar → [L,d_k]
     dh, dv2, dh0 = _incb2_launch(
-        buf["a_g1"], buf["a_ga"], buf["b_ga"], b_dh, buf["decay"], buf["dv_local"], glast,
-        n_bh, nt, c, d_k, d_v,
+        buf["a_g1"],
+        buf["a_ga"],
+        buf["b_ga"],
+        b_dh,
+        buf["decay"],
+        buf["dv_local"],
+        glast,
+        n_bh,
+        nt,
+        c,
+        d_k,
+        d_v,
         bisect=bisect,
     )
     return (
