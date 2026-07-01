@@ -30,6 +30,8 @@ from torch import Tensor
 
 from flash_mamba_rl.kernels.autotune import KernelConfig
 
+from ._resource_meta import max_resource_meta
+
 _TRITON_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 _HAS_TRITON: bool | None = None
 
@@ -212,14 +214,27 @@ def forward_chunked_scan(
     return _scan_eager(u, delta, A, B, C, D)
 
 
-def triton_scan_resource_meta() -> dict[str, int] | None:
-    """Resource metadata of the compiled Triton scan kernel, if any.
+def triton_scan_resource_meta(config: KernelConfig | None = None) -> dict[str, int] | None:
+    """Resource metadata of the compiled Triton forward scan kernel, if any.
 
     Feed the result to ``gate_res_02_resource_limits`` via the harness;
     None (nothing compiled / no triton) keeps the gate not-applicable.
+
+    Must match ``_ForwardScanCuda.forward``'s dispatch: an explicit
+    ``scan_mode`` audits exactly that kernel, but when ``scan_mode`` is unset the
+    dispatch resolves the mode by *shape* (``_resolve_scan_mode``) — either kernel
+    can run — so the audit returns the max envelope over both, never the serial one
+    alone. Mirrors ``backward_selective_scan.triton_bwd_scan_resource_meta``.
     """
     if not _triton_usable():
         return None
-    from flash_mamba_rl.kernels.ops import _triton_fwd_scan
+    from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fwd, _triton_fwd_scan
 
-    return _triton_fwd_scan.resource_meta()
+    mode = config.scan_mode if config is not None else None
+    if mode == "chunk_parallel":
+        return _triton_chunk_parallel_fwd.resource_meta()
+    if mode == "serial":
+        return _triton_fwd_scan.resource_meta()
+    return max_resource_meta(
+        _triton_fwd_scan.resource_meta(), _triton_chunk_parallel_fwd.resource_meta()
+    )

@@ -17,10 +17,11 @@ import pytest
 from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops._resource_meta import max_resource_meta
 
-# The ops package __init__ rebinds ``backward_selective_scan`` /
-# ``fused_block_backward`` to the *functions*, shadowing the submodule
-# attributes — reach the real modules through sys.modules.
+# The ops package __init__ rebinds ``forward_chunked_scan`` /
+# ``backward_selective_scan`` / ``fused_block_backward`` to the *functions*,
+# shadowing the submodule attributes — reach the real modules through sys.modules.
 ops_pkg = importlib.import_module("flash_mamba_rl.kernels.ops")
+fwd_mod = importlib.import_module("flash_mamba_rl.kernels.ops.forward_chunked_scan")
 bwd_mod = importlib.import_module("flash_mamba_rl.kernels.ops.backward_selective_scan")
 fused_mod = importlib.import_module("flash_mamba_rl.kernels.ops.fused_block_backward")
 
@@ -42,23 +43,29 @@ class TestMaxResourceMeta:
 
 @pytest.fixture
 def _stub_kernels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fwd_mod, "_triton_usable", lambda: True)
     monkeypatch.setattr(bwd_mod, "_triton_usable", lambda: True)
     monkeypatch.setattr(fused_mod, "_triton_usable", lambda: True)
     serial = types.SimpleNamespace(resource_meta=lambda: dict(_SERIAL_META))
     chunk_parallel = types.SimpleNamespace(resource_meta=lambda: dict(_CP_META))
-    for name in ("_triton_bwd_scan", "_triton_fused_block_bwd"):
+    for name in ("_triton_fwd_scan", "_triton_bwd_scan", "_triton_fused_block_bwd"):
         monkeypatch.setattr(ops_pkg, name, serial, raising=False)
-    for name in ("_triton_chunk_parallel_bwd", "_triton_chunk_parallel_fused_bwd"):
+    for name in (
+        "_triton_chunk_parallel_fwd",
+        "_triton_chunk_parallel_bwd",
+        "_triton_chunk_parallel_fused_bwd",
+    ):
         monkeypatch.setattr(ops_pkg, name, chunk_parallel, raising=False)
 
 
 @pytest.mark.parametrize(
     "resource_meta_fn",
     [
+        lambda cfg: fwd_mod.triton_scan_resource_meta(config=cfg),
         lambda cfg: bwd_mod.triton_bwd_scan_resource_meta(config=cfg),
         lambda cfg: fused_mod.triton_fused_block_bwd_resource_meta(config=cfg),
     ],
-    ids=["c2_bwd_scan", "c6_fused_bwd"],
+    ids=["c1_fwd_scan", "c2_bwd_scan", "c6_fused_bwd"],
 )
 class TestResourceMetaRouting:
     def test_config_none_audits_max_envelope(self, _stub_kernels: None, resource_meta_fn) -> None:
