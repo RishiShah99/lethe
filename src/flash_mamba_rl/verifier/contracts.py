@@ -201,7 +201,9 @@ def gate_ord_01_reduction_order_tolerance(
 
     - ``N`` is ``reduction_elements`` — the op's true accumulation extent
       (for a scan, the sequence length; for a row-sum, the row width).
-      Defaults to ``shape[-1]`` (the row-op convention).
+      Defaults to the sequence extent ``shape[-2]`` (this codebase's ops are
+      scans; ``shape[-1]`` for a 1-D shape). Production callers pass it
+      explicitly; the default only protects a harness that forgets to.
     - the output-magnitude factor carries the scale of the intermediates;
       a unit-scale atol would demand sub-ULP cancellation noise.
     - ``safety_factor`` covers the stochastic spread of the random-walk
@@ -209,7 +211,14 @@ def gate_ord_01_reduction_order_tolerance(
       B200; 4x keeps honest kernels clear while staying orders of
       magnitude below wrong-math errors).
     """
-    n_elements = reduction_elements if reduction_elements is not None else shape[-1]
+    if reduction_elements is not None:
+        n_elements = reduction_elements
+    else:
+        # No explicit extent: default to the sequence dim (shape[-2]) — the scan
+        # accumulation length for this codebase's ops. shape[-1] (the row width)
+        # under-counts N and makes the sqrt(N) atol ~sqrt(seq/width) too tight,
+        # false-rejecting honest reorder noise on a harness that omits the arg.
+        n_elements = shape[-2] if len(shape) >= 2 else shape[-1]
     dtype_eps: float
     if dtype == torch.float16:
         dtype_eps = 9.77e-4  # torch.finfo(torch.float16).eps
@@ -271,20 +280,26 @@ def gate_ord_02_atomic_determinism(
     Two hazards, one gate. Determinism is checked on *cloned* snapshots, so a
     candidate that recomputes in place into a returned buffer is compared
     snapshot-to-snapshot, not against a live tensor a later call overwrites.
-    Aliasing is checked by holding every raw output alive at once and
-    requiring distinct ``data_ptr``s: a candidate that returns the same
-    storage across calls (one cached buffer handed back — the cross-call
-    aliasing the audit found, where holding two results corrupts the first)
-    is rejected. Keeping the outputs live is what makes the check sound on
-    CUDA — the caching allocator would otherwise recycle a freed output's
-    address and make independent correct buffers look aliased.
+    Two aliasing hazards, both rejected. Cross-call: holding every raw output
+    alive at once and requiring distinct ``data_ptr``s catches a cached buffer
+    handed back across calls (where holding two results corrupts the first);
+    keeping the outputs live is what makes this sound on CUDA — the caching
+    allocator would otherwise recycle a freed output's address and make
+    independent correct buffers look aliased. Input aliasing: an output that
+    shares storage with the tensor it was given is rejected too — a candidate
+    returning a view of its input scores a fresh ``data_ptr`` every call (each
+    gets a distinct input clone) and would otherwise pass the distinctness
+    check while never having computed anything.
     """
     t = torch.randn(shape, dtype=dtype, device=device)
     raw_outputs: list[torch.Tensor] = []
     snapshots: list[torch.Tensor] = []
+    input_clones: list[torch.Tensor] = []
     for _ in range(n_runs):
+        inp = t.clone()
+        input_clones.append(inp)  # kept alive so the input-aliasing check below is sound
         try:
-            out = candidate(t.clone())
+            out = candidate(inp)
         except Exception as exc:
             return GateResult(
                 passed=False,
@@ -309,6 +324,15 @@ def gate_ord_02_atomic_determinism(
             reason="cross-call output-buffer aliasing (a cached buffer reused across calls)",
             details={"n_runs": n_runs, "distinct_buffers": len(set(data_ptrs))},
         )
+
+    for i, (out, inp) in enumerate(zip(raw_outputs, input_clones, strict=True)):
+        if out.untyped_storage().data_ptr() == inp.untyped_storage().data_ptr():
+            return GateResult(
+                passed=False,
+                reason=f"run {i} output aliases its input storage (returns a view of the input)",
+                details={"n_runs": n_runs},
+            )
+
     return GateResult(
         passed=True,
         reason=f"all {n_runs} runs byte-identical, distinct output buffers",

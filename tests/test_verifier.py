@@ -226,6 +226,11 @@ def _nondeterministic(t: torch.Tensor) -> torch.Tensor:
     return t + torch.randn_like(t) * 0.1
 
 
+def _alias_input(t: torch.Tensor) -> torch.Tensor:
+    """Returns its input storage verbatim — a view, never a fresh output buffer."""
+    return t
+
+
 # ---------------------------------------------------------------------------
 # contracts.py — implemented gates (pass / fail)
 # ---------------------------------------------------------------------------
@@ -283,6 +288,19 @@ class TestGateOrd01ReductionOrderTolerance:
         assert "n_elements" in result.details
         assert result.details["atol_used"] > 0.0
 
+    def test_default_reduction_elements_uses_sequence_extent(self) -> None:
+        # (4, 512, 32) is (batch, seq, width); the scan reduction extent is the
+        # seq dim (512), not the row width (32). The old shape[-1] default made
+        # atol ~sqrt(512/32)=4x too tight and could false-reject honest scans.
+        # Seed identically so both draw the same input → same output scale → the
+        # atol ratio is exactly the sqrt(N) ratio, sqrt(512/32) = 4.
+        torch.manual_seed(0)
+        default = gate_ord_01_reduction_order_tolerance(_identity, _identity)
+        torch.manual_seed(0)
+        narrow = gate_ord_01_reduction_order_tolerance(_identity, _identity, reduction_elements=32)
+        assert default.details["n_elements"] == 512
+        assert default.details["atol_used"] == pytest.approx(narrow.details["atol_used"] * 4.0)
+
 
 class TestGateOrd02AtomicDeterminism:
     def test_pass_when_candidate_is_deterministic(self) -> None:
@@ -296,6 +314,14 @@ class TestGateOrd02AtomicDeterminism:
     def test_n_runs_reported_in_details(self) -> None:
         result = gate_ord_02_atomic_determinism(_identity, _identity, n_runs=3)
         assert result.details["n_runs"] == 3
+
+    def test_fail_when_output_aliases_input(self) -> None:
+        # A candidate that returns a view of its input scores a fresh data_ptr
+        # per call (each call gets a distinct input clone) so it slips the
+        # cross-call distinctness check — the input-aliasing check catches it.
+        result = gate_ord_02_atomic_determinism(_alias_input, _identity)
+        assert result.passed is False
+        assert "input" in result.reason
 
 
 class TestGatePrc01PrecisionRegime:
