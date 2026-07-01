@@ -282,7 +282,11 @@ class MedicalTrainer:
         path = os.path.join(self.config.checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return False
-        state = torch.load(path, map_location="cpu", weights_only=False)
+        # weights_only=True: the checkpoint holds only step/model_name plus the
+        # optimizer state_dict and per-rank RNG tensors — all tensors + primitive
+        # containers, which the safe loader accepts. It closes the pickle-RCE if
+        # checkpoint_dir ever points at a run dir this process did not write.
+        state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])
         model_path = os.path.join(self.config.checkpoint_dir, str(state["model_name"]))
         self._core.load_state_dict(torch.load(model_path, map_location=self.device))

@@ -7,6 +7,7 @@ descent, sane macro-AUC, and checkpoint→resume of step+optimizer+model.
 
 from __future__ import annotations
 
+import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
@@ -221,6 +222,26 @@ class TestCheckpointResume:
 
     def test_resume_without_checkpoint_is_false(self, tmp_path: object) -> None:
         assert not _trainer(tmp_path).load_checkpoint()
+
+    def test_load_checkpoint_refuses_pickle_gadget(self, tmp_path: object) -> None:
+        # weights_only=True must reject a __reduce__ gadget in trainer_state.pt
+        # (pickle-RCE class) — the reconstruction side effect must never fire.
+        import os
+        import pickle
+
+        from tests._sandbox_helpers import ReduceBomb
+
+        trainer = _trainer(tmp_path)
+        os.makedirs(trainer.config.checkpoint_dir, exist_ok=True)
+        sentinel = os.path.join(str(tmp_path), "pwned")
+        path = os.path.join(trainer.config.checkpoint_dir, "trainer_state.pt")
+        torch.save(
+            {"step": 0, "model_name": "m.pt", "optimizer": ReduceBomb(sentinel), "rng_states": []},
+            path,
+        )
+        with pytest.raises(pickle.UnpicklingError):  # safe loader refuses the gadget
+            trainer.load_checkpoint()
+        assert not os.path.exists(sentinel)
 
     def test_old_models_pruned_keeping_two(self, tmp_path: object) -> None:
         import os
