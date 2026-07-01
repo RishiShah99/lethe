@@ -256,7 +256,10 @@ if _HAVE:
             grid=grid, block=(THREADS, 1, 1)
         )
 
-    _gemm_compiled = None  # cached cute.compile of _gemm_host (the fixed (128,128,64) tile)
+    # cute.compile of _gemm_host, keyed by operand shape/dtype (callers use one
+    # fixed (128,128,64) tile today, so this is one entry; the key means a future
+    # off-tile caller recompiles rather than silently reusing the wrong kernel).
+    _gemm_aa_cache: dict[tuple[object, ...], object] = {}
 
     def _gemm_aa(a: Tensor, b: Tensor, out: Tensor) -> None:
         """Run increment A's proven (128,64,128) GEMM: ``out[128,64] = a[128,128] @ b[64,128]^T``.
@@ -270,17 +273,20 @@ if _HAVE:
         THE dispatch fix (the launch-overhead win). Calling the ``@cute.jit`` ``_gemm_host``
         directly re-traces its host body (tiled-MMA, smem layouts, TMA atoms) on EVERY call
         — ~190 ms to launch a ~5 us kernel (measured B200, scratch/probe_gemm_overhead.py).
-        Every ``_gemm_aa`` call is the identical (128,128,64) tile, so ``cute.compile`` it
-        ONCE and reuse the compiled executable: ~190 ms/call → ~0.04 ms/call
-        (scratch/probe_gemm_compiled.py). No per-GEMM ``cuda.synchronize`` either — the
+        Callers use one fixed (128,128,64) tile today, so ``cute.compile`` runs once and
+        the compiled executable is cached (keyed by operand shape/dtype) and reused:
+        ~190 ms/call → ~0.04 ms/call (scratch/probe_gemm_compiled.py). No per-GEMM
+        ``cuda.synchronize`` either — the
         launch is default-stream ordered against the loop's torch ops that read this ``out``
         and feed the next GEMM; the caller syncs ONCE at the end of its reverse loop.
         """
-        global _gemm_compiled
         ca, cb, cc = _mark(a.contiguous()), _mark(b.contiguous()), _mark(out)
-        if _gemm_compiled is None:
-            _gemm_compiled = cute.compile(_gemm_host, ca, cb, cc)
-        _gemm_compiled(ca, cb, cc)
+        key = (a.shape, b.shape, out.shape, a.dtype, b.dtype, out.dtype)
+        ex = _gemm_aa_cache.get(key)
+        if ex is None:
+            ex = cute.compile(_gemm_host, ca, cb, cc)
+            _gemm_aa_cache[key] = ex
+        ex(ca, cb, cc)
 
     # ------------------------------------------------------------------
     # Lever B — batched (128,64,128) GEMM: L as grid-z, one CTA per batch element.
@@ -480,6 +486,11 @@ def _bmm_tc(x: Tensor, y: Tensor) -> Tensor:
     f16, dev = torch.float16, x.device
     z, m, kk = x.shape
     n = y.shape[-1]
+    if m > D_K or kk > D_K:
+        raise ValueError(
+            f"_bmm_tc stages M,K into a ({D_K},{D_K}) buffer; got x[Z,{m},{kk}] — both must "
+            f"be <= {D_K} (N tiles by D_V={D_V}; M,K below {D_K} zero-pad and stay correct)"
+        )
     a = torch.zeros(z, D_K, D_K, dtype=f16, device=dev)
     a[:, :m, :kk] = x.to(f16)
     yt = y.transpose(-1, -2).contiguous()  # [Z, N, K]
@@ -567,6 +578,8 @@ def run_k1_incB_host(
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
+    if d_k > D_K:
+        raise ValueError(f"increment-B stages d_k into a {D_K}-wide tile; got d_k={d_k} > {D_K}")
     dev = q.device
     n_bh = b * hv
     f16 = torch.float16
@@ -634,6 +647,8 @@ def run_k1_incB_batched(
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
+    if d_k > D_K:
+        raise ValueError(f"increment-B stages d_k into a {D_K}-wide tile; got d_k={d_k} > {D_K}")
     dev = q.device
     n_bh = b * hv
 

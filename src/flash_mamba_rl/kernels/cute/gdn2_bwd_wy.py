@@ -116,10 +116,15 @@ def _mm_tc(x: Tensor, y: Tensor) -> Tensor:
     M-pad to 128, K-pad to 128, N split into 64-wide tiles — every K#2 matmul lands on
     the ONE proven config. fp16 operands / fp32 accumulate (the verified numeric path).
     """
+    m, kk = x.shape
+    if m > D_K or kk > D_K:
+        raise ValueError(
+            f"_mm_tc stages M,K into a ({D_K},{D_K}) buffer; got x[{m},{kk}] — both must "
+            f"be <= {D_K} (N tiles by D_V={D_V}; M,K below {D_K} zero-pad and stay correct)"
+        )
     from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _gemm_aa
 
     f16, dev = torch.float16, x.device
-    m, kk = x.shape
     _, n = y.shape
     a = torch.zeros(D_K, D_K, dtype=f16, device=dev)
     a[:m, :kk] = x.to(f16)
