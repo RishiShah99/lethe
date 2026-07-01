@@ -1,7 +1,13 @@
 """Subprocess sandbox: run a kernel callable in an isolated child process.
 
 Isolates segfaults, OOM kills, and CUDA IMA faults from the parent process.
-Input and output are marshalled via pickle over stdin/stdout.
+The task (module/callable/inputs) is marshalled parent->child via pickle — it is
+parent-authored, so it is trusted. The child's RESULT travels back over a private
+fd serialized with ``torch.save`` and is loaded in the parent with
+``torch.load(weights_only=True)``: the parent runs the reward/verdict logic, so it
+must never execute code while deserializing an untrusted candidate's return value.
+``weights_only`` admits only tensors and plain primitive containers and refuses any
+code-bearing ``__reduce__`` gadget, closing the sandbox->parent escape.
 
 Memory limit enforcement:
 - POSIX: ``resource.setrlimit(RLIMIT_AS, ...)`` applied in the child process
@@ -78,11 +84,11 @@ _WORKER_SCRIPT = textwrap.dedent(
     raw = sys.stdin.buffer.read()
     module_path, callable_name, inputs = pickle.loads(raw)
 
-    # The result is pickled to the parent over fd 1. Duplicate it to a private
+    # The result is serialized to the parent over fd 1. Duplicate it to a private
     # fd, then point fd 1 (and Python stdout) at stderr: a kernel printf, a
     # CUDA printf, or any os.write(1) is a C-level write to fd 1 that the
     # Python-level stdout swap cannot intercept, and even one stray byte
-    # corrupts the pickle channel. The candidate keeps a working stdout (now
+    # corrupts the result channel. The candidate keeps a working stdout (now
     # stderr); only the result travels the private fd.
     sys.stdout.flush()
     result_fd = os.dup(1)
@@ -101,7 +107,14 @@ _WORKER_SCRIPT = textwrap.dedent(
     result = fn(*inputs)
 
     # Write result to the private channel (a pipe may take partial writes).
-    payload = memoryview(pickle.dumps(result))
+    # torch.save (not pickle.dumps) so the parent can reload with
+    # weights_only=True; pin protocol 2 to match torch.load's default and avoid
+    # its protocol-5 weights_only warning.
+    import io as _io
+    import torch as _torch
+    _rbuf = _io.BytesIO()
+    _torch.save(result, _rbuf, pickle_protocol=2)
+    payload = memoryview(_rbuf.getvalue())
     while payload:
         payload = payload[os.write(result_fd, payload):]
     os.close(result_fd)
@@ -135,6 +148,24 @@ def _classify_subprocess_failure(stderr: str, rc: int) -> ErrorClass:
 
     # Non-zero but unclassified
     return ErrorClass.OTHER
+
+
+def _deserialize_child_output(data: bytes) -> Any:
+    """Load the child's ``torch.save`` result WITHOUT executing candidate code.
+
+    The child is untrusted (it runs the candidate kernel) and the parent runs the
+    reward/verdict logic, so a bare ``pickle.loads`` here would let a reward-hacking
+    candidate execute arbitrary code in the parent via a ``__reduce__`` gadget —
+    forging rewards / GO verdicts. ``torch.load(weights_only=True)`` admits only
+    tensors and plain primitive containers and refuses any code-bearing global, so
+    a gadget surfaces as a deserialization failure instead of running. This is the
+    sanctioned system boundary: hardening belongs here.
+    """
+    import io
+
+    import torch
+
+    return torch.load(io.BytesIO(data), weights_only=True)
 
 
 def run_in_subprocess(
@@ -240,15 +271,15 @@ def run_in_subprocess(
             exit_code=rc,
         )
 
-    # Attempt to unpickle the result
+    # Safely deserialize the result (never executes candidate code — see helper).
     try:
-        output = pickle.loads(stdout_bytes)
+        output = _deserialize_child_output(stdout_bytes)
     except Exception as exc:
         return SubprocessResult(
             success=False,
             output=None,
             error_class=ErrorClass.OTHER,
-            stderr=f"unpickle error: {exc}",
+            stderr=f"deserialize error: {exc}",
             exit_code=rc,
         )
 
