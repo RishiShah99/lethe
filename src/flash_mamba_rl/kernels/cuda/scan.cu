@@ -21,6 +21,8 @@
 
 #include <torch/extension.h>
 
+#include <cstdint>
+
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_reduce.cuh>
 #include <cub/block/block_scan.cuh>
@@ -79,14 +81,14 @@ __global__ void forward_scan_kernel(const float *__restrict__ u,      // [B,L,D]
   for (int chunk = 0; chunk < nchunks; ++chunk) {
     const int t = chunk * kThreads + tid;
     const bool valid = t < L;
-    const long ud = (static_cast<long>(b) * L + t) * D + d;
-    const long bln = (static_cast<long>(b) * L + t) * N;
+    const int64_t ud = (static_cast<int64_t>(b) * L + t) * D + d;
+    const int64_t bln = (static_cast<int64_t>(b) * L + t) * N;
     const float u_t = valid ? u[ud] : 0.0f;
     const float dbar = valid ? softplus(delta[ud]) : 0.0f;
     float y_acc = 0.0f;
 
     for (int n = 0; n < N; ++n) {
-      const float a_dn = A[static_cast<long>(d) * N + n];
+      const float a_dn = A[static_cast<int64_t>(d) * N + n];
       // Invalid (padding) lanes must scan as the identity (1,0) so they leave
       // the running prefix untouched; their y is never stored.
       const float a_bar = valid ? expf(dbar * a_dn) : 1.0f;
@@ -166,8 +168,8 @@ __global__ void forward_scan_2d_kernel(const float *__restrict__ u,      // [B,L
   for (int chunk = 0; chunk < nchunks; ++chunk) {
     const int t = chunk * 32 + lane;
     const bool valid = t < L;
-    const long ud = (static_cast<long>(b) * L + t) * D + d;
-    const long bln = (static_cast<long>(b) * L + t) * N;
+    const int64_t ud = (static_cast<int64_t>(b) * L + t) * D + d;
+    const int64_t bln = (static_cast<int64_t>(b) * L + t) * N;
     const float u_t = valid ? u[ud] : 0.0f;
     const float dbar = valid ? softplus(delta[ud]) : 0.0f;
 
@@ -176,7 +178,7 @@ __global__ void forward_scan_2d_kernel(const float *__restrict__ u,      // [B,L
     for (int j = 0; j < kJ; ++j) {
       const int n = warp + j * kWarps;  // uniform across the warp -> shfl-safe
       if (n < N) {
-        const float a_dn = A[static_cast<long>(d) * N + n];
+        const float a_dn = A[static_cast<int64_t>(d) * N + n];
         const float a_bar = valid ? expf(dbar * a_dn) : 1.0f;
         const float b_tn = valid ? Bmat[bln + n] : 0.0f;
         const float b_val = valid ? dbar * b_tn * u_t : 0.0f;
@@ -237,11 +239,11 @@ __global__ void forward_scan_tiled_kernel(const float *__restrict__ u,      // [
   const int tid = threadIdx.x;
   const float Dd = Dskip[d];
 
-  const float *u_bd = u + (static_cast<long>(b) * D + d) * L;
-  const float *delta_bd = delta + (static_cast<long>(b) * D + d) * L;
-  float *y_bd = y + (static_cast<long>(b) * D + d) * L;
-  const float *B_b = Bmat + static_cast<long>(b) * N * L;
-  const float *C_b = Cmat + static_cast<long>(b) * N * L;
+  const float *u_bd = u + (static_cast<int64_t>(b) * D + d) * L;
+  const float *delta_bd = delta + (static_cast<int64_t>(b) * D + d) * L;
+  float *y_bd = y + (static_cast<int64_t>(b) * D + d) * L;
+  const float *B_b = Bmat + static_cast<int64_t>(b) * N * L;
+  const float *C_b = Cmat + static_cast<int64_t>(b) * N * L;
 
   for (int n = tid; n < N; n += kNThreads) carry[n] = make_float2(1.0f, 0.0f);
   __syncthreads();
@@ -265,12 +267,12 @@ __global__ void forward_scan_tiled_kernel(const float *__restrict__ u,      // [
     for (int i = 0; i < kNItems; ++i) y_acc[i] = 0.0f;
 
     for (int n = 0; n < N; ++n) {
-      const float a_dn = A[static_cast<long>(d) * N + n];
+      const float a_dn = A[static_cast<int64_t>(d) * N + n];
       float b_it[kNItems];
       float c_it[kNItems];
-      BlockLoadT(smem.load).Load(B_b + static_cast<long>(n) * L + t0, b_it, valid_items, 0.0f);
+      BlockLoadT(smem.load).Load(B_b + static_cast<int64_t>(n) * L + t0, b_it, valid_items, 0.0f);
       __syncthreads();
-      BlockLoadT(smem.load).Load(C_b + static_cast<long>(n) * L + t0, c_it, valid_items, 0.0f);
+      BlockLoadT(smem.load).Load(C_b + static_cast<int64_t>(n) * L + t0, c_it, valid_items, 0.0f);
       __syncthreads();
 
       float2 local[kNItems];
@@ -381,8 +383,8 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
   const int d0 = dblk * kBlockD;
   const int tid = threadIdx.x;
 
-  const float *B_b = Bmat + static_cast<long>(b) * N * L;
-  const float *C_b = Cmat + static_cast<long>(b) * N * L;
+  const float *B_b = Bmat + static_cast<int64_t>(b) * N * L;
+  const float *C_b = Cmat + static_cast<int64_t>(b) * N * L;
 
   for (int idx = tid; idx < kBlockD * N; idx += kNThreads) {
     fwd_carry[idx] = 0.0f;
@@ -399,19 +401,19 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
     for (int r = 0; r < kBlockD; ++r) {
       const int d = d0 + r;
       float u_it[kNItems], dbar_it[kNItems];
-      BlockLoadT(smem.load).Load(u + (static_cast<long>(b) * D + d) * L + t0, u_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(u + (static_cast<int64_t>(b) * D + d) * L + t0, u_it, valid, 0.0f);
       __syncthreads();
-      BlockLoadT(smem.load).Load(delta + (static_cast<long>(b) * D + d) * L + t0, dbar_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(delta + (static_cast<int64_t>(b) * D + d) * L + t0, dbar_it, valid, 0.0f);
       __syncthreads();
 #pragma unroll
       for (int i = 0; i < kNItems; ++i) dbar_it[i] = softplus(dbar_it[i]);
       for (int n = 0; n < N; ++n) {
-        const float a_dn = A[static_cast<long>(d) * N + n];
+        const float a_dn = A[static_cast<int64_t>(d) * N + n];
         float b_it[kNItems];
-        BlockLoadT(smem.load).Load(B_b + static_cast<long>(n) * L + t0, b_it, valid, 0.0f);
+        BlockLoadT(smem.load).Load(B_b + static_cast<int64_t>(n) * L + t0, b_it, valid, 0.0f);
         __syncthreads();
         if (tid == 0)
-          ckpt[((static_cast<long>(b) * D + d) * nchunks + chunk) * N + n] = fwd_carry[r * N + n];
+          ckpt[((static_cast<int64_t>(b) * D + d) * nchunks + chunk) * N + n] = fwd_carry[r * N + n];
         float2 agg = make_float2(1.0f, 0.0f);
 #pragma unroll
         for (int i = 0; i < kNItems; ++i) {
@@ -444,9 +446,9 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
 
     for (int n = 0; n < N; ++n) {
       float b_it[kNItems], c_it[kNItems];
-      BlockLoadT(smem.load).Load(B_b + static_cast<long>(n) * L + t0, b_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(B_b + static_cast<int64_t>(n) * L + t0, b_it, valid, 0.0f);
       __syncthreads();
-      BlockLoadT(smem.load).Load(C_b + static_cast<long>(n) * L + t0, c_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(C_b + static_cast<int64_t>(n) * L + t0, c_it, valid, 0.0f);
       __syncthreads();
 
       float gc_acc[kNItems], gb_acc[kNItems];
@@ -458,13 +460,13 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
 
       for (int r = 0; r < kBlockD; ++r) {
         const int d = d0 + r;
-        const float a_dn = A[static_cast<long>(d) * N + n];
+        const float a_dn = A[static_cast<int64_t>(d) * N + n];
         float u_it[kNItems], dlt_it[kNItems], dy_it[kNItems];
-        BlockLoadT(smem.load).Load(u + (static_cast<long>(b) * D + d) * L + t0, u_it, valid, 0.0f);
+        BlockLoadT(smem.load).Load(u + (static_cast<int64_t>(b) * D + d) * L + t0, u_it, valid, 0.0f);
         __syncthreads();
-        BlockLoadT(smem.load).Load(delta + (static_cast<long>(b) * D + d) * L + t0, dlt_it, valid, 0.0f);
+        BlockLoadT(smem.load).Load(delta + (static_cast<int64_t>(b) * D + d) * L + t0, dlt_it, valid, 0.0f);
         __syncthreads();
-        BlockLoadT(smem.load).Load(dy + (static_cast<long>(b) * D + d) * L + t0, dy_it, valid, 0.0f);
+        BlockLoadT(smem.load).Load(dy + (static_cast<int64_t>(b) * D + d) * L + t0, dy_it, valid, 0.0f);
         __syncthreads();
 
         float dbar_it[kNItems], abar_it[kNItems];
@@ -485,7 +487,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
           const float b_val = v ? dbar_it[i] * b_it[i] * u_it[i] : 0.0f;
           fagg = SSMScanOp()(fagg, make_float2(a_bar, b_val));
         }
-        const float ck = ckpt[((static_cast<long>(b) * D + d) * nchunks + chunk) * N + n];
+        const float ck = ckpt[((static_cast<int64_t>(b) * D + d) * nchunks + chunk) * N + n];
         float2 fthread;
         ChunkPrefixOp fpfx(make_float2(1.0f, ck));
         BlockScanT(smem.scan).ExclusiveScan(fagg, fthread, SSMScanOp(), fpfx);
@@ -556,8 +558,8 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
         __syncthreads();
       }
 
-      float *gc_dst = gc_part + ((static_cast<long>(b) * n_dblk + dblk) * N + n) * L + t0;
-      float *gb_dst = gb_part + ((static_cast<long>(b) * n_dblk + dblk) * N + n) * L + t0;
+      float *gc_dst = gc_part + ((static_cast<int64_t>(b) * n_dblk + dblk) * N + n) * L + t0;
+      float *gb_dst = gb_part + ((static_cast<int64_t>(b) * n_dblk + dblk) * N + n) * L + t0;
       BlockStoreT(smem.store).Store(gc_dst, gc_acc, valid);
       __syncthreads();
       BlockStoreT(smem.store).Store(gb_dst, gb_acc, valid);
@@ -568,9 +570,9 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
     for (int r = 0; r < kBlockD; ++r) {
       const int d = d0 + r;
       float u_it[kNItems], dy_it[kNItems];
-      BlockLoadT(smem.load).Load(u + (static_cast<long>(b) * D + d) * L + t0, u_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(u + (static_cast<int64_t>(b) * D + d) * L + t0, u_it, valid, 0.0f);
       __syncthreads();
-      BlockLoadT(smem.load).Load(dy + (static_cast<long>(b) * D + d) * L + t0, dy_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(dy + (static_cast<int64_t>(b) * D + d) * L + t0, dy_it, valid, 0.0f);
       __syncthreads();
       float gd_thread = 0.0f;
 #pragma unroll
@@ -588,7 +590,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
     for (int r = 0; r < kBlockD; ++r) {
       const int d = d0 + r;
       float dlt_it[kNItems];
-      BlockLoadT(smem.load).Load(delta + (static_cast<long>(b) * D + d) * L + t0, dlt_it, valid, 0.0f);
+      BlockLoadT(smem.load).Load(delta + (static_cast<int64_t>(b) * D + d) * L + t0, dlt_it, valid, 0.0f);
       __syncthreads();
       float guw[kNItems], gdw[kNItems];
 #pragma unroll
@@ -597,9 +599,9 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
         guw[i] = gu_sh[r * kChunk + pos];
         gdw[i] = gdl_sh[r * kChunk + pos] * softplus_grad(dlt_it[i]);
       }
-      BlockStoreT(smem.store).Store(grad_u + (static_cast<long>(b) * D + d) * L + t0, guw, valid);
+      BlockStoreT(smem.store).Store(grad_u + (static_cast<int64_t>(b) * D + d) * L + t0, guw, valid);
       __syncthreads();
-      BlockStoreT(smem.store).Store(grad_delta + (static_cast<long>(b) * D + d) * L + t0, gdw, valid);
+      BlockStoreT(smem.store).Store(grad_delta + (static_cast<int64_t>(b) * D + d) * L + t0, gdw, valid);
       __syncthreads();
     }
   }
@@ -607,10 +609,10 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
   for (int idx = tid; idx < kBlockD * N; idx += kNThreads) {
     const int r = idx / N;
     const int n = idx % N;
-    ga_part[(static_cast<long>(b) * D + (d0 + r)) * N + n] = ga_sh[r * N + n];
+    ga_part[(static_cast<int64_t>(b) * D + (d0 + r)) * N + n] = ga_sh[r * N + n];
   }
   for (int r = tid; r < kBlockD; r += kNThreads) {
-    gd_part[static_cast<long>(b) * D + (d0 + r)] = gd_sh[r];
+    gd_part[static_cast<int64_t>(b) * D + (d0 + r)] = gd_sh[r];
   }
 }
 
@@ -719,7 +721,7 @@ std::vector<torch::Tensor> backward_scan(torch::Tensor u, torch::Tensor delta, t
   auto gb_part = torch::empty({Bsz, n_dblk, N, L}, f32);
   auto gc_part = torch::empty({Bsz, n_dblk, N, L}, f32);
   auto gd_part = torch::empty({Bsz, D}, f32);
-  auto ckpt = torch::empty({static_cast<long>(Bsz) * D * nchunks * N}, f32);
+  auto ckpt = torch::empty({static_cast<int64_t>(Bsz) * D * nchunks * N}, f32);
 
   const dim3 grid(static_cast<unsigned>(Bsz) * static_cast<unsigned>(n_dblk));
   auto launch = [&](auto items_tag, auto bd_tag) {
