@@ -20,6 +20,7 @@ from flash_mamba_rl.rl import (
     Rollout,
     ScoredCandidate,
     StubPolicy,
+    compute_group_advantages,
     compute_grpo_loss,
     score_callable,
 )
@@ -52,10 +53,12 @@ class TestRolloutAdvantages:
     def test_advantages_normalised(self) -> None:
         rollout = self._make([1.0, 2.0, 3.0, 4.0])
         advs = rollout.advantages()
-        # Variance of advantages should be ~1.
+        # Variance is ~1 up to the ground-truth eps shift (division by std+1e-4,
+        # not std): the estimator normalises by population std. abs_tol reflects
+        # eps=1e-4, not the rejected 1e-8 the local reimplementation used.
         mean = sum(advs) / len(advs)
         var = sum((a - mean) ** 2 for a in advs) / len(advs)
-        assert math.isclose(var, 1.0, abs_tol=1e-6)
+        assert math.isclose(var, 1.0, abs_tol=1e-3)
 
     def test_single_candidate_returns_zero_advantage(self) -> None:
         rollout = self._make([5.0])
@@ -64,6 +67,15 @@ class TestRolloutAdvantages:
     def test_all_equal_rewards_return_zero_advantages(self) -> None:
         rollout = self._make([3.0, 3.0, 3.0])
         assert rollout.advantages() == (0.0, 0.0, 0.0)
+
+    def test_advantages_delegate_to_grpo_ground_truth(self) -> None:
+        # Single ground-truth definition: Rollout.advantages must equal
+        # compute_group_advantages (the estimator the live optimizer step uses),
+        # so no divergent eps floor can be reintroduced here unnoticed.
+        for rewards in ([1.0, 2.0, 3.0, 4.0], [0.5, 0.5, 2.0], [-1.0, 4.0]):
+            rollout = self._make(rewards)
+            expected = compute_group_advantages(torch.tensor(rewards, dtype=torch.float64)).tolist()
+            assert list(rollout.advantages()) == pytest.approx(expected)
 
     def test_best_returns_highest_reward(self) -> None:
         rollout = self._make([1.0, 5.0, 3.0])

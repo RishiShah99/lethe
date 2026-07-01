@@ -11,8 +11,6 @@ the policy generates them.
 
 from __future__ import annotations
 
-import math
-import statistics
 from dataclasses import dataclass, field
 
 
@@ -75,22 +73,26 @@ class Rollout:
     def rewards(self) -> tuple[float, ...]:
         return tuple(c.reward for c in self.candidates)
 
-    def advantages(self, *, eps: float = 1e-8) -> tuple[float, ...]:
-        """Group-relative advantages: (r_i - mean(r)) / std(r).
+    def advantages(self) -> tuple[float, ...]:
+        """Group-relative advantages via the single ground-truth estimator.
 
-        With fewer than two candidates the variance is undefined and
-        advantages are zeroed (no useful signal). ``eps`` is added to
-        the standard deviation to prevent divide-by-zero on degenerate
-        groups.
+        Delegates to :func:`flash_mamba_rl.rl.grpo.compute_group_advantages` — the
+        estimator the live optimizer step uses (``eps=1e-4``). A local
+        reimplementation here previously carried a divergent ``eps=1e-8`` floor: a
+        latent foot-gun that would resurrect behaviour the trainer tuned away for
+        any future caller. Fewer than two candidates carry no relative signal, so
+        advantages are zeroed. The import is deferred to keep this module
+        dependency-free at import time and to avoid a rollout<->grpo cycle.
         """
         rewards = self.rewards
         if len(rewards) < 2:
             return tuple(0.0 for _ in rewards)
-        mean = statistics.mean(rewards)
-        std = statistics.pstdev(rewards)
-        if not math.isfinite(std) or std < eps:
-            return tuple(0.0 for _ in rewards)
-        return tuple((r - mean) / std for r in rewards)
+        import torch
+
+        from flash_mamba_rl.rl.grpo import compute_group_advantages
+
+        advs = compute_group_advantages(torch.tensor(rewards, dtype=torch.float64))
+        return tuple(advs.tolist())
 
     def best(self) -> ScoredCandidate:
         """Return the candidate with the highest reward (first wins on ties)."""
