@@ -31,6 +31,7 @@ from torch import Tensor
 from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.references.backward_selective_scan import SelectiveScanGrads
 
+from ._resource_meta import max_resource_meta
 from .forward_chunked_scan import (
     _TRITON_DTYPES,
     _auto_chunk_len,
@@ -100,16 +101,22 @@ def triton_bwd_scan_resource_meta(config: KernelConfig | None = None) -> dict[st
     """Resource metadata of the compiled Triton backward kernel, if any.
 
     Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable. With a
-    chunk_parallel config RES-02 must audit the chunk-parallel kernels, not the
-    serial one.
+    None (nothing compiled / no triton) keeps the gate not-applicable.
+
+    Must match ``backward_selective_scan``'s dispatch: an explicit
+    ``scan_mode`` audits exactly that kernel, but when ``scan_mode`` is unset
+    the dispatch resolves the mode by *shape* — either kernel can run — so the
+    audit returns the max envelope over both, never the serial one alone.
     """
     if not _triton_usable():
         return None
-    if config is not None and config.scan_mode == "chunk_parallel":
-        from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
+    from flash_mamba_rl.kernels.ops import _triton_bwd_scan, _triton_chunk_parallel_bwd
 
+    mode = config.scan_mode if config is not None else None
+    if mode == "chunk_parallel":
         return _triton_chunk_parallel_bwd.resource_meta()
-    from flash_mamba_rl.kernels.ops import _triton_bwd_scan
-
-    return _triton_bwd_scan.resource_meta()
+    if mode == "serial":
+        return _triton_bwd_scan.resource_meta()
+    return max_resource_meta(
+        _triton_bwd_scan.resource_meta(), _triton_chunk_parallel_bwd.resource_meta()
+    )

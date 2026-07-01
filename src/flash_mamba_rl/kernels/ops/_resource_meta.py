@@ -53,3 +53,17 @@ def collect_resource_meta(jit_fn: Any) -> dict[str, int] | None:
         if shared is not None:
             meta["shared_bytes"] = max(meta.get("shared_bytes", 0), int(shared))
     return meta
+
+
+def max_resource_meta(a: dict[str, int] | None, b: dict[str, int] | None) -> dict[str, int] | None:
+    """Elementwise-max envelope over two resource metas (None = no evidence).
+
+    Used when dispatch resolves the scan mode by shape (config unset): the
+    audited envelope must bound *whichever* kernel could run, so RES-02 sees
+    the worst of both instead of the serial one only.
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return {key: max(a.get(key, 0), b.get(key, 0)) for key in a.keys() | b.keys()}
