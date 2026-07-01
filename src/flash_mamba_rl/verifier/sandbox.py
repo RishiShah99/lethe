@@ -61,7 +61,20 @@ _OOM_PATTERNS = [
 # stdin, calls the function, and writes the pickled result to stdout.
 _WORKER_SCRIPT = textwrap.dedent(
     """\
-    import sys, pickle, importlib, os, platform
+    import os, sys
+
+    # The result travels to the parent over fd 1. Duplicate it to a private fd
+    # and repoint fd 1 (+ Python stdout) at stderr BEFORE anything else runs:
+    # the stdin read, the task unpickle, and the heavy imports below can each
+    # trigger a C-level write to fd 1 (a CUDA/native banner, an os.write(1))
+    # that the Python-level stdout swap alone cannot intercept, and one stray
+    # byte corrupts the torch.save payload. The candidate keeps a working
+    # stdout (now stderr); only the result travels the private fd.
+    sys.stdout.flush()
+    result_fd = os.dup(1)
+    os.dup2(2, 1)
+
+    import importlib, pickle, platform
 
     # --- Memory limit (POSIX only) ---
     limit_mb = int(sys.argv[1]) if len(sys.argv) > 1 else 0
@@ -83,16 +96,6 @@ _WORKER_SCRIPT = textwrap.dedent(
     # --- Read task ---
     raw = sys.stdin.buffer.read()
     module_path, callable_name, inputs = pickle.loads(raw)
-
-    # The result is serialized to the parent over fd 1. Duplicate it to a private
-    # fd, then point fd 1 (and Python stdout) at stderr: a kernel printf, a
-    # CUDA printf, or any os.write(1) is a C-level write to fd 1 that the
-    # Python-level stdout swap cannot intercept, and even one stray byte
-    # corrupts the result channel. The candidate keeps a working stdout (now
-    # stderr); only the result travels the private fd.
-    sys.stdout.flush()
-    result_fd = os.dup(1)
-    os.dup2(2, 1)
 
     # Import the module containing the callable
     if module_path.endswith(".py"):
