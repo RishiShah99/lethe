@@ -72,8 +72,12 @@ class TestSeedPinning:
         assert not torch.equal(a, b)
 
 
-@pytest.mark.skipif(not _BOUNDARY_JSON.exists(), reason="boundary sweep JSON absent")
 class TestSelectorGeomean:
+    def test_boundary_json_exists(self) -> None:
+        # git-tracked artifact — its absence is a regression, not a reason to
+        # silently skip the only automated check of the 2.1x selector headline.
+        assert _BOUNDARY_JSON.exists(), f"tracked boundary sweep JSON missing: {_BOUNDARY_JSON}"
+
     def test_geomean_at_least_2_1(self) -> None:
         gm, n = repro.compute_selector_geomean()
         assert n > 0
@@ -93,8 +97,11 @@ class TestSelectorGeomean:
         assert n >= valid - 5  # at most 5 degenerate rows
 
 
-@pytest.mark.skipif(not _AUDIT_JSON.exists(), reason="audit aggregate JSON absent")
 class TestAuditHeadline:
+    def test_audit_json_exists(self) -> None:
+        # git-tracked artifact — absence is a regression, not a skip.
+        assert _AUDIT_JSON.exists(), f"tracked audit aggregate JSON missing: {_AUDIT_JSON}"
+
     def test_finding_rate_plausible(self) -> None:
         ok, detail = repro.check_audit_headline()
         assert ok, f"audit headline check failed: {detail}"

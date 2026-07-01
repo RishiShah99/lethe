@@ -26,6 +26,11 @@ def fused_block_forward(
     eps: float = 1e-5,
     chunk_size: int = 64,
 ) -> Tensor:
+    # Same divisibility contract as the reference + triton sibling — a warm-start
+    # target must not teach a looser contract than ground truth.
+    l_out = x.shape[1] - (conv_kernel_size - 1)
+    if l_out % chunk_size != 0:
+        raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")
     out_dtype = x.dtype
     if out_dtype in (torch.float16, torch.bfloat16):
         x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight = (

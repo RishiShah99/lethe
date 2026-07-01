@@ -14,8 +14,6 @@ import json
 from pathlib import Path
 from statistics import geometric_mean
 
-import pytest
-
 from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops.forward_chunked_scan import (
     _default_scan_mode,
@@ -74,9 +72,12 @@ class TestResolveScanMode:
         assert _resolve_scan_mode(cfg, 512, 8, 4096, is_forward=True) == "serial"
 
 
-@pytest.mark.skipif(not _BOUNDARY_JSON.exists(), reason="boundary sweep artifact absent")
 class TestAgainstBoundarySweep:
     """The shipped rule still captures the measured win on the committed sweep."""
+
+    def test_boundary_json_exists(self) -> None:
+        # git-tracked artifact — its absence is a regression, not a skip.
+        assert _BOUNDARY_JSON.exists(), f"tracked boundary sweep JSON missing: {_BOUNDARY_JSON}"
 
     def _rows(self) -> list[tuple[str, int, int, int, float, float]]:
         rows = []

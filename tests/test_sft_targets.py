@@ -309,6 +309,17 @@ def test_c6_matches_autograd_including_nonfinite_dy() -> None:
         torch.testing.assert_close(g, w, rtol=1e-5, atol=1e-6, equal_nan=True)
 
 
+def test_fused_eager_targets_enforce_chunk_divisibility() -> None:
+    # The eager SFT targets must enforce the SAME divisibility contract as the
+    # reference + triton sibling — else the warm-start teaches a looser contract.
+    inputs = _fused_inputs(l_out=32)
+    with pytest.raises(ValueError, match="divisible"):
+        fused_block_forward(*inputs, conv_kernel_size=4, chunk_size=64)
+    dy = torch.randn(2, 32, 8, generator=torch.Generator().manual_seed(5))
+    with pytest.raises(ValueError, match="divisible"):
+        fused_block_backward(*inputs, dy, conv_kernel_size=4, chunk_size=64)
+
+
 def test_c6_half_grads_match_dtype() -> None:
     inputs = tuple(t.to(torch.bfloat16) for t in _fused_inputs())
     dy = torch.randn(2, 32, 8).to(torch.bfloat16)

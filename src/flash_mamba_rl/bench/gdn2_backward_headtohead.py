@@ -263,54 +263,58 @@ def main() -> None:
     cli = ap.parse_args()
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _orig_is_available = gdn2_native.is_available
     if dev.type == "cuda" and not cli.ref_candidate:
         gdn2_native.is_available = lambda device=None: True  # lift the box gate for this run
-    dtype = torch.bfloat16 if dev.type == "cuda" and not cli.ref_candidate else torch.float32
-
-    triton_version: str | None
     try:
-        import triton
+        dtype = torch.bfloat16 if dev.type == "cuda" and not cli.ref_candidate else torch.float32
 
-        triton_version = triton.__version__
-    except ImportError:
-        triton_version = None
+        triton_version: str | None
+        try:
+            import triton
 
-    report: dict[str, Any] = {
-        "claim": "native channel-wise GDN-2 backward wall-clock vs fla/cuLA (correctness+availability, "
-        "not fastest; ours is host-orchestrated pre-fusion)",
-        "env": {
-            "gpu": torch.cuda.get_device_name(0) if dev.type == "cuda" else None,
-            "capability": ".".join(map(str, torch.cuda.get_device_capability(0)))
-            if dev.type == "cuda"
-            else None,
-            "torch": torch.__version__,
-            "triton": triton_version,
-            "python": platform.python_version(),
-        },
-        "dtype": str(dtype).removeprefix("torch."),
-        "runs": [],
-    }
+            triton_version = triton.__version__
+        except ImportError:
+            triton_version = None
 
-    cli.out.parent.mkdir(parents=True, exist_ok=True)
-    shapes = QUICK_SHAPES if cli.quick else SHAPES
-    for spec in shapes:
-        print(f"[gdn2-bench] {spec.label()} {dtype} ...", flush=True)
-        report["runs"].append(
-            _run_shape(
-                spec,
-                dtype,
-                dev,
-                cli.ref_candidate,
-                cli.trials,
-                cli.ours_trials,
-                cli.ours_max_seqlen,
+        report: dict[str, Any] = {
+            "claim": "native channel-wise GDN-2 backward wall-clock vs fla/cuLA (correctness+"
+            "availability, not fastest; ours is host-orchestrated pre-fusion)",
+            "env": {
+                "gpu": torch.cuda.get_device_name(0) if dev.type == "cuda" else None,
+                "capability": ".".join(map(str, torch.cuda.get_device_capability(0)))
+                if dev.type == "cuda"
+                else None,
+                "torch": torch.__version__,
+                "triton": triton_version,
+                "python": platform.python_version(),
+            },
+            "dtype": str(dtype).removeprefix("torch."),
+            "runs": [],
+        }
+
+        cli.out.parent.mkdir(parents=True, exist_ok=True)
+        shapes = QUICK_SHAPES if cli.quick else SHAPES
+        for spec in shapes:
+            print(f"[gdn2-bench] {spec.label()} {dtype} ...", flush=True)
+            report["runs"].append(
+                _run_shape(
+                    spec,
+                    dtype,
+                    dev,
+                    cli.ref_candidate,
+                    cli.trials,
+                    cli.ours_trials,
+                    cli.ours_max_seqlen,
+                )
             )
-        )
-        # write after every shape: ours is host-orchestrated (slow) and the box is spot,
-        # so a partial artifact must survive a preemption or an early stop.
-        cli.out.write_text(json.dumps(report, indent=2))
-        if dev.type == "cuda":
-            torch.cuda.empty_cache()
+            # write after every shape: ours is host-orchestrated (slow) and the box is spot,
+            # so a partial artifact must survive a preemption or an early stop.
+            cli.out.write_text(json.dumps(report, indent=2))
+            if dev.type == "cuda":
+                torch.cuda.empty_cache()
+    finally:
+        gdn2_native.is_available = _orig_is_available
 
     for r in report["runs"]:
         fo = r.get("fla_over_ours")

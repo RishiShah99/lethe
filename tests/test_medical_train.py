@@ -164,7 +164,9 @@ class TestEvaluate:
         for _ in range(40):
             trainer.train_step(ds.signals, ds.labels)
         after = trainer.evaluate(loader)["macro_auc"]
-        assert after >= before
+        # A real margin, not >= : the seeded run gains ~0.37, so a no-op or
+        # near-no-op trainer (after ~= before) must not pass.
+        assert after > before + 0.1
 
 
 class TestCheckpointResume:
