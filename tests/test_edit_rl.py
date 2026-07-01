@@ -72,6 +72,17 @@ class TestParseEdits:
     def test_missing_divider_is_none(self) -> None:
         assert parse_edits("<<<<<<< SEARCH\nx\n>>>>>>> REPLACE\n") is None
 
+    def test_bare_divider_in_body_is_rejected_not_misparsed(self) -> None:
+        # A body line that is itself a bare `=======` marker would shift the
+        # block boundaries; the parser must reject the whole emission rather
+        # than mis-parse it into a wrong edit.
+        text = "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n=======\n>>>>>>> REPLACE"
+        assert parse_edits(text) is None
+
+    def test_replace_marker_in_search_body_is_rejected(self) -> None:
+        text = "<<<<<<< SEARCH\nfoo\n>>>>>>> REPLACE\n=======\nbar\n>>>>>>> REPLACE"
+        assert parse_edits(text) is None
+
 
 class TestApplyEdits:
     BASE = "alpha\nbeta\ngamma\n"

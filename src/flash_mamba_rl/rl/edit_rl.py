@@ -44,6 +44,7 @@ from flash_mamba_rl.verifier.candidate_scoring import (
 _SEARCH_MARK = "<<<<<<< SEARCH"
 _DIVIDER_MARK = "======="
 _REPLACE_MARK = ">>>>>>> REPLACE"
+_MARKERS = frozenset({_SEARCH_MARK, _DIVIDER_MARK, _REPLACE_MARK})
 
 
 def extract_edits(completion: str) -> str | None:
@@ -61,6 +62,10 @@ def parse_edits(text: str) -> list[tuple[str, str]] | None:
     A block is ``<<<<<<< SEARCH`` … ``=======`` … ``>>>>>>> REPLACE`` on their
     own lines. An unterminated block (a SEARCH with no matching divider or
     REPLACE) makes the whole emission illegal — a partial edit must not apply.
+    A body line that is itself a bare marker (e.g. source containing a
+    ``=======`` line) is unrepresentable in this grammar — it would silently
+    shift the block boundaries — so such an emission is rejected outright
+    rather than mis-parsed into a wrong edit.
     """
     lines = text.splitlines()
     edits: list[tuple[str, str]] = []
@@ -84,6 +89,8 @@ def parse_edits(text: str) -> list[tuple[str, str]] | None:
         if i >= n:
             return None
         i += 1
+        if any(line.strip() in _MARKERS for line in (*search, *replace)):
+            return None
         edits.append(("\n".join(search), "\n".join(replace)))
     return edits or None
 
