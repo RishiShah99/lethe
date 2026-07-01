@@ -362,3 +362,50 @@ class TestMultiView:
         assert fake_bwd_op["fields"] == list(FAKE_FIELDS)  # no early stop
         assert result["views_passed"] == 2
         assert result["reward"] == pytest.approx(0.1 + 0.35 * 2 / 3)
+
+    def test_all_gates_excluded_is_not_a_vacuous_pass(self, fake_bwd_op: dict[str, Any]) -> None:
+        """An exclude set covering every returned gate must NOT unlock the pass.
+
+        required=[] would make all([])==True vacuously pass every view with zero
+        checks — the guard the vacuous-pass fix installs. Regression on the
+        multi-view branch.
+        """
+        result = _score_source_body(
+            FAKE_SOURCE,
+            {
+                "op": "fake_bwd_op",
+                "fail_fast": False,
+                "exclude_gates": list(_fake_battery(True).keys()),
+            },
+        )
+        assert result["contracts_passed"] is False
+        assert result["views_passed"] == 0
+        assert result["reward"] < 0.5
+
+
+FAKE_FWD_SOURCE = "def fake_fwd(u):\n    return u\n"
+
+
+@pytest.fixture()
+def fake_fwd_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    def verify_fake_fwd(fn: Any, *, device: str = "cpu") -> dict[str, GateResult]:
+        return _fake_battery(True)  # every returned gate passes
+
+    monkeypatch.setattr(op_harness, "verify_fake_fwd", verify_fake_fwd, raising=False)
+    monkeypatch.setitem(_OP_VERIFIERS, "fake_fwd_op", OpSpec("fake_fwd", "verify_fake_fwd", None))
+
+
+def test_single_view_all_gates_excluded_is_not_a_vacuous_pass(fake_fwd_op: None) -> None:
+    """Single-view branch: excluding every returned gate must not vacuously pass."""
+    result = _score_source_body(
+        FAKE_FWD_SOURCE,
+        {"op": "fake_fwd_op", "exclude_gates": list(_fake_battery(True).keys())},
+    )
+    assert result["contracts_passed"] is False
+    assert result["reward"] < 0.5
+
+
+def test_single_view_default_exclude_still_passes(fake_fwd_op: None) -> None:
+    """Sanity: a non-empty required set with an all-pass battery still passes."""
+    result = _score_source_body(FAKE_FWD_SOURCE, {"op": "fake_fwd_op"})
+    assert result["contracts_passed"] is True

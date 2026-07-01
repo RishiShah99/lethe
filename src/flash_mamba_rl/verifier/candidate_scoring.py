@@ -428,7 +428,10 @@ def _gate_and_reward(
     if spec.view_fields_attr is None:
         results = verify(fn, device=device)
         required = [name for name in results if name not in exclude]
-        contracts_passed = all(results[name].passed for name in required)
+        # bool(required): an exclude set that covers every returned gate leaves
+        # required=[] and all([])==True would unlock the speedup reward with zero
+        # checks — a vacuous pass on the "speedup pays only after contracts" invariant.
+        contracts_passed = bool(required) and all(results[name].passed for name in required)
         gates = {
             name: {"passed": r.passed, "reason": "" if r.passed else _trunc(r.reason, 200)}
             for name, r in results.items()
@@ -449,7 +452,7 @@ def _gate_and_reward(
                     "reason": "" if r.passed else _trunc(r.reason, 200),
                 }
             required = [name for name in results if name not in exclude]
-            if all(results[name].passed for name in required):
+            if required and all(results[name].passed for name in required):
                 views_passed += 1
             else:
                 if first_failed_view is None:
