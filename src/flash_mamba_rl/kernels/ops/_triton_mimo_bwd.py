@@ -293,9 +293,10 @@ def launch_mimo_backward(
     inputs are tolerated identically to the eager path, not validated.
     Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
     grad_mimo_o)`` in the corresponding input dtypes. ``config`` overrides the
-    autotuner's searched knobs (block_p, chunk_k, num_warps, num_stages);
-    ``num_warps`` is the legacy bench-sweep hook. A None config or None field
-    keeps the shipped heuristic.
+    autotuner's searched knobs (chunk_k, num_warps, num_stages) plus an
+    explicit ``block_p`` >= headdim (a correctness floor, not in the search
+    grid); ``num_warps`` is the legacy bench-sweep hook. A None config or None
+    field keeps the shipped heuristic.
     """
     batch, seq_len, nheads, headdim = x.shape
     rank = B.shape[2]
@@ -304,8 +305,14 @@ def launch_mimo_backward(
     block_p = triton.next_power_of_2(headdim)
     if config is not None and config.block_p is not None:
         block_p = config.block_p
+        # The grid has no p axis: one masked BLOCK_P tile must cover headdim,
+        # else the p-sums in grad_B/grad_C/grad_dt truncate silently.
+        if block_p < headdim:
+            raise ValueError(f"block_p override {block_p} must cover headdim {headdim}")
     if block_p > MAX_BLOCK_P:
-        raise ValueError(f"headdim={headdim} exceeds single-block budget {MAX_BLOCK_P}")
+        raise ValueError(
+            f"block_p={block_p} (headdim={headdim}) exceeds single-block budget {MAX_BLOCK_P}"
+        )
     if rank > MAX_RANK:
         raise ValueError(f"rank={rank} exceeds unroll budget {MAX_RANK}")
     block_r = triton.next_power_of_2(rank)

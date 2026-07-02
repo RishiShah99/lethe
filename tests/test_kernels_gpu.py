@@ -298,9 +298,10 @@ class TestC2NumWarpsCompile:
 @pytest.mark.gpu
 @requires_gpu
 class TestChunkKOverrideGuard:
-    """A config.chunk_k override that does not divide seq_len must raise, not
-    silently drop the tail chunk (uninitialised grads). Mirrors the guard the
-    fused-block backward launcher already carries; the default chunk_k divides."""
+    """Config overrides that would silently corrupt grads must raise: a
+    chunk_k that does not divide seq_len drops the tail chunk, and a mimo
+    block_p below headdim truncates the p-sums (the grid has no p axis).
+    The shipped defaults always satisfy both."""
 
     def test_bwd_scan_launcher_rejects_indivisible_chunk_k(self) -> None:
         from flash_mamba_rl.kernels.ops import _triton_bwd_scan
@@ -315,6 +316,13 @@ class TestChunkKOverrideGuard:
         args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)
         with pytest.raises(ValueError, match="must divide"):
             _triton_mimo_bwd.launch_mimo_backward(*args, dy, config=KernelConfig(chunk_k=48))
+
+    def test_mimo_launcher_rejects_block_p_below_headdim(self) -> None:
+        from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
+
+        args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)  # headdim 16
+        with pytest.raises(ValueError, match="must cover headdim"):
+            _triton_mimo_bwd.launch_mimo_backward(*args, dy, config=KernelConfig(block_p=8))
 
 
 @pytest.mark.gpu

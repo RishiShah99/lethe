@@ -73,9 +73,10 @@ class ShapeSpec:
 
 
 # Per-op searched knobs. block_d tiles D (forward/conv ops); block_p tiles
-# headdim (the head-structured ops); chunk_k is the in-chunk recompute window
-# of the checkpointed backward ops. block_n / block_k are absent by design —
-# they are correctness constraints, not knobs.
+# headdim (rope only — the mimo grid has no p axis, so its block_p is a
+# correctness floor like block_n, never searched); chunk_k is the in-chunk
+# recompute window of the checkpointed backward ops. block_n / block_k are
+# absent by design — they are correctness constraints, not knobs.
 SEARCH_GRID: dict[str, dict[str, tuple[int, ...] | tuple[str, ...]]] = {
     "forward_chunked_scan": {
         "block_d": _BLOCK,
@@ -93,7 +94,6 @@ SEARCH_GRID: dict[str, dict[str, tuple[int, ...] | tuple[str, ...]]] = {
         "chunk_len": _CHUNK_LEN,
     },
     "mimo_backward": {
-        "block_p": _BLOCK,
         "chunk_k": _CHUNK_K,
         "num_warps": _WARPS,
         "num_stages": _STAGES,

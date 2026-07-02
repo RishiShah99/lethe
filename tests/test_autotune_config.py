@@ -83,6 +83,14 @@ def test_validate_rejects_unknown_scan_mode() -> None:
     assert v and any("scan_mode" in s for s in v)
 
 
+def test_block_p_not_tunable_for_mimo_backward() -> None:
+    # The mimo grid has no p axis (one masked BLOCK_P tile covers headdim), so
+    # block_p is a correctness floor there — searched only for the rope op.
+    v = validate("mimo_backward", KernelConfig(block_p=16))
+    assert v and any("block_p" in s for s in v)
+    assert validate("complex_scan_rope", KernelConfig(block_p=16)) == []
+
+
 def test_scan_mode_not_tunable_for_other_ops() -> None:
     # The chunk-parallel lever is for the SISO scan (forward + C2 backward); the
     # head-structured ops (mimo) don't carry it.

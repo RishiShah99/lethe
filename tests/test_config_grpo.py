@@ -138,8 +138,11 @@ class TestConfigPrompt:
 
     def test_backward_op_mentions_chunk_k_divisibility(self) -> None:
         prompt = build_config_prompt("mimo_backward", ShapeSpec(2, 8192, 2048))
-        assert "chunk_k" in prompt and "block_p" in prompt
+        assert "chunk_k" in prompt
         assert "divide seq_len" in prompt
+        # block_p is a correctness floor for mimo (no p axis in the grid) —
+        # it must no longer be offered to the policy.
+        assert "block_p" not in prompt
 
 
 # --- GRPOTrainingLoop reuse with a stub policy (no model, no GPU) -----------
