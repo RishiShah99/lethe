@@ -297,6 +297,28 @@ class TestC2NumWarpsCompile:
 
 @pytest.mark.gpu
 @requires_gpu
+class TestChunkKOverrideGuard:
+    """A config.chunk_k override that does not divide seq_len must raise, not
+    silently drop the tail chunk (uninitialised grads). Mirrors the guard the
+    fused-block backward launcher already carries; the default chunk_k divides."""
+
+    def test_bwd_scan_launcher_rejects_indivisible_chunk_k(self) -> None:
+        from flash_mamba_rl.kernels.ops import _triton_bwd_scan
+
+        args, dy = _bwd_inputs(2, 64, 32, 16)  # seq_len 64, default chunk_k divides
+        with pytest.raises(ValueError, match="must divide"):
+            _triton_bwd_scan.launch_backward_scan(*args, dy, config=KernelConfig(chunk_k=48))
+
+    def test_mimo_launcher_rejects_indivisible_chunk_k(self) -> None:
+        from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
+
+        args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)
+        with pytest.raises(ValueError, match="must divide"):
+            _triton_mimo_bwd.launch_mimo_backward(*args, dy, config=KernelConfig(chunk_k=48))
+
+
+@pytest.mark.gpu
+@requires_gpu
 class TestC2ContractGates:
     def test_all_gates_all_grads_pass_on_cuda(self) -> None:
         # C2's exit criterion: 12/12 gates on every gradient view, with the

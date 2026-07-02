@@ -303,6 +303,10 @@ def launch_backward_scan(
     chunk_k = _chunk_k(seq_len)
     if config is not None and config.chunk_k is not None:
         chunk_k = config.chunk_k
+        # A direct override that does not divide seq_len drops the tail chunk
+        # (uninitialised grads); the default _chunk_k always divides.
+        if seq_len % chunk_k != 0:
+            raise ValueError(f"chunk_k override {chunk_k} must divide seq_len {seq_len}")
     n_chunks = seq_len // chunk_k
     n_d_blocks = triton.cdiv(d_model, block_d)
 

@@ -650,8 +650,10 @@ torch::Tensor forward_scan_2d(torch::Tensor u, torch::Tensor delta, torch::Tenso
   auto launch = [&](auto warps_tag) {
     constexpr int W = decltype(warps_tag)::value;
     const dim3 block(32, W);
-    const size_t shmem = static_cast<size_t>(32 * W) * sizeof(float);
-    forward_scan_2d_kernel<W><<<grid, block, shmem>>>(
+    // forward_scan_2d_kernel declares its y_red buffer statically, so it needs
+    // no dynamic shared memory (unlike the extern-__shared__ forward_scan and
+    // backward_scan kernels).
+    forward_scan_2d_kernel<W><<<grid, block>>>(
         u.data_ptr<float>(), delta.data_ptr<float>(), A.data_ptr<float>(),
         Bmat.data_ptr<float>(), Cmat.data_ptr<float>(), Dskip.data_ptr<float>(),
         y.data_ptr<float>(), L, D, N);
