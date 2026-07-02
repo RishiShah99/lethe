@@ -110,12 +110,8 @@ if _HAVE:
         tCtAcc0_frag = mma0.make_fragment_C(acc_shape0)
         acc_shape1 = mma1.partition_shape_C(_TILER0[:2])
         tCtAcc1_frag = mma1.make_fragment_C(acc_shape1)
-        ncols0 = tcgen05.find_tmem_tensor_col_offset(tCtAcc0_frag)
-        ncols1 = tcgen05.find_tmem_tensor_col_offset(tCtAcc1_frag)
-        total = 32
-        while total < ncols0 + ncols1:
-            total *= 2
-        tmem.allocate(total)
+        ncols0 = 64  # (128,64) f32 acc = 64 cols (tile_N * stages)
+        tmem.allocate(128)
 
         if warp_idx == 0:
             cpasync.prefetch_descriptor(tma_a)
@@ -296,12 +292,8 @@ if _HAVE:
         tCtAcc0_frag = mma0.make_fragment_C(acc_shape0)
         acc_shape1 = mma1.partition_shape_C(_TILER0[:2])
         tCtAcc1_frag = mma1.make_fragment_C(acc_shape1)
-        ncols0 = tcgen05.find_tmem_tensor_col_offset(tCtAcc0_frag)
-        ncols1 = tcgen05.find_tmem_tensor_col_offset(tCtAcc1_frag)
-        total = 32
-        while total < ncols0 + ncols1:
-            total *= 2
-        tmem.allocate(total)
+        ncols0 = 64  # (128,64) f32 acc = 64 cols (tile_N * stages)
+        tmem.allocate(128)
 
         if warp_idx == 0:
             cpasync.prefetch_descriptor(tma_a)
@@ -482,13 +474,9 @@ if _HAVE:
         acc_shape1 = mma1.partition_shape_C(_TILER1[:2])
         tCtAcc1_frag = mma1.make_fragment_C(acc_shape1)
         tCrA2_fake = mma1.make_fragment_A(a2_tmem_layout.outer.shape)
-        ncols0 = tcgen05.find_tmem_tensor_col_offset(tCtAcc0_frag)
-        ncols_a2 = tcgen05.find_tmem_tensor_col_offset(tCrA2_fake)
-        ncols1 = tcgen05.find_tmem_tensor_col_offset(tCtAcc1_frag)
-        total = 32
-        while total < ncols0 + ncols_a2 + ncols1:
-            total *= 2
-        tmem.allocate(total)
+        ncols0 = 64  # (128,64) f32 acc
+        ncols_a2 = 32  # f16 [128,64] operand region = 64*16/32 cols
+        tmem.allocate(256)
 
         if warp_idx == 0:
             cpasync.prefetch_descriptor(tma_a)
