@@ -164,16 +164,16 @@ def train(
     # Arm: fla
     # -----------------------------------------------------------------------
     if arm == "fla":
-        try:
-            import fla.ops.gdn2  # type: ignore[import-not-found]  # noqa: F401
-        except ImportError:
-            print("[fla arm] fla not importable — skipping gracefully")
-            return {
-                "arm": "fla",
-                "skipped": True,
-                "reason": "fla not installed",
-                "device": str(device),
-            }
+        # The fla mixer swap (chunk_gdn2 through the Rosetta A_no_l2norm mapping)
+        # is not wired; running the gdn2_op model under this label would fabricate
+        # a comparison arm (burst-2 artifact: bit-identical loss to eager).
+        print("[fla arm] mixer swap not implemented — skipping (honest no-arm)")
+        return {
+            "arm": "fla",
+            "skipped": True,
+            "reason": "fla mixer swap not implemented (Rosetta-mapped wiring pending)",
+            "device": str(device),
+        }
 
     # -----------------------------------------------------------------------
     # Arm: eager (monkeypatch is_available -> False)

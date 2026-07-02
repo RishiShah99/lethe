@@ -77,3 +77,57 @@ def test_no_grad_inputs_produce_none_grads() -> None:
     o = gdn2_op(q_leaf, k, v, g, b, w)
     o.backward(do)
     assert q_leaf.grad is not None
+
+
+def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The native assembly works inside Function.backward's no-grad context.
+
+    Regression for the burst-2 box failure: Function.backward runs with grad mode
+    disabled, and the native assembly's supporting stages (autograd stage B,
+    L2-norm VJP) raised "does not require grad" until gdn_layer re-enabled grad
+    mode around the dispatch. Reproduced off-box with the cw refs standing in for
+    the box kernels at dispatch-legal dims.
+    """
+    import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
+    from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+        k1_reverse_state_cw_ref,
+        k2_wy_vjp_cw_ref,
+    )
+
+    bsz, t, h, d_k, d_v = 1, 64, 1, 128, 64
+    gen = torch.Generator().manual_seed(5)
+    dt = torch.float32
+    q = torch.randn(bsz, t, h, d_k, generator=gen, dtype=dt, requires_grad=True)
+    k = torch.randn(bsz, t, h, d_k, generator=gen, dtype=dt)
+    v = torch.randn(bsz, t, h, d_v, generator=gen, dtype=dt)
+    g = -torch.rand(bsz, t, h, d_k, generator=gen, dtype=dt) * 0.1
+    b = torch.rand(bsz, t, h, d_k, generator=gen, dtype=dt)
+    w = torch.rand(bsz, t, h, d_v, generator=gen, dtype=dt)
+    do = torch.randn(bsz, t, h, d_v, generator=gen, dtype=dt)
+
+    monkeypatch.setattr(gdn2_native, "is_available", lambda device=None: True)
+    monkeypatch.setattr(
+        gdn2_native,
+        "_load_box_kernels_cw",
+        lambda: (k1_reverse_state_cw_ref, k2_wy_vjp_cw_ref),
+    )
+    # gdn2_backward guards the native route behind q.is_cuda; route around the
+    # device check so the CPU refs exercise the exact Function.backward context.
+    import flash_mamba_rl.kernels.ops.gdn_backward as op_mod
+
+    real = op_mod.gdn2_backward
+
+    def _force_native(q2, k2, v2, g2, b2, w2, do2, **kw):  # type: ignore[no-untyped-def]
+        native = gdn2_native.native_gdn2_backward(q2, k2, v2, g2, b2, w2, do2, **kw)
+        assert native is not None
+        return native
+
+    import flash_mamba_rl.kernels.ops.gdn_layer as layer_mod
+
+    monkeypatch.setattr(layer_mod, "gdn2_backward", _force_native)
+    try:
+        o = gdn2_op(q, k, v, g, b, w)
+        o.backward(do)
+    finally:
+        monkeypatch.setattr(layer_mod, "gdn2_backward", real)
+    assert q.grad is not None and torch.isfinite(q.grad).all()

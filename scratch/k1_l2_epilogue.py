@@ -588,17 +588,21 @@ def run_k1_incB_l2(
     bdv_raw = torch.zeros(n_bh, D_K, D_V, dtype=f16, device=dev)
     t_scr   = torch.zeros(n_bh, D_K, D_V, dtype=f16, device=dev)
 
+    # Constexpr args (c, D_V, d_k) are baked at cute.compile time and DROPPED from the
+    # runtime arg list by the executor — do NOT re-pass them at call time.
+    # Only marked cute.Tensors and the CUstream are runtime args (same as _gemm_batched).
     key = (n_bh, c, D_V)
     stream = _cur_stream()
 
     for it in reversed(range(nt)):
-        ag1_step = ag1_sm[it]   # [n_bh, 128, 128] — contiguous
-        aga_step = aga_sm[it]   # [n_bh, 128, 2C]
-        bga_step = bga_sm[it]   # [n_bh, 64, 2C]  — written in-kernel (b_dv^T 2nd half)
-        dvl_step = dvl_sm[it]   # [n_bh, C, 64]
-        gl_step  = gl_sm[it]    # [n_bh, 128]
+        ag1_step = ag1_sm[it]
+        aga_step = aga_sm[it]
+        bga_step = bga_sm[it]
+        dvl_step = dvl_sm[it]
+        gl_step  = gl_sm[it]
 
-        g1_args = (
+        # compile-args include Constexpr ints (baked); call-args omit them.
+        g1_compile = (
             _mark_b(ag1_step),
             _mark_b(b_dhT),
             _mark_b(bdv_raw),
@@ -612,11 +616,23 @@ def run_k1_incB_l2(
         )
         ex_g1 = _g1_cache.get(key)
         if ex_g1 is None:
-            ex_g1 = cute.compile(_host_g1_epi, *g1_args)
+            ex_g1 = cute.compile(_host_g1_epi, *g1_compile)
             _g1_cache[key] = ex_g1
-        ex_g1(*g1_args)
+        g1_call = (
+            _mark_b(ag1_step),
+            _mark_b(b_dhT),
+            _mark_b(bdv_raw),
+            _mark_simt(b_dh),
+            _mark_simt(bga_step),
+            _mark_simt(dv2_out[it]),
+            _mark_simt(dh_out[it]),
+            _mark_simt(dvl_step),
+            _mark_simt(bdv_raw),
+            stream,
+        )
+        ex_g1(*g1_call)
 
-        ga_args = (
+        ga_compile = (
             _mark_b(aga_step),
             _mark_b(bga_step),
             _mark_b(t_scr),
@@ -628,9 +644,19 @@ def run_k1_incB_l2(
         )
         ex_ga = _ga_cache.get(key)
         if ex_ga is None:
-            ex_ga = cute.compile(_host_ga_epi, *ga_args)
+            ex_ga = cute.compile(_host_ga_epi, *ga_compile)
             _ga_cache[key] = ex_ga
-        ex_ga(*ga_args)
+        ga_call = (
+            _mark_b(aga_step),
+            _mark_b(bga_step),
+            _mark_b(t_scr),
+            _mark_simt(b_dh),
+            _mark_simt(b_dhT),
+            _mark_simt(gl_step),
+            _mark_simt(t_scr),
+            stream,
+        )
+        ex_ga(*ga_call)
 
     from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import maybe_sync
 

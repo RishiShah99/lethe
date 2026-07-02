@@ -106,6 +106,15 @@ def main() -> None:
     dev = torch.device("cuda")
     dtype = torch.bfloat16
 
+    # benchmark() picks CUDA-event timing from the CALL inputs; arg-less callables
+    # (replay_only, partials, closures) fall to the unsynced wall-clock path and
+    # read ~0 ms for async work (the burst-2 v2 artifact). Thread a CUDA probe
+    # tensor through every timed call so events + sync are always in force.
+    sync_probe = torch.zeros(1, device=dev)
+
+    def bench_cuda(fn, warmup, trials):
+        return benchmark(lambda _p: fn(), (sync_probe,), warmup=warmup, trials=trials).median_ms
+
     def adapter(q, k, v, g, bg, wg, do):
         gr = assembled_channelwise_gdn2_backward(
             q, k, v, g, bg, wg, do, use_qk_l2norm=True, k1_fn=k1_cw, k2_fn=k2_cw
@@ -146,7 +155,7 @@ def main() -> None:
             return torch.autograd.grad(o, leaves, do, retain_graph=True, allow_unused=True)
 
         bwd()
-        return benchmark(bwd, (), warmup=10, trials=trials).median_ms
+        return bench_cuda(bwd, 10, trials)
 
     for b, t, h in shapes:
         label = f"B{b}xL{t}xH{h}"
@@ -159,7 +168,7 @@ def main() -> None:
         try:
             eager_run = partial(adapter, *cw)
             eager_run()  # warm/JIT
-            row["eager_ms"] = benchmark(eager_run, (), warmup=1, trials=args.eager_trials).median_ms
+            row["eager_ms"] = bench_cuda(eager_run, 1, args.eager_trials)
         except Exception:
             row["eager_err"] = traceback.format_exc()
 
@@ -167,9 +176,7 @@ def main() -> None:
         try:
             graphed = GraphedBackward(adapter)
             graphed(*cw)  # build + stage inputs into static buffers
-            row["graph_ms"] = benchmark(
-                graphed.replay_only, (), warmup=10, trials=args.trials
-            ).median_ms
+            row["graph_ms"] = bench_cuda(graphed.replay_only, 10, args.trials)
         except Exception:
             row["graph_err"] = traceback.format_exc()
 
@@ -184,14 +191,10 @@ def main() -> None:
                 for a, c in zip(base_out, closed_out, strict=True)
             )
             closed_run = partial(adapter_closed, *cw)
-            row["closed_eager_ms"] = benchmark(
-                closed_run, (), warmup=1, trials=args.eager_trials
-            ).median_ms
+            row["closed_eager_ms"] = bench_cuda(closed_run, 1, args.eager_trials)
             graphed_c = GraphedBackward(adapter_closed)
             graphed_c(*cw)
-            row["closed_graph_ms"] = benchmark(
-                graphed_c.replay_only, (), warmup=10, trials=args.trials
-            ).median_ms
+            row["closed_graph_ms"] = bench_cuda(graphed_c.replay_only, 10, args.trials)
         except Exception:
             row["closed_err"] = traceback.format_exc()
 

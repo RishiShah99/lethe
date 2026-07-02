@@ -137,10 +137,7 @@ if [ -f scratch/gdn2_tiny_train.py ]; then
         --out "$OUTDIR/gdn2_tiny_train_eager.json" \
         > "$OUTDIR/gdn2_tiny_train_eager.log" 2>&1
     _rc "j(eager)" "$?"
-    eval "$PP" "$PY" scratch/gdn2_tiny_train.py --arm fla --steps 300 \
-        --out "$OUTDIR/gdn2_tiny_train_fla.json" \
-        > "$OUTDIR/gdn2_tiny_train_fla.log" 2>&1
-    _rc "j(fla)" "$?"
+    # fla arm intentionally not run: the mixer swap is unimplemented (would fabricate the curve)
 else
     echo "  SKIP: scratch/gdn2_tiny_train.py not present"
 fi
@@ -166,7 +163,7 @@ _rc "l" "$?"
 # ── m. mamba_ssm install + scan.cu re-measure ─────────────────────────────────
 _step "m: mamba_ssm install + cuda_inc2_forward_bench"
 bash scratch/install_mamba.sh > "$OUTDIR/install_mamba.log" 2>&1 || true
-eval "$PP" "$PY" -c "import mamba_ssm; print('mamba_ssm available')" \
+PYTHONPATH=src:. "$PY" -c 'import mamba_ssm; print("mamba_ssm available")' \
     > "$OUTDIR/mamba_check.log" 2>&1
 if [ $? -eq 0 ]; then
     eval "$PP" "$PY" scratch/cuda_inc2_forward_bench.py > "$OUTDIR/inc2_bench.log" 2>&1

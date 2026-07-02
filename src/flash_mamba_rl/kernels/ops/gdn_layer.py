@@ -57,17 +57,22 @@ class _GDN2Function(torch.autograd.Function):
     @staticmethod
     def backward(ctx: Any, do: Tensor) -> tuple[Tensor | None, ...]:
         q, k, v, g, b, w = ctx.saved_tensors
-        grads = gdn2_backward(
-            q,
-            k,
-            v,
-            g,
-            b,
-            w,
-            do,
-            scale=ctx.scale,
-            use_qk_l2norm=ctx.use_qk_l2norm,
-        )
+        # Function.backward runs with grad mode disabled; the native assembly's
+        # supporting stages take autograd VJPs internally (stage B, L2-norm), so
+        # they need grad mode on — the eager path enables it itself, the native
+        # path must inherit it from here.
+        with torch.enable_grad():
+            grads = gdn2_backward(
+                q,
+                k,
+                v,
+                g,
+                b,
+                w,
+                do.detach(),
+                scale=ctx.scale,
+                use_qk_l2norm=ctx.use_qk_l2norm,
+            )
         # 8 inputs: q, k, v, g, b, w, scale, use_qk_l2norm
         return (
             grads.grad_q,
