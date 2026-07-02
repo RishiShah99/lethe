@@ -577,7 +577,7 @@ def run_k1_incB_l2(
     dvl_sm  = _sm(buf["dv_local"].to(f32), c,   d_v)   # [nt, n_bh, C, 64]
     gl_sm   = _sm(buf["glast"].to(f32),   d_k)          # [nt, n_bh, 128]
 
-    b_dh  = dht.reshape(n_bh, d_k, d_v).contiguous().to(f32)
+    b_dh  = dht.reshape(n_bh, d_k, d_v).clone().to(f32)  # clone: .contiguous().to() no-ops on contiguous fp32 -> would alias + mutate caller dht
     b_dhT = b_dh.to(f16).transpose(-1, -2).contiguous()  # [n_bh, d_v, d_k]
 
     # Step-major outputs: dh_out[it] and dv2_out[it] are contiguous zero-copy views.

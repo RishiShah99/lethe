@@ -1288,7 +1288,7 @@ def run_k1_incB2(
     d_v = do.shape[-1]
     n_bh = b * hv
     buf = _incb2_pack_scalar(q, k, w, g2, g_last, do, dv_local)
-    b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
+    b_dh = dht.reshape(n_bh, d_k, d_v).clone().float()
     glast = buf["glast"][:, None].expand(n_bh * nt, d_k).contiguous()  # [L] scalar → [L,d_k]
     dh, dv2, dh0 = _incb2_launch(
         buf["a_g1"],

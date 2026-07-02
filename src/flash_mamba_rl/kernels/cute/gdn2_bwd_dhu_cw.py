@@ -319,7 +319,7 @@ def run_k1_incB2(
     d_v = do.shape[-1]
     n_bh = b * hv
     buf = _incb2_pack_cw(q, k, wy, g2, g_last, do, dv_local)
-    b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
+    b_dh = dht.reshape(n_bh, d_k, d_v).clone().float()
     decay = torch.ones(n_bh * nt, c, dtype=torch.float32, device=q.device)  # folded into a_g1
     dh, dv2, dh0 = _incb2_launch(
         buf["a_g1"],

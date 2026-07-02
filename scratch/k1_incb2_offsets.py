@@ -534,7 +534,7 @@ def run_k1_incB2_v2(
     a_g1_16 = buf["a_g1"].to(f16).contiguous()
     a_ga_16 = buf["a_ga"].to(f16).contiguous()
     b_ga_16 = buf["b_ga"].to(f16).contiguous()
-    b_dh = dht.reshape(n_bh, d_k, d_v).contiguous().float()
+    b_dh = dht.reshape(n_bh, d_k, d_v).clone().float()  # clone: no-op chain on contiguous fp32 would alias + mutate caller dht
     b_dhT = b_dh.transpose(-1, -2).contiguous().to(f16)
     bdv_raw = torch.zeros(n_bh, d_k, d_v, dtype=f16, device=dev)
     t_scr = torch.zeros(n_bh, d_k, d_v, dtype=f16, device=dev)

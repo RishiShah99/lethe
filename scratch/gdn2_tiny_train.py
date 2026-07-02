@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from typing import Any
 
@@ -202,6 +203,23 @@ def train(
             loss = F.cross_entropy(logits.reshape(-1, vocab), tgt.reshape(-1))
             opt.zero_grad()
             loss.backward()
+            # NaN probe (round-C: native arm poisons params within 10 steps while
+            # eager learns — the arms differ only in the backward). Name the first
+            # non-finite grad and its magnitude, then stop with the evidence.
+            if step < 15 or step % 50 == 0:
+                gmax, bad = 0.0, None
+                for pname, prm in model.named_parameters():
+                    if prm.grad is None:
+                        continue
+                    m = prm.grad.abs().max().item()
+                    if not math.isfinite(m):
+                        bad = pname
+                        break
+                    gmax = max(gmax, m)
+                print(f"[{arm}] step {step:4d} probe loss={float(loss.detach()):.4f} "
+                      f"gmax={gmax:.3e} nonfinite={bad}")
+                if bad is not None:
+                    raise RuntimeError(f"non-finite grad at step {step}: {bad}")
             opt.step()
 
             if step % 10 == 0:
