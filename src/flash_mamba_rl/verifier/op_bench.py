@@ -234,15 +234,19 @@ def measure_speedup(
     bridge withholds the speedup reward. Otherwise each timed trial draws
     fresh-content inputs (``build_bench_case(seed=...)``) so memoization or
     in-place mutation cannot fabricate the ratio; candidate and baseline see
-    the identical per-trial inputs for a fair comparison.
+    the identical per-trial inputs for a fair comparison. One input from the
+    timed seed range itself is also value-checked (outside the hot loop) — a
+    candidate correct only at the calibration seeds must not be paid for
+    outputs the bench never inspects.
     """
+    failed: dict[str, float | bool] = {
+        "t_candidate_ms": float("nan"),
+        "t_baseline_ms": float("nan"),
+        "speedup": 0.0,
+        "correct_at_bench": False,
+    }
     if not correct_at_bench_shape(candidate, op, device, batch=batch, seq_len=seq_len, width=width):
-        return {
-            "t_candidate_ms": float("nan"),
-            "t_baseline_ms": float("nan"),
-            "speedup": 0.0,
-            "correct_at_bench": False,
-        }
+        return failed
 
     template = build_bench_case(op, device, batch=batch, seq_len=seq_len, width=width)
     kwargs = template.kwargs
@@ -252,6 +256,14 @@ def measure_speedup(
         return build_bench_case(
             op, device, batch=batch, seq_len=seq_len, width=width, seed=_BENCH_SEED + i
         ).args
+
+    try:
+        probe_out = candidate(*factory(0), **kwargs)
+        probe_ref = baseline(*factory(0), **kwargs)
+    except Exception:
+        return failed
+    if not _outputs_close(probe_out, probe_ref, atol=1e-2, rtol=1e-2):
+        return failed
 
     def timed(fn: Callable[..., Any]) -> float:
         call = (lambda *a: fn(*a, **kwargs)) if kwargs else fn

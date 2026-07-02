@@ -141,6 +141,33 @@ class TestBenchShapeCorrectness:
         )
         assert not correct_at_bench_shape(lambda x: x, "elementwise_silu", "cpu", **TINY)
 
+    def test_calibration_seed_keyed_cheat_is_caught(self) -> None:
+        # Correct at the two correctness-check seeds but degenerate on the
+        # timed seed range: the timed-input probe must refuse the speedup —
+        # the bench never pays for outputs it does not inspect.
+        from flash_mamba_rl.verifier.op_bench import _CORRECTNESS_SEED_BASE
+
+        shape = {"batch": 1, "seq_len": 8, "width": 32}
+        calib = {
+            float(
+                build_bench_case(
+                    "elementwise_silu", "cpu", **shape, seed=_CORRECTNESS_SEED_BASE + i
+                )
+                .args[0]
+                .sum()
+            )
+            for i in range(2)
+        }
+
+        def seed_cheat(x: torch.Tensor) -> torch.Tensor:
+            if float(x.sum()) in calib:
+                return x * torch.sigmoid(x)
+            return x  # no-op on every timed input
+
+        r = measure_speedup(seed_cheat, "elementwise_silu", "cpu", warmup=1, trials=3, **shape)
+        assert r["correct_at_bench"] is False
+        assert r["speedup"] == 0.0
+
 
 class TestBugRouting:
     def test_op_class_is_the_904_casualty_set(self) -> None:
