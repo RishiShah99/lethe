@@ -142,3 +142,30 @@ class TestAuditHeadline:
         rate = data["accepted_only"]["finding_rate"]
         # The committed value is 0.6213 — within 2pp is a sound check.
         assert abs(rate - 0.6213) < 0.02, f"finding_rate {rate} deviates >2pp from committed"
+
+
+class TestMicrogateHarnessIntegrity:
+    """The K#1/K#2 silicon-gate harnesses must track the promoted kernel modules.
+
+    After the scratch->src promotion (1c755a0) the k1 harness kept importing the
+    deleted scratch module; the import sits inside the harness's GO try-block, so
+    a rerun of the tracked GO evidence wrote GO=False — a broken harness
+    masquerading as a failed gate. Pin the promoted paths off-box.
+    """
+
+    def test_harnesses_reference_only_promoted_kernel_modules(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for name in ("k1_microgate.py", "k2_microgate.py"):
+            text = (root / "scratch" / name).read_text(encoding="utf-8")
+            assert "from scratch import" not in text, f"{name} imports a pre-promotion module"
+            assert "flash_mamba_rl.kernels.cute" in text, f"{name} lost the promoted import"
+
+    def test_promoted_kernel_modules_import_without_gpu(self) -> None:
+        import importlib
+
+        for mod in (
+            "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu",
+            "flash_mamba_rl.kernels.cute.gdn2_bwd_wy",
+        ):
+            m = importlib.import_module(mod)
+            assert hasattr(m, "is_available")

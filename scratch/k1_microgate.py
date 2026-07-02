@@ -1,8 +1,9 @@
 """On-box K#1 micro-gate: load a bundle, run the CuTe kernel, compare dh/dh0/dv2.
 
-Loads the .pt written by ``scratch/gen_k1_bundle.py``, runs ``scratch/gdn2_bwd_dhu``'s
-``run_k1`` on the B200, and checks the three outputs against the reference's expected
-values within the verifier's bf16 tolerances. Emits ``results/k1_microgate.json``.
+Loads the .pt written by ``scratch/gen_k1_bundle.py``, runs the promoted
+``flash_mamba_rl.kernels.cute.gdn2_bwd_dhu`` runner for ``--mode`` on the B200, and
+checks the three outputs against the reference's expected values within the
+verifier's bf16 tolerances. Emits ``results/k1_microgate.json``.
 
 Run on the box:
     PYTHONPATH=src uv run --no-sync python scratch/k1_microgate.py --bundle k1_bundle_nt1.pt
@@ -57,7 +58,8 @@ def main() -> None:
         "mode": args.mode,
     }
     try:
-        from scratch import gdn2_bwd_dhu as kmod  # noqa: PLC0415
+        # The kernels were promoted scratch/ -> src at 1c755a0; mirror k2_microgate.
+        from flash_mamba_rl.kernels.cute import gdn2_bwd_dhu as kmod  # noqa: PLC0415
 
         runner = {
             "incA": kmod.run_k1,
