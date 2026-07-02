@@ -158,7 +158,10 @@ def train(
     # d_model must be divisible by nheads and equal nheads*d_v for square out_proj
     d_model = nheads * d_v
 
-    run_dtype = torch.bfloat16 if (arm == "native" and device.type == "cuda") else torch.float32
+    # fp32 for every arm: bf16 MASTER weights + AdamW diverge (round-B NaN by step
+    # 10); fp32 is inside the native dispatch envelope (SUPPORTED_DTYPES) and the
+    # tcgen05 kernels still run their f16-operand GEMMs internally.
+    run_dtype = torch.float32
 
     # -----------------------------------------------------------------------
     # Arm: fla

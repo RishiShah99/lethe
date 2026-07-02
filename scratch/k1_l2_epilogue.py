@@ -15,12 +15,12 @@ with SIMT glue appended after pipeline.sync, before tmem.free:
                   glue loop: for e in range(c*d_v):
                     val = raw[z,r,col] + dv_local[z,r,col]
                     write dv2[z,r,col] + b_ga[z,col,C+r] (b_dv^T → GA's 2nd half)
-                  single barrier() + fence_proxy("async.global")
+                  fence_proxy("async.global") then barrier() (PTX store->fence->barrier->TMA order)
 
   _kern_ga_epi  — GA GEMM (a_ga[z]@b_ga[z]^T → t [128,64]) then SIMT:
                   for e in range(d_k*d_v): val = glast[z,r]*b_dh[z,r,col] + t[z,r,col]
                   write b_dh[z,r,col] (fp32 carry) + b_dhT[z,col,r] (fp16, next G1 operand)
-                  barrier() + fence_proxy
+                  fence_proxy then barrier
 
 relinquish_alloc_permit is placed AFTER acc_empty.commit() in BOTH kernels, matching the
 byte-fidelity target _gemm_kernel_b (gdn2_bwd_dhu.py:407-409), NOT before the mainloop.
@@ -102,7 +102,7 @@ if _HAVE:
     # a_g1[Z,128,128] @ b_dhT[Z,64,128]^T → raw[Z,128,64]
     # SIMT: dh snapshot over 128*d_v elements (full d_k rows),
     #       then glue over c*d_v elements writing dv2 + b_ga second half.
-    # Single barrier + fence_proxy after both loops.
+    # fence_proxy (each writing thread) then barrier, after both loops.
     # relinquish_alloc_permit: AFTER acc_empty.commit(), matching _gemm_kernel_b.
     # ------------------------------------------------------------------
     @cute.kernel
@@ -233,14 +233,14 @@ if _HAVE:
             # b_dv^T into GA's 2nd half; fp16 round-trip matches TMA read precision.
             m_bga_s[bidz, col, c + r] = val.to(_io)
 
-        cute.arch.barrier()
         cute.arch.fence_proxy("async.global")
+        cute.arch.barrier()
 
     # ------------------------------------------------------------------
     # _kern_ga_epi: GA GEMM + b_dh carry update.
     #
     # a_ga[Z,128,128] @ b_ga[Z,64,128]^T → t[Z,128,64]
-    # SIMT carry over d_k*d_v elements, single barrier + fence_proxy.
+    # SIMT carry over d_k*d_v elements; fence_proxy then barrier.
     # relinquish_alloc_permit: AFTER acc_empty.commit().
     # ------------------------------------------------------------------
     @cute.kernel
@@ -362,8 +362,8 @@ if _HAVE:
             m_bdh[bidz, r, col] = val
             # fp16 round-trip: b_dhT is the next G1's TMA B operand.
             m_bdhT_s[bidz, col, r] = val.to(_io)
-        cute.arch.barrier()
         cute.arch.fence_proxy("async.global")
+        cute.arch.barrier()
 
     @cute.jit
     def _host_g1_epi(

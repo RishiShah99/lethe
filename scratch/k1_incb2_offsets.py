@@ -733,8 +733,9 @@ def _build_bundle(mode: str) -> dict[str, Any]:
 
 
 def _run_box(bundle_path: str, mode: str, atol: float, rtol: float) -> dict[str, Any]:
-    bp = Path(bundle_path) if bundle_path else Path("")
-    if not bp.exists():
+    bp = Path(bundle_path) if bundle_path else None
+    # NB: Path("") normalizes to "." (exists!) — never Path() an empty string here.
+    if bp is None or not bp.exists():
         print(f"{'--bundle absent' if not bundle_path else bp} — building in-process "
               f"(b=2,h=2,nt=4,c=64,d_k=128,d_v=64, mode={mode})")
         payload = _build_bundle(mode)
