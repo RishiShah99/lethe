@@ -1322,6 +1322,200 @@ def verify_gdn2_channelwise_op_all_grads(
 
 
 # ---------------------------------------------------------------------------
+# GDN-2 family gates: GLA / LA / SSD-class / KDA reductions as built-in credentials
+# ---------------------------------------------------------------------------
+
+# The executable form of the family claim: each member of the gated linear recurrence
+# runs through all 12 contract gates as its own FAMILY MODE (kernels.cute.gdn2_family
+# wrapper — family-native signature, gate settings materialized inside). Discipline
+# mirrors the crown gate: the reference is the STRUCTURALLY MATCHED refs-path wrapper
+# (candidate-vs-same-algorithm on CPU; tcgen05-vs-reference on a Blackwell box), so the
+# battery verifies contract compliance without false EXC/subnormal divergence between
+# op-order-distinct algorithms. Independent VALUE correctness per family is carried by
+# the fp64 tests against the token-serial family oracles
+# (kernels.references.family_oracles — each written from its family's own definition),
+# in tests/test_gdn2_family.py.
+
+FAMILY_GATE_VIEWS: dict[str, tuple[str, ...]] = {
+    "gla": ("grad_q", "grad_k", "grad_v", "grad_g"),
+    "la": ("grad_q", "grad_k", "grad_v"),
+    "ssd": ("grad_q", "grad_k", "grad_v", "grad_g"),
+    "kda": ("grad_q", "grad_k", "grad_v", "grad_g", "grad_beta"),
+}
+
+# One pinned draw seed per family (distinct streams; draw order documented per builder).
+_FAMILY_AUX_SEEDS: dict[str, int] = {"gla": 61931, "la": 61933, "ssd": 61937, "kda": 61949}
+
+
+def _family_bwd_aux(
+    family: str,
+    batch: int,
+    seq_len: int,
+    nheads: int,
+    d_k: int,
+    d_v: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, ...]:
+    """Deterministic family-native aux for a 4D-viewed ``do``.
+
+    Draw order per family is pinned under its seed: q, k, v, then the decay draws
+    (dt then a_head, the official Mamba near-integrator regime of ``_gdn2_bwd_aux``),
+    then the gate draw. GLA/KDA carry per-channel ``g`` (with the same <= 0 jitter as
+    the stock aux); SSD-class carries scalar ``g`` [B, L, H]; LA carries no decay.
+    KDA's ``beta`` is sigmoid-squashed into (0, 1).
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(_FAMILY_AUX_SEEDS[family])
+    q = torch.randn(batch, seq_len, nheads, d_k, generator=gen)
+    k = torch.randn(batch, seq_len, nheads, d_k, generator=gen)
+    v = torch.randn(batch, seq_len, nheads, d_v, generator=gen)
+
+    def _g_scalar() -> Tensor:
+        log_lo = math.log(_DT_MIN)
+        log_hi = math.log(_DT_MAX)
+        dt = torch.exp(
+            torch.rand(batch, seq_len, nheads, generator=gen) * (log_hi - log_lo) + log_lo
+        )
+        a_head = -torch.rand(nheads, generator=gen)
+        return dt * a_head  # (batch, seq, nheads), <= 0
+
+    def _g_channelwise() -> Tensor:
+        g_head = _g_scalar()
+        jitter = -torch.rand(batch, seq_len, nheads, d_k, generator=gen) * 0.02
+        return g_head.unsqueeze(-1) + jitter
+
+    aux: tuple[Tensor, ...]
+    if family == "gla":
+        aux = (q, k, v, _g_channelwise())
+    elif family == "la":
+        aux = (q, k, v)
+    elif family == "ssd":
+        aux = (q, k, v, _g_scalar())
+    elif family == "kda":
+        g = _g_channelwise()
+        beta = torch.randn(batch, seq_len, nheads, generator=gen).sigmoid()
+        aux = (q, k, v, g, beta)
+    else:
+        raise ValueError(family)
+
+    return tuple(t.to(device=device, dtype=dtype).contiguous() for t in aux)
+
+
+def family_candidate_adapter(
+    family: str,
+    bwd_fn: Gdn2BwdCallable,
+    view: str,
+    *,
+    d_k: int,
+    d_v: int,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """Single-tensor view of one gradient of a family-mode backward."""
+    idx = FAMILY_GATE_VIEWS[family].index(view)
+
+    def adapted(do: Tensor) -> Tensor:
+        batch, seq_len, d_model = do.shape
+        nheads = _gdn2_nheads(d_model, d_v)
+        aux = _family_bwd_aux(family, batch, seq_len, nheads, d_k, d_v, do.device, do.dtype)
+        grads = bwd_fn(*aux, do.reshape(batch, seq_len, nheads, d_v))
+        out: Tensor = grads[idx]
+        return out
+
+    return adapted
+
+
+def _family_refs_backward(family: str) -> Gdn2BwdCallable:
+    """The refs-path family wrapper (lazy import keeps the verifier import-light)."""
+    from flash_mamba_rl.kernels.cute import gdn2_family
+
+    fns: dict[str, Gdn2BwdCallable] = {
+        "gla": gdn2_family.gla_backward,
+        "la": gdn2_family.la_backward,
+        "ssd": gdn2_family.ssd_backward,
+        "kda": gdn2_family.kda_backward,
+    }
+    return fns[family]
+
+
+def family_reference_adapter(
+    family: str,
+    view: str,
+    *,
+    d_k: int,
+    d_v: int,
+    saturate: bool = True,
+) -> Callable[[Tensor], Tensor]:
+    """The structurally matched refs-path wrapper behind the same interface."""
+    return family_candidate_adapter(
+        family, _family_refs_backward(family), view, d_k=d_k, d_v=d_v, saturate=saturate
+    )
+
+
+# Family views reuse the GDN-2 tolerance classes: the gradients' dominant chains are
+# identical (reverse-time state carry ~L), and grad_beta is the same combined-gate
+# reduction as the scalar credential's.
+_FAMILY_VIEW_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    "grad_q": GDN2_BWD_GATE_OVERRIDES["grad_q"],
+    "grad_k": GDN2_BWD_GATE_OVERRIDES["grad_k"],
+    "grad_v": GDN2_BWD_GATE_OVERRIDES["grad_v"],
+    "grad_g": GDN2_BWD_GATE_OVERRIDES["grad_g"],
+    "grad_beta": _GDN2_REDUCTION_OVERRIDES["grad_beta"],
+}
+
+
+def verify_gdn2_family_op(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    family: str,
+    view: str,
+    d_k: int = GDN2_HEADDIM,
+    d_v: int = GDN2_HEADDIM,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+) -> dict[str, GateResult]:
+    """All 12 gates over one gradient view of a family-mode backward."""
+    if family not in FAMILY_GATE_VIEWS:
+        raise ValueError(family)
+    return _verify_op_views(
+        lambda saturate: family_candidate_adapter(
+            family, bwd_fn, view, d_k=d_k, d_v=d_v, saturate=saturate
+        ),
+        lambda saturate: family_reference_adapter(
+            family, view, d_k=d_k, d_v=d_v, saturate=saturate
+        ),
+        base_overrides=_FAMILY_VIEW_OVERRIDES.get(view, {}),
+        device=device,
+        resource_meta=resource_meta,
+        saturation_rerun=False,
+    )
+
+
+def verify_gdn2_family_op_all_views(
+    bwd_fn: Gdn2BwdCallable,
+    *,
+    family: str,
+    d_k: int = GDN2_HEADDIM,
+    d_v: int = GDN2_HEADDIM,
+    device: str | torch.device = "cpu",
+    resource_meta: dict[str, int] | None = None,
+) -> dict[str, dict[str, GateResult]]:
+    """All 12 gates over every gradient view — one family's full credential."""
+    return {
+        view: verify_gdn2_family_op(
+            bwd_fn,
+            family=family,
+            view=view,
+            d_k=d_k,
+            d_v=d_v,
+            device=device,
+            resource_meta=resource_meta,
+        )
+        for view in FAMILY_GATE_VIEWS[family]
+    }
+
+
+# ---------------------------------------------------------------------------
 # Complex-RoPE scan (C4): forward op, one gate view
 # ---------------------------------------------------------------------------
 
