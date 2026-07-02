@@ -39,6 +39,7 @@ from torch import Tensor
 
 from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available as _k1_available
 from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import maybe_sync
+from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
 
 LN2 = math.log(2.0)
 RCP_LN2 = 1.0 / LN2
@@ -74,7 +75,7 @@ def run_k2_cw_ref(
     sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=kf.device), -1)
 
     gamma = torch.exp2(g2f)
-    decay_rel = torch.exp2(g2f[:, :, None, :] - g2f[:, None, :, :])
+    decay_rel = masked_decay_rel(g2f)
     bk = bf * kf
     pwv = wf * vf
     q_kbg = bk * gamma
@@ -91,8 +92,7 @@ def run_k2_cw_ref(
     dg2_q = dq_wy * q_kbg * LN2
     dbk_m = torch.einsum("nis,nsd,nisd->nid", d_m, kf, decay_rel)
     dk_m = torch.einsum("nis,nid,nisd->nsd", d_m, bk, decay_rel)
-    e = torch.einsum("nis,nid,nsd,nisd->nisd", d_m, bk, kf, decay_rel)
-    dg2_m = LN2 * (e.sum(dim=2) - e.sum(dim=1))
+    dg2_m = LN2 * (bk * dbk_m - kf * dk_m)  # rowsum(E)/colsum(E) reuse; E never built
 
     dbk = dbk_q + dbk_m
     db = dbk * kf
@@ -157,7 +157,7 @@ def run_k2_serial(
         ki, vi, bi, wi, ti = kf[i], vf[i], bf[i], wf[i], tf[i]
         dwyi, dui = dwyf[i], duf[i]
         gamma = torch.exp2(g2f[i])  # [C, d_k]
-        decay_rel = torch.exp2(g2f[i][:, None, :] - g2f[i][None, :, :])  # [C, C, d_k]
+        decay_rel = masked_decay_rel(g2f[i])  # [C, C, d_k]
         bk = bi * ki
         pwv = wi * vi
         q_kbg = bk * gamma
@@ -174,8 +174,7 @@ def run_k2_serial(
         dg2_q = dq_wy * q_kbg * LN2
         dbk_m = torch.einsum("is,sd,isd->id", d_m, ki, decay_rel)
         dk_m = torch.einsum("is,id,isd->sd", d_m, bk, decay_rel)
-        e = torch.einsum("is,id,sd,isd->isd", d_m, bk, ki, decay_rel)
-        dg2_m = LN2 * (e.sum(dim=1) - e.sum(dim=0))  # [C, d_k]
+        dg2_m = LN2 * (bk * dbk_m - ki * dk_m)  # [C, d_k]; E never built
 
         dbk = dbk_q + dbk_m
         dbf[i] = dbk * ki
@@ -225,7 +224,7 @@ def run_k2_batched(
     sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=kf.device), -1)
 
     gamma = torch.exp2(g2f)
-    decay_rel = torch.exp2(g2f[:, :, None, :] - g2f[:, None, :, :])
+    decay_rel = masked_decay_rel(g2f)
     bk = bf * kf
     pwv = wf * vf
     q_kbg = bk * gamma
@@ -242,8 +241,7 @@ def run_k2_batched(
     dg2_q = dq_wy * q_kbg * LN2
     dbk_m = torch.einsum("nis,nsd,nisd->nid", d_m, kf, decay_rel)
     dk_m = torch.einsum("nis,nid,nisd->nsd", d_m, bk, decay_rel)
-    e = torch.einsum("nis,nid,nsd,nisd->nisd", d_m, bk, kf, decay_rel)
-    dg2_m = LN2 * (e.sum(dim=2) - e.sum(dim=1))
+    dg2_m = LN2 * (bk * dbk_m - kf * dk_m)  # rowsum(E)/colsum(E) reuse; E never built
 
     dbk = dbk_q + dbk_m
     db = dbk * kf

@@ -64,6 +64,21 @@ def _from_chunks(x: Tensor) -> Tensor:
     return x.reshape(b, h, nt * c, d).transpose(1, 2).contiguous()
 
 
+def masked_decay_rel(g2: Tensor) -> Tensor:
+    """``exp2(g2_i - g2_s)`` [..., C, C, d_k] with the strict-upper triangle exactly zero.
+
+    ``g2`` is [..., C, d_k]. The strict-upper exponents are positive and overflow fp32
+    to inf once the within-chunk log2 span exceeds ~128 (reachable in training-drifted
+    gate regimes); every consumer reads only the lower(-incl) triangle, but the masked
+    einsums then compute ``0 * inf = NaN``. Filling the exponent with -inf makes the
+    dead entries exact zeros; live lower/diagonal entries are bitwise unchanged.
+    """
+    c = g2.shape[-2]
+    upper = torch.triu(torch.ones(c, c, dtype=torch.bool, device=g2.device), 1)
+    diff = g2[..., :, None, :] - g2[..., None, :, :]
+    return torch.exp2(diff.masked_fill(upper[..., None], float("-inf")))
+
+
 # ---------------------------------------------------------------------------
 # Forward (canonical chunkwise decomposition, channel-wise) with intermediates
 # ---------------------------------------------------------------------------
@@ -203,9 +218,7 @@ def chunkwise_forward_cw(
         gamma_c, g2_c = gamma[:, :, c], g2[:, :, c]
         glast_c = g_last[:, :, c]
 
-        # decay_rel[i,s,j] = exp2(g2_i[j] - g2_s[j]); bounded (<=1) on the strict-lower
-        # triangle that M/A actually read.
-        decay_rel = torch.exp2(g2_c[..., :, None, :] - g2_c[..., None, :, :])  # [B,H,C,C,d_k]
+        decay_rel = masked_decay_rel(g2_c)  # [B,H,C,C,d_k]; strict-upper exactly zero
 
         h_c = h_list[c]
         if skip_erase:
@@ -330,7 +343,7 @@ def chunkwise_restage_cw(
     )
     lower_incl = torch.tril(torch.ones(chunk_len, chunk_len, dtype=torch.bool, device=q.device), 0)
 
-    decay_rel = torch.exp2(g2[..., :, None, :] - g2[..., None, :, :])  # [B,H,NT,C,C,d_k]
+    decay_rel = masked_decay_rel(g2)  # [B,H,NT,C,C,d_k]
     bk = bc * kc
     m = torch.einsum("...id,...sd,...isd->...is", bk, kc, decay_rel)
     m = torch.where(strict_lower, m, torch.zeros_like(m))
@@ -520,7 +533,7 @@ def _b1_submap_vjp_cw(
 
         g2_c = torch.cumsum(g_lf, dim=-2) * RCP_LN2
         gamma_c = torch.exp2(g2_c)
-        decay_rel = torch.exp2(g2_c[..., :, None, :] - g2_c[..., None, :, :])
+        decay_rel = masked_decay_rel(g2_c)
         bk = b_lf * k_lf
         m = torch.einsum("...id,...sd,...isd->...is", bk, k_lf, decay_rel)
         m = torch.where(strict_lower, m, torch.zeros_like(m))

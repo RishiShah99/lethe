@@ -62,6 +62,20 @@ def _from_chunks(x: Tensor) -> Tensor:
     return x.reshape(b, h, nt * c, d).transpose(1, 2).contiguous()
 
 
+def masked_decay_ratio(g2: Tensor) -> Tensor:
+    """``exp2(g2_i - g2_s)`` [..., C, C] with the strict-upper triangle exactly zero.
+
+    ``g2`` is [..., C]. Replaces the ``gamma_i / gamma_s`` division form, which fails
+    two ways in drifted decay regimes: the dead strict-upper entries overflow to inf
+    (then ``0 * inf = NaN`` in the masked products) and live entries hit ``0 / 0``
+    once ``gamma`` underflows. The masked-exponent form has neither mode.
+    """
+    c = g2.shape[-1]
+    upper = torch.triu(torch.ones(c, c, dtype=torch.bool, device=g2.device), 1)
+    diff = g2[..., :, None] - g2[..., None, :]
+    return torch.exp2(diff.masked_fill(upper, float("-inf")))
+
+
 # ---------------------------------------------------------------------------
 # Forward (canonical chunkwise decomposition) with all intermediates retained
 # ---------------------------------------------------------------------------
@@ -187,7 +201,7 @@ def chunkwise_forward(
         beta_c, gamma_c, g2_c = betac[:, :, c], gamma[:, :, c], g2[:, :, c]
         glast_c = g_last[:, :, c]
 
-        ratio = gamma_c[..., :, None] / gamma_c[..., None, :]  # gamma_i / gamma_s
+        ratio = masked_decay_ratio(g2_c)  # exp2(g2_i - g2_s), strict-upper zero
         kk = kc_c @ kc_c.transpose(-1, -2)
         m = beta_c[..., :, None] * ratio * kk
         m = torch.where(strict_lower, m, torch.zeros_like(m))
@@ -377,7 +391,7 @@ def _b1_submap_vjp(
 
         g2_c = torch.cumsum(g_lf, dim=-1) * RCP_LN2
         gamma_c = torch.exp2(g2_c)
-        ratio = gamma_c[..., :, None] / gamma_c[..., None, :]
+        ratio = masked_decay_ratio(g2_c)
         kk = k_lf @ k_lf.transpose(-1, -2)
         m = beta_lf[..., :, None] * ratio * kk
         m = torch.where(strict_lower, m, torch.zeros_like(m))

@@ -51,6 +51,7 @@ from torch import Tensor
 
 from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available as _k1_available
 from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import maybe_sync
+from flash_mamba_rl.kernels.references.gdn2_chunkwise import masked_decay_ratio
 
 LN2 = math.log(2.0)
 RCP_LN2 = 1.0 / LN2
@@ -84,7 +85,7 @@ def run_k2_ref(
     bv = betaf[..., None] * vf
     bgk = (betaf * gamma)[..., None] * kf
     kk = kf @ kf.transpose(-1, -2)
-    ratio = gamma[..., :, None] / gamma[..., None, :]
+    ratio = masked_decay_ratio(g2f)
 
     tt = tf.transpose(-1, -2)
     dbv = tt @ duf
@@ -174,7 +175,7 @@ def run_k2_serial(
         ki, vi, bi, ti = kf[i], vf[i], betaf[i], tf[i]
         dwi, dui = dwf[i], duf[i]
         gamma = torch.exp2(g2f[i])  # [C]
-        ratio = gamma[:, None] / gamma[None, :]
+        ratio = masked_decay_ratio(g2f[i])
         bv = bi[:, None] * vi
         bgk = (bi * gamma)[:, None] * ki
 
@@ -234,7 +235,7 @@ def run_k2_batched(
     gamma = torch.exp2(g2f)
     bv = betaf[..., None] * vf
     bgk = (betaf * gamma)[..., None] * kf
-    ratio = gamma[..., :, None] / gamma[..., None, :]
+    ratio = masked_decay_ratio(g2f)
 
     kk = _bmm_tc(kf, kf.transpose(-1, -2))
     tt = tf.transpose(-1, -2)

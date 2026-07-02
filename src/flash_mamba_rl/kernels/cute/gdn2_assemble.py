@@ -43,11 +43,16 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.references.gdn2_chunkwise import ChunkwiseForward, chunkwise_forward
+from flash_mamba_rl.kernels.references.gdn2_chunkwise import (
+    ChunkwiseForward,
+    chunkwise_forward,
+    masked_decay_ratio,
+)
 from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
     ChunkwiseForwardCW,
     chunkwise_forward_cw,
     chunkwise_restage_cw,
+    masked_decay_rel,
 )
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
@@ -167,7 +172,7 @@ def k2_wy_vjp_ref(
     bv = betaf[..., None] * vf
     bgk = (betaf * gamma)[..., None] * kf
     kk = kf @ kf.transpose(-1, -2)
-    ratio = gamma[..., :, None] / gamma[..., None, :]
+    ratio = masked_decay_ratio(g2f)
 
     tt = tf.transpose(-1, -2)
     dbv = tt @ duf
@@ -216,7 +221,7 @@ def _k2_beta_split(
     bv = betaf[..., None] * vf
     bgk = (betaf * gamma)[..., None] * kf
     kk = kf @ kf.transpose(-1, -2)
-    ratio = gamma[..., :, None] / gamma[..., None, :]
+    ratio = masked_decay_ratio(g2f)
     tt = tf.transpose(-1, -2)
     dbv = tt @ duf
     dbgk = tt @ dwf
@@ -271,7 +276,7 @@ def _stage_b_vjp(
     hh = h0_lf
     for ci in range(nt):
         gamma_c, g2_c, glast_c = gamma[:, :, ci], g2[:, :, ci], g_last[:, :, ci]
-        ratio = gamma_c[..., :, None] / gamma_c[..., None, :]
+        ratio = masked_decay_ratio(g2_c)
         a_qk = (q_sn[:, :, ci] @ k_n[:, :, ci].transpose(-1, -2)) * ratio
         a_qk = torch.where(lower_incl, a_qk, torch.zeros_like(a_qk))
         v_new = u_lf[:, :, ci] - w_lf[:, :, ci] @ hh
@@ -539,7 +544,7 @@ def k2_wy_vjp_cw_ref(
     sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=kf.device), -1)
 
     gamma = torch.exp2(g2f)  # [N,C,d_k]
-    decay_rel = torch.exp2(g2f[:, :, None, :] - g2f[:, None, :, :])  # [N,C,C,d_k]
+    decay_rel = masked_decay_rel(g2f)  # [N,C,C,d_k]
     bk = bf * kf  # [N,C,d_k]
     pwv = wf * vf  # write term P = w (.) v  [N,C,d_v]
     q_kbg = bk * gamma  # Q = b (.) gamma (.) k  [N,C,d_k]
@@ -558,8 +563,9 @@ def k2_wy_vjp_cw_ref(
 
     dbk_m = torch.einsum("nis,nsd,nisd->nid", d_m, kf, decay_rel)
     dk_m = torch.einsum("nis,nid,nisd->nsd", d_m, bk, decay_rel)
-    e = torch.einsum("nis,nid,nsd,nisd->nisd", d_m, bk, kf, decay_rel)  # [N,C,C,d_k]
-    dg2_m = LN2 * (e.sum(dim=2) - e.sum(dim=1))  # [N,C,d_k]
+    # E = dM (.) bk (.) k (.) decay_rel never materializes: rowsum(E) = bk (.) dbk_m
+    # and colsum(E) = k (.) dk_m, so dg2_m reuses the two sums above.
+    dg2_m = LN2 * (bk * dbk_m - kf * dk_m)  # [N,C,d_k]
 
     dbk = dbk_q + dbk_m
     db = dbk * kf
@@ -612,7 +618,7 @@ def _stage_b_vjp_cw(
     hh = h0_lf
     for ci in range(nt):
         gamma_c, g2_c, glast_c = gamma[:, :, ci], g2[:, :, ci], g_last[:, :, ci]
-        decay_rel = torch.exp2(g2_c[..., :, None, :] - g2_c[..., None, :, :])
+        decay_rel = masked_decay_rel(g2_c)
         a_qk = torch.einsum("...id,...sd,...isd->...is", q_sn[:, :, ci], k_n[:, :, ci], decay_rel)
         a_qk = torch.where(lower_incl, a_qk, torch.zeros_like(a_qk))
         v_new = u_lf[:, :, ci] - wy_lf[:, :, ci] @ hh
@@ -669,7 +675,7 @@ def _stage_b_vjp_cw_closed(
     c = fwd.chunk_len
 
     lower_incl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=do.device), 0)
-    decay_rel = torch.exp2(g2[..., :, None, :] - g2[..., None, :, :])  # [B,H,NT,C,C,d_k]
+    decay_rel = masked_decay_rel(g2)  # [B,H,NT,C,C,d_k]
     decay_end = torch.exp2(g_last[..., None, :] - g2)  # [B,H,NT,C,d_k]
 
     dqg = do_c @ h_entry.transpose(-1, -2)  # [B,H,NT,C,d_k]
