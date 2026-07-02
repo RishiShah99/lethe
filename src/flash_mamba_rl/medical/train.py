@@ -289,7 +289,12 @@ class MedicalTrainer:
         state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])
         model_path = os.path.join(self.config.checkpoint_dir, str(state["model_name"]))
-        self._core.load_state_dict(torch.load(model_path, map_location=self.device))
+        # Explicit weights_only=True on the separate model file too: torch>=2.6
+        # already defaults to the safe loader, but pinning it keeps the safety from
+        # regressing to an explicit weights_only=False (matches the load above).
+        self._core.load_state_dict(
+            torch.load(model_path, map_location=self.device, weights_only=True)
+        )
         self.optimizer.load_state_dict(state["optimizer"])
         self._restore_rng_state(state["rng_states"])
         return True

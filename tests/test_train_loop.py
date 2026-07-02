@@ -250,6 +250,33 @@ class TestRunAndCheckpoint:
         path = GRPOTrainingLoop.latest_adapter_path(str(tmp_path / "ckpt"))
         assert path is not None and path.endswith("adapter_step_1")
 
+    def test_resume_refuses_pickle_gadget(self, tmp_path: Any) -> None:
+        # weights_only=True must reject a __reduce__ gadget planted in a resumed
+        # trainer_state.pt (pickle-RCE on resume from a foreign run dir). Both the
+        # resume loader and the static latest_adapter_path reader must refuse it.
+        import pickle
+
+        from tests._sandbox_helpers import ReduceBomb
+
+        loop, _ = make_loop(tmp_path, [GOOD])
+        ckpt_dir = str(tmp_path / "ckpt")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        sentinel = os.path.join(str(tmp_path), "pwned")
+        torch.save(
+            {
+                "step": 0,
+                "adapter_name": "adapter_step_0",
+                "optimizer": ReduceBomb(sentinel),
+                "torch_rng": torch.get_rng_state(),
+            },
+            os.path.join(ckpt_dir, "trainer_state.pt"),
+        )
+        with pytest.raises(pickle.UnpicklingError):
+            loop.load_trainer_state()
+        with pytest.raises(pickle.UnpicklingError):
+            GRPOTrainingLoop.latest_adapter_path(ckpt_dir)
+        assert not os.path.exists(sentinel)
+
     def test_old_adapters_pruned_keeping_two(self, tmp_path: Any) -> None:
         loop, _ = make_loop(tmp_path, [GOOD, BAD], total_steps=4)
         loop.run()

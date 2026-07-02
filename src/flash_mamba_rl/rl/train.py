@@ -347,7 +347,10 @@ class GRPOTrainingLoop:
         path = os.path.join(self.config.checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return False
-        state = torch.load(path, map_location="cpu", weights_only=False)
+        # weights_only=True: the payload is only step/adapter_name/optimizer/RNG
+        # (tensors + primitive containers), so the safe loader suffices and closes a
+        # pickle-RCE if checkpoint_dir points at a run dir this process did not write.
+        state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])
         self.optimizer.load_state_dict(state["optimizer"])
         torch.set_rng_state(state["torch_rng"])
@@ -361,7 +364,7 @@ class GRPOTrainingLoop:
         path = os.path.join(checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return None
-        state = torch.load(path, map_location="cpu", weights_only=False)
+        state = torch.load(path, map_location="cpu", weights_only=True)
         name = state.get("adapter_name")
         if not name:
             return None

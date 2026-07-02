@@ -243,6 +243,34 @@ class TestCheckpointResume:
             trainer.load_checkpoint()
         assert not os.path.exists(sentinel)
 
+    def test_load_checkpoint_refuses_model_file_gadget(self, tmp_path: object) -> None:
+        # The model weights live in a SEPARATE file (model_step_N.pt) loaded after a
+        # clean trainer_state.pt. Locks that load to the safe loader so it can't
+        # regress to weights_only=False; a gadget here is only reached once
+        # trainer_state.pt loads successfully — the case the sibling test above skips.
+        import os
+        import pickle
+
+        from tests._sandbox_helpers import ReduceBomb
+
+        trainer = _trainer(tmp_path)
+        ckpt = trainer.config.checkpoint_dir
+        os.makedirs(ckpt, exist_ok=True)
+        sentinel = os.path.join(str(tmp_path), "pwned")
+        torch.save(ReduceBomb(sentinel), os.path.join(ckpt, "model_step_0.pt"))
+        torch.save(
+            {
+                "step": 0,
+                "model_name": "model_step_0.pt",
+                "optimizer": trainer.optimizer.state_dict(),
+                "rng_states": [],
+            },
+            os.path.join(ckpt, "trainer_state.pt"),
+        )
+        with pytest.raises(pickle.UnpicklingError):
+            trainer.load_checkpoint()
+        assert not os.path.exists(sentinel)
+
     def test_old_models_pruned_keeping_two(self, tmp_path: object) -> None:
         import os
 

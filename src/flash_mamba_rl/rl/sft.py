@@ -221,7 +221,10 @@ class SFTTrainingLoop:
         path = os.path.join(self.config.checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return False
-        state = torch.load(path, map_location="cpu", weights_only=False)
+        # weights_only=True: safe loader for the step/adapter_name/optimizer/RNG
+        # payload — closes the pickle-RCE on resume from a foreign checkpoint dir
+        # (same standard as GRPOTrainingLoop.load_trainer_state and medical/train).
+        state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])
         self.optimizer.load_state_dict(state["optimizer"])
         torch.set_rng_state(state["torch_rng"])

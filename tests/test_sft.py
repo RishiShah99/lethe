@@ -135,6 +135,29 @@ class TestLoop:
         assert fresh.step_idx == 5
         assert fresh.optimizer.state_dict()["state"]  # optimizer state restored
 
+    def test_resume_refuses_pickle_gadget(self, tmp_path: Any) -> None:
+        # weights_only=True must reject a __reduce__ gadget in a resumed
+        # trainer_state.pt (same pickle-RCE class as the GRPO loader).
+        import pickle
+
+        from tests._sandbox_helpers import ReduceBomb
+
+        loop, _ = make_loop(tmp_path)
+        os.makedirs(loop.config.checkpoint_dir, exist_ok=True)
+        sentinel = os.path.join(str(tmp_path), "pwned")
+        torch.save(
+            {
+                "step": 0,
+                "adapter_name": "adapter_step_0",
+                "optimizer": ReduceBomb(sentinel),
+                "torch_rng": torch.get_rng_state(),
+            },
+            os.path.join(loop.config.checkpoint_dir, "trainer_state.pt"),
+        )
+        with pytest.raises(pickle.UnpicklingError):
+            loop.load_trainer_state()
+        assert not os.path.exists(sentinel)
+
     def test_prune_keeps_two_adapters(self, tmp_path: Any) -> None:
         loop, _ = make_loop(tmp_path, total_steps=6, save_every=1)
         loop.run()
