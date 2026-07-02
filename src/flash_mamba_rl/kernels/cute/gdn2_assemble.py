@@ -47,6 +47,7 @@ from flash_mamba_rl.kernels.references.gdn2_chunkwise import ChunkwiseForward, c
 from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
     ChunkwiseForwardCW,
     chunkwise_forward_cw,
+    chunkwise_restage_cw,
 )
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
@@ -741,9 +742,17 @@ def assemble_gdn2_backward_channelwise(
     k2 = k2_fn if k2_fn is not None else k2_wy_vjp_cw_ref
     cl = pick_chunk_len(q.shape[1]) if chunk_len is None else chunk_len
 
-    fwd = chunkwise_forward_cw(
-        q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
-    )
+    # The closed path takes no grad through the forward, so the batched no-grad
+    # restage stands in (Level 1b); the autograd stage B (and double-backward)
+    # still needs the graph-carrying forward.
+    if stage_b_closed and not create_graph:
+        fwd = chunkwise_restage_cw(
+            q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
+        )
+    else:
+        fwd = chunkwise_forward_cw(
+            q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
+        )
 
     do_c = _to_chunks(do, cl)
     dv_local = fwd.A_qk.transpose(-1, -2) @ do_c

@@ -273,6 +273,118 @@ def chunkwise_forward_cw(
     )
 
 
+@torch.no_grad()
+def chunkwise_restage_cw(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    b: Tensor,
+    w: Tensor,
+    *,
+    chunk_len: int = 64,
+    scale: float | None = None,
+    initial_state: Tensor | None = None,
+    use_qk_l2norm: bool = False,
+) -> ChunkwiseForwardCW:
+    """Batched no-grad restage of the channel-wise forward — the de-glue hot path.
+
+    Same math as :func:`chunkwise_forward_cw` with the per-chunk loop batched over NT:
+    M/T/u/wy/A_qk are chunk-local, so each is one batched op; only the h carry stays
+    sequential (``v_new = u - wy @ h`` and the state update — two GEMMs per chunk).
+    Builds no autograd graph (the closed stage-B VJP + kernels supply every grad), so
+    ``leaves`` is empty and the result is NOT valid for :func:`chunkwise_backward_cw`.
+    Field equality with ``chunkwise_forward_cw`` is pinned by test (fp64, machine
+    precision).
+    """
+    if q.dtype not in (torch.float32, torch.float64):
+        raise ValueError(f"Expected float32/float64, got {q.dtype}")
+    bsz, t, h, d_k = q.shape
+    d_v = v.shape[-1]
+    s = d_k**-0.5 if scale is None else scale
+
+    qh = _l2norm(q) if use_qk_l2norm else q
+    kh = _l2norm(k) if use_qk_l2norm else k
+    qh = qh * s
+
+    nt = t // chunk_len
+    qc = _to_chunks(qh, chunk_len)
+    kc = _to_chunks(kh, chunk_len)
+    vc = _to_chunks(v, chunk_len)
+    bc = _to_chunks(b, chunk_len)
+    wc = _to_chunks(w, chunk_len)
+    g_chan = _to_chunks(g, chunk_len)
+
+    g2 = torch.cumsum(g_chan, dim=-2) * RCP_LN2
+    g_last = g2[..., -1, :]
+    gamma = torch.exp2(g2)
+
+    if initial_state is not None:
+        h0 = initial_state.detach().to(q.dtype)
+    else:
+        h0 = torch.zeros(bsz, h, d_k, d_v, dtype=q.dtype, device=q.device)
+
+    eye = torch.eye(chunk_len, dtype=q.dtype, device=q.device)
+    strict_lower = torch.tril(
+        torch.ones(chunk_len, chunk_len, dtype=torch.bool, device=q.device), -1
+    )
+    lower_incl = torch.tril(torch.ones(chunk_len, chunk_len, dtype=torch.bool, device=q.device), 0)
+
+    decay_rel = torch.exp2(g2[..., :, None, :] - g2[..., None, :, :])  # [B,H,NT,C,C,d_k]
+    bk = bc * kc
+    m = torch.einsum("...id,...sd,...isd->...is", bk, kc, decay_rel)
+    m = torch.where(strict_lower, m, torch.zeros_like(m))
+    t_mat = torch.linalg.solve_triangular(eye + m, eye, upper=False, unitriangular=True)
+
+    u = t_mat @ (wc * vc)  # [B,H,NT,C,d_v]
+    wy = t_mat @ (bk * gamma)  # [B,H,NT,C,d_k]
+
+    a_qk = torch.einsum("...id,...sd,...isd->...is", qc, kc, decay_rel)
+    a_qk = torch.where(lower_incl, a_qk, torch.zeros_like(a_qk))
+
+    decay_end = torch.exp2(g_last[..., None, :] - g2)
+    k_dec = kc * decay_end
+    exp_glast = torch.exp2(g_last)  # [B,H,NT,d_k]
+
+    hs = torch.empty(bsz, h, nt + 1, d_k, d_v, dtype=q.dtype, device=q.device)
+    v_new = torch.empty(bsz, h, nt, chunk_len, d_v, dtype=q.dtype, device=q.device)
+    hh = h0
+    hs[:, :, 0] = hh
+    for ci in range(nt):
+        vn = u[:, :, ci] - wy[:, :, ci] @ hh
+        v_new[:, :, ci] = vn
+        hh = exp_glast[:, :, ci][..., :, None] * hh + k_dec[:, :, ci].transpose(-1, -2) @ vn
+        hs[:, :, ci + 1] = hh
+
+    o_chunks = (qc * gamma) @ hs[:, :, :-1] + a_qk @ v_new
+    o = _from_chunks(o_chunks)
+
+    return ChunkwiseForwardCW(
+        o=o,
+        q=qc,
+        k=kc,
+        v=vc,
+        b=bc,
+        w_gate=wc,
+        g2=g2,
+        g_last=g_last,
+        gamma=gamma,
+        T=t_mat,
+        u=u,
+        wy=wy,
+        v_new=v_new,
+        h=hs,
+        A_qk=a_qk,
+        h_list=list(hs.unbind(2)),
+        v_new_list=list(v_new.unbind(2)),
+        wy_list=list(wy.unbind(2)),
+        u_list=list(u.unbind(2)),
+        leaves=(),
+        chunk_len=chunk_len,
+        scale=s,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Backward intermediates (autograd through the explicit forward)
 # ---------------------------------------------------------------------------

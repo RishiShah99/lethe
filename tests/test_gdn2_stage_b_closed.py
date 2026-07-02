@@ -4,20 +4,28 @@
 ``dh`` output (previously discarded) and ``dv2``, and reconstructs every stage-B grad
 chunk-locally. Pinned both directly (against ``_stage_b_vjp_cw``) and end-to-end
 (``stage_b_closed=True`` assembly vs the default, and vs the token-serial oracle).
-CPU only.
+Level 1b adds the batched no-grad restage (``chunkwise_restage_cw``) the closed
+assembly path runs on — field-pinned against ``chunkwise_forward_cw`` — and the
+``stage_b_closed`` threading through the native dispatch. CPU only.
 """
 
 import pytest
 import torch
 
+import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
 from flash_mamba_rl.kernels.cute.gdn2_assemble import (
     _stage_b_vjp_cw,
     _stage_b_vjp_cw_closed,
     _to_chunks,
     assemble_gdn2_backward_channelwise,
+    assembled_channelwise_gdn2_backward,
     k1_reverse_state_cw_ref,
+    k2_wy_vjp_cw_ref,
 )
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import chunkwise_forward_cw
+from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+    chunkwise_forward_cw,
+    chunkwise_restage_cw,
+)
 from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
 
 # (batch, seq_len, nheads, d_k, d_v, chunk_len)
@@ -99,3 +107,100 @@ class TestStageBClosedForm:
                 i,
                 (a - c).abs().max().item(),
             )
+
+
+_RESTAGE_FIELDS = (
+    "o",
+    "q",
+    "k",
+    "v",
+    "b",
+    "w_gate",
+    "g2",
+    "g_last",
+    "gamma",
+    "T",
+    "u",
+    "wy",
+    "v_new",
+    "h",
+    "A_qk",
+)
+
+
+class TestRestage:
+    """Level 1b: the batched no-grad restage equals the loop forward, field by field."""
+
+    @pytest.mark.parametrize("use_qk_l2norm", [True, False])
+    @pytest.mark.parametrize(("batch", "seq", "heads", "d_k", "d_v", "cl"), SHAPES)
+    def test_restage_matches_forward(self, batch, seq, heads, d_k, d_v, cl, use_qk_l2norm) -> None:
+        q, k, v, g, b, w, do = _inputs(batch, seq, heads, d_k, d_v)
+        del do
+        fwd = chunkwise_forward_cw(q, k, v, g, b, w, chunk_len=cl, use_qk_l2norm=use_qk_l2norm)
+        rst = chunkwise_restage_cw(q, k, v, g, b, w, chunk_len=cl, use_qk_l2norm=use_qk_l2norm)
+        assert rst.chunk_len == fwd.chunk_len and rst.scale == fwd.scale
+        assert rst.leaves == ()
+        for f in _RESTAGE_FIELDS:
+            a, c = getattr(fwd, f).detach(), getattr(rst, f)
+            assert not c.requires_grad, f
+            assert torch.allclose(a, c, rtol=1e-12, atol=1e-13), (
+                f,
+                (a - c).abs().max().item(),
+            )
+
+    def test_restage_with_initial_state(self) -> None:
+        q, k, v, g, b, w, _do = _inputs(1, 32, 2, 16, 12)
+        gen = torch.Generator().manual_seed(7)
+        h0 = torch.randn(1, 2, 16, 12, generator=gen, dtype=torch.float64)
+        fwd = chunkwise_forward_cw(q, k, v, g, b, w, chunk_len=16, initial_state=h0)
+        rst = chunkwise_restage_cw(q, k, v, g, b, w, chunk_len=16, initial_state=h0)
+        for f in ("o", "h", "v_new"):
+            a, c = getattr(fwd, f).detach(), getattr(rst, f)
+            assert torch.allclose(a, c, rtol=1e-12, atol=1e-13), f
+
+    def test_restage_rejects_half(self) -> None:
+        q, k, v, g, b, w, _do = _inputs(1, 32, 1, 16, 16)
+        with pytest.raises(ValueError, match="float32/float64"):
+            chunkwise_restage_cw(*(t.to(torch.bfloat16) for t in (q, k, v, g, b, w)), chunk_len=16)
+
+
+class TestNativeDispatchClosed:
+    """``stage_b_closed`` threads through ``native_gdn2_backward`` to the cw assembly."""
+
+    def test_native_threads_stage_b_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Dispatch-legal dims (d_k=128, L%64==0, d_v=64) with the cw refs standing in
+        # for the box kernels; the native route must equal the direct closed assembly
+        # bitwise (same ops, same order, CPU).
+        bsz, t, h, d_k, d_v = 1, 64, 1, 128, 64
+        gen = torch.Generator().manual_seed(11)
+        dt = torch.float32
+        q = torch.randn(bsz, t, h, d_k, generator=gen, dtype=dt)
+        k = torch.randn(bsz, t, h, d_k, generator=gen, dtype=dt)
+        v = torch.randn(bsz, t, h, d_v, generator=gen, dtype=dt)
+        g = -torch.rand(bsz, t, h, d_k, generator=gen, dtype=dt) * 0.1
+        b = torch.rand(bsz, t, h, d_k, generator=gen, dtype=dt)
+        w = torch.rand(bsz, t, h, d_v, generator=gen, dtype=dt)
+        do = torch.randn(bsz, t, h, d_v, generator=gen, dtype=dt)
+
+        monkeypatch.setattr(gdn2_native, "is_available", lambda device=None: True)
+        monkeypatch.setattr(
+            gdn2_native,
+            "_load_box_kernels_cw",
+            lambda: (k1_reverse_state_cw_ref, k2_wy_vjp_cw_ref),
+        )
+        got = gdn2_native.native_gdn2_backward(q, k, v, g, b, w, do, stage_b_closed=True)
+        assert got is not None
+        want = assembled_channelwise_gdn2_backward(
+            q,
+            k,
+            v,
+            g,
+            b,
+            w,
+            do,
+            k1_fn=k1_reverse_state_cw_ref,
+            k2_fn=k2_wy_vjp_cw_ref,
+            stage_b_closed=True,
+        )
+        for f in ("grad_q", "grad_k", "grad_v", "grad_g", "grad_b", "grad_w"):
+            assert torch.equal(getattr(got, f), getattr(want, f)), f

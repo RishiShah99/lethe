@@ -125,6 +125,7 @@ def native_gdn2_backward(
     *,
     scale: float | None = None,
     use_qk_l2norm: bool = True,
+    stage_b_closed: bool = False,
 ) -> Gdn2Grads | None:
     """Six GDN-2 gradients from the native CuTe assembly, or ``None`` if unavailable.
 
@@ -134,7 +135,9 @@ def native_gdn2_backward(
     (``b = w = beta``, ``g`` channel-constant) routes through the Phase-2 scalar assembly
     (d_v=64); the genuinely channel-wise regime routes through the Phase-3 crown assembly
     (d_v in {64, 128}). Shapes: ``q``/``k``/``g``/``b`` [B, L, H, d_k]; ``v``/``w``/``do``
-    [B, L, H, d_v].
+    [B, L, H, d_v]. ``stage_b_closed`` selects the chunk-local closed-form stage-B VJP
+    (the de-glue lever) — honored on the channel-wise route only (the closed form exists
+    for the cw stage B); the scalar route ignores it.
     """
     if not is_available(q.device) or q.dtype not in SUPPORTED_DTYPES:
         return None
@@ -174,6 +177,7 @@ def native_gdn2_backward(
         use_qk_l2norm=use_qk_l2norm,
         k1_fn=k1_cw,
         k2_fn=k2_cw,
+        stage_b_closed=stage_b_closed,
     )
 
 

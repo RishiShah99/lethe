@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable
+from functools import partial
 
 import torch
 
@@ -69,6 +70,9 @@ def main() -> None:
     ap.add_argument("--ref-candidate", action="store_true", help="desk dry-run: cw refs, not kernels")
     ap.add_argument("--atol", type=float, default=ATOL_BF16)
     ap.add_argument("--shapes", type=str, default="", help="semicolon list of b,t,h; overrides GRID")
+    ap.add_argument(
+        "--closed", action="store_true", help="grade the closed stage-B path (de-glue Level 1)"
+    )
     args = ap.parse_args()
     grid = GRID
     if args.shapes:
@@ -79,12 +83,15 @@ def main() -> None:
 
     candidate: Callable[..., Gdn2Grads | None]
     if args.ref_candidate:
-        candidate = assembled_channelwise_gdn2_backward  # cw refs; desk dry-run
+        # cw refs; desk dry-run
+        candidate = partial(assembled_channelwise_gdn2_backward, stage_b_closed=args.closed)
         mode = "cw_refs(desk)"
     else:
         gdn2_native.is_available = lambda device=None: True  # lift the box gate for this run
-        candidate = gdn2_native.native_gdn2_backward
+        candidate = partial(gdn2_native.native_gdn2_backward, stage_b_closed=args.closed)
         mode = "native_cw(box)"
+    if args.closed:
+        mode += "+closed"
 
     results: list[dict[str, object]] = []
     worst = 0.0
@@ -115,7 +122,8 @@ def main() -> None:
         print(f"  shape=({b},{t},{h}) worst={shape_worst:.3e} det={det} {'OK' if passed else 'FAIL'}")
 
     verdict = {"mode": mode, "device": str(dev), "dtype": str(dtype), "atol": args.atol,
-               "worst_scale_rel": worst, "results": results, "GO": ok}
+               "stage_b_closed": args.closed, "worst_scale_rel": worst, "results": results,
+               "GO": ok}
     print(f"\nmode={mode} worst_scale_rel={worst:.3e} GO={ok}")
     if args.out:
         with open(args.out, "w") as f:
