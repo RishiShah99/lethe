@@ -342,6 +342,32 @@ def run_k1_incB2(
     )
 
 
-# Lever B batched path is the default; run_k1_incB_serial stays as the proven fallback.
-# inc-B2 (run_k1_incB2 above, the fused kernel) supersedes both once box-green.
-run_k1_incB = run_k1_incB_batched
+def run_k1_incB(
+    q: Tensor,
+    k: Tensor,
+    wy: Tensor,
+    g2: Tensor,
+    g_last: Tensor,
+    do: Tensor,
+    dv_local: Tensor,
+    dht: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Default cw K#1: Level-2 fused-epilogue kernels on the exact proven tile, else lever B.
+
+    The Level-2 path (2 launches/step, 0 torch compute ops/step; silicon-GO,
+    results/k1_l2_epilogue_box.json) is dim-locked to C=64, d_k=128, d_v=64; d_v=128
+    stays on the batched path until the N-tiling increment. L2's f16 outputs upcast to
+    fp32 to keep the assembly's operand-dtype contract (the closed stage-B matmuls
+    them against fp32).
+    """
+    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2 import l2_dims_ok, run_k1_incB_l2
+
+    c, d_k = q.shape[3], q.shape[4]
+    if l2_dims_ok(c, d_k, do.shape[-1]):
+        dh, dv2, dh0 = run_k1_incB_l2(q, k, wy, g2, g_last, do, dv_local, dht)
+        return dh.float(), dv2.float(), dh0
+    return run_k1_incB_batched(q, k, wy, g2, g_last, do, dv_local, dht)
+
+
+# run_k1_incB_serial stays as the proven per-group fallback; inc-B2 (run_k1_incB2
+# above, the fully fused kernel) supersedes the per-step paths once box-green.

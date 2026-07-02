@@ -104,6 +104,7 @@ module = [
     "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu",
     "flash_mamba_rl.kernels.cute.gdn2_bwd_wy",
     "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw",
+    "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2",
     "flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw",
 ]
 ignore_errors = true
