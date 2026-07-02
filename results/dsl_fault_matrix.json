@@ -1,0 +1,198 @@
+{
+  "schema": "Blackwell cutlass-dsl scf.for/TMEM fault matrix for loop-carried tensor-core accumulators. Chapter 1 diagnosis evidence for the GDN-2 inc-B2 (run_k1_incB2) SIGSEGV.",
+  "recorded": "2026-07-02",
+  "env": {
+    "gpu": "NVIDIA B200 (sm_100)",
+    "driver": "580.159.03",
+    "python": "3.12.3",
+    "nvidia_cutlass_dsl": "4.5.2",
+    "torch": "2.11.0+cu128",
+    "triton": "3.6.0",
+    "env_artifact": "results/env_b200.json",
+    "env_note": "env_b200.json records torch 2.12.0+cu130 and triton 3.7.0 (a later box image); toolchain pins 2.11.0+cu128 / 3.6.0 were the pinned targets for the bisect session"
+  },
+  "probes": [
+    {
+      "id": "sanity_incB",
+      "source_file": "scratch/k1_microgate.py (mode=incB)",
+      "configuration": "lever-B batched host-orchestrated GEMM (run_k1_incB), straight-line kernel body, no scf.for outer loop, NT=1",
+      "outcome": "GO",
+      "fault_signature": null,
+      "evidence": "box_out_bisect/k1_sanity_incB.json",
+      "status_source": "artifact"
+    },
+    {
+      "id": "incB2_bisect1",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 1)",
+      "configuration": "G1-only path: ONE tcgen05 GEMM (TMEM accumulator allocated outside, handle captured across scf.for boundary) wrapped in cutlass.range(nt); NT=1; bi-GEMM sharing ruled out",
+      "outcome": "ICE",
+      "fault_signature": "DSLRuntimeError: ICE — failed to legalize unresolved materialization from '!cute_nvgpu.atom.tmem_load<f32, 32 DP, 32 bit, x64>' to '!cute.tiled_copy<...>' that remained live after conversion; see existing live user: 'scf.yield'",
+      "evidence": "box_out_bisect/k1_microgate_bisect1.json",
+      "status_source": "artifact"
+    },
+    {
+      "id": "incB2_bisect2",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 2)",
+      "configuration": "G1+GA path, no b_ga/b_dhT round-trips: rules out that the round-trip proxy-fence is the fault; TMEM handle still captured outside loop",
+      "outcome": "ICE",
+      "fault_signature": "DSLRuntimeError: ICE — failed to legalize unresolved materialization from '!cute_nvgpu.atom.tmem_load<f32, 32 DP, 32 bit, x64>' — same scf.yield live user as bisect-1",
+      "evidence": "box_out_bisect/k1_microgate_bisect2.json",
+      "status_source": "artifact"
+    },
+    {
+      "id": "incB2_bisect0",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 0)",
+      "configuration": "Full fused chunk (G1+GA+round-trips+reverse b_dh carry), TMEM handle captured outside loop; NT=1",
+      "outcome": "ICE",
+      "fault_signature": "DSLRuntimeError: ICE — failed to legalize unresolved materialization from '!cute_nvgpu.atom.tmem_load<f32, 32 DP, 32 bit, x64>' — same scf.yield live user; different SSA value numbering from bisect-1/2 (longer IR path)",
+      "evidence": "box_out_bisect/k1_microgate_bisect0.json",
+      "status_source": "artifact"
+    },
+    {
+      "id": "incB2_bisect3",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 3)",
+      "configuration": "G1 with plain bh (non-arithmetic) L coord instead of arithmetic lid; tests whether dynamic-L local_tile coord is the fault; TMEM handle still captured outside loop",
+      "outcome": "UNTESTED",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_bisect2.sh and scratch/run_incb2_bisect3.sh; no JSON artifact was synced back. The docstring in src/flash_mamba_rl/kernels/cute/gdn2_bwd_dhu.py:829 records the bisect intention but not the outcome."
+    },
+    {
+      "id": "incB2_bisect4",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 4)",
+      "configuration": "G1-only, relinquish_alloc_permit moved to after mainloop instead of before; tests whether relinquish ordering is the fault",
+      "outcome": "UNTESTED",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_bisect2.sh and scratch/run_incb2_bisect3.sh; no JSON artifact exists."
+    },
+    {
+      "id": "loop_gemm_straight",
+      "source_file": "scratch/loop_gemm_repro.py (--mode straight)",
+      "configuration": "Decoupled control: proven tcgen05 GEMM (128x64x128, TMA async pipelines) run straight-line, TMEM handle bound outside any loop",
+      "outcome": "GO",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned as a control in scratch/run_incb2_fix.sh (results/repro_straight.json); no JSON artifact was synced back. Outcome known from session: control must pass to validate the fix probe."
+    },
+    {
+      "id": "loop_gemm_loop",
+      "source_file": "scratch/loop_gemm_repro.py (--mode loop)",
+      "configuration": "Proven GEMM body with mainloop+epilogue wrapped in cutlass.range(1); TMEM accumulator handle (tmem.retrieve_ptr + make_tmem_copy) bound OUTSIDE the loop and captured across scf.for boundary",
+      "outcome": "ICE",
+      "fault_signature": "DSLRuntimeError: ICE — make_tmem_copy atom handle captured across scf.for boundary; same materialization legalization failure as incB2 bisect series",
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix.sh (results/repro_loop.json); no JSON artifact. Outcome known from session: this is the minimal repro of the exact fault seen in bisect-0/1/2."
+    },
+    {
+      "id": "loop_gemm_loopfix",
+      "source_file": "scratch/loop_gemm_repro.py (--mode loopfix)",
+      "configuration": "Same cutlass.range(1) outer loop, but TMEM accumulator handle (tmem.retrieve_ptr + make_tmem_copy + epilogue setup) re-derived INSIDE the loop body; relinquish stays outside",
+      "outcome": "GO",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix.sh (results/repro_loopfix.json); no JSON artifact. Outcome known from session: this is the candidate fix that clears the ICE."
+    },
+    {
+      "id": "loop_gemm_straight2",
+      "source_file": "scratch/loop_gemm_repro.py (--mode straight2)",
+      "configuration": "Two complete tcgen05 GEMMs (each with full per-GEMM alloc+epilogue+free lifecycle) back-to-back in one kernel via cutlass.range_constexpr(2) — tests whether 2 independent full lifecycles per kernel are viable",
+      "outcome": "UNTESTED",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Kernel defined in scratch/loop_gemm_repro.py (mode=straight2); not included in any run_*.sh script that was executed. Project record records this as the decisive multi-GEMM test."
+    },
+    {
+      "id": "loop_tile_static",
+      "source_file": "scratch/loop_tile_repro.py (--mode static --L 4)",
+      "configuration": "In-loop local_tile + tma_partition re-derived inside cutlass.range_constexpr(4); L coord fixed at constant 0; tests whether in-loop tile/TMA derivation itself faults",
+      "outcome": "GO",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix2.sh (results/tile_static.json) and scratch/run_incb2_fix3.sh; no JSON artifact. range_constexpr unrolls the loop (no scf.for); epilogue copy atom stays in straight-line code."
+    },
+    {
+      "id": "loop_tile_dyn",
+      "source_file": "scratch/loop_tile_repro.py (--mode dyn --L 4)",
+      "configuration": "In-loop local_tile + tma_partition with loop variable `it` as L coord; cutlass.range_constexpr unrolls — no scf.for; dynamic-L TMA coord in unrolled body",
+      "outcome": "GO",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix2.sh and scratch/run_incb2_fix3.sh (results/tile_dyn.json). range_constexpr avoids scf.for; dynamic L coord inside unrolled body does NOT fault. The scf.for boundary is the fault root, not the dynamic coord itself."
+    },
+    {
+      "id": "loop_tile_hoist",
+      "source_file": "scratch/loop_tile_repro.py (--mode hoist --L 4)",
+      "configuration": "cutlass.range_constexpr outer loop (unrolled); make_* atoms hoisted outside; only views (local_tile, tma_partition, partition_C, zipped_divide) in-loop with dynamic L coord",
+      "outcome": "GO",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix3.sh (results/tile_hoist.json); no JSON artifact. Hoisted atoms + unrolled outer loop = GO."
+    },
+    {
+      "id": "incB2_bisect5_planned",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 5)",
+      "configuration": "Real _incb2_kernel G1-only path with in-loop TMEM handle idiom (loopfix applied); run_k1_incB2 function (box-untested)",
+      "outcome": "UNTESTED",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix.sh (results/k1_microgate_bisect5.json); no JSON artifact exists in results/ or box_out_bisect/. run_k1_incB2 remains BOX-UNTESTED as of 2026-07-02."
+    },
+    {
+      "id": "incB2_bisect6_nt1_planned",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 6, NT=1)",
+      "configuration": "Full fused chunk (G1+GA+round-trips) with in-loop handle idiom; NT=1 reverse carry",
+      "outcome": "UNTESTED",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix.sh (results/k1_microgate_bisect6_nt1.json); no JSON artifact."
+    },
+    {
+      "id": "incB2_bisect6_nt4_planned",
+      "source_file": "scratch/k1_microgate.py (mode=incB2, --bisect 6, NT=4)",
+      "configuration": "Full fused chunk with in-loop handle idiom; NT=4 multi-chunk reverse carry (the persistence test)",
+      "outcome": "UNTESTED",
+      "fault_signature": null,
+      "evidence": null,
+      "status_source": "session-record",
+      "note": "Planned in scratch/run_incb2_fix.sh (results/k1_microgate_bisect6_nt4.json); no JSON artifact."
+    }
+  ],
+  "root_cause": {
+    "statement": "The ICE (tmem_copy handle live across scf.for boundary) is caused by the kernel's OWN TMEM lifecycle: the TMEM accumulator handle (tmem.retrieve_ptr + tcgen05.make_tmem_copy) is bound OUTSIDE the cutlass.range() loop and captured as an SSA value across the scf.for region boundary. The MLIR lowering fails to legalize the materialization from tmem_load atom to tiled_copy when that value crosses a scf.for/scf.yield boundary. This is NOT a DSL wall: the same pinned cutlass-dsl 4.5.2 wheel contains mamba2_ssd.py, which runs 4 tcgen05 MMAs per kernel including an inter-chunk recurrence via ONE alloc + static per-accumulator column offsets + ONE relinquish at the end of the entire kernel. Our bisect matrix never varied per-accumulator TMEM offsets — all bisect variants allocated a single 512-column block and used a single accumulated result, so the offset-partition approach was never tested.",
+    "evidence_for_nvidia_precedent": "nvidia-cutlass-dsl==4.5.2 wheel ships mamba2_ssd.py with 4 tcgen05 MMAs per kernel using one alloc + static column offsets + one relinquish; this is the pattern to emulate",
+    "fix_direction": "loopfix idiom (re-derive TMEM handle INSIDE loop body) clears the ICE on the decoupled gemm repro (session-record); ultimate fix for run_k1_incB2 is one alloc + per-accumulator offset partition + one relinquish (matching mamba2_ssd.py)",
+    "next_probe": {
+      "description": "Box burst 1: (a) verify libcute_dsl_runtime.so md5 matches known-good 4.5.2 wheel (rules out silent .so mismatch, task #3259); (b) two-GEMM TMEM-offset probe: single alloc(512), two GEMMs using accumulator at column offsets 0 and 64 respectively, distinct mbarriers, one relinquish at kernel end; test in three sub-modes: independent (no data dependency between GEMMs), dependent (GEMM-2 reads GEMM-1 accumulator), looped (both inside cutlass.range(nt)). GO on any sub-mode = confirms the offset-partition route is viable for run_k1_incB2.",
+      "script_to_write": "scratch/loop_gemm_offset_repro.py"
+    }
+  },
+  "discrepancies": [
+    {
+      "claim": "bisect-3 and bisect-4 ruled out in gdn2_bwd_dhu.py docstring (line 829-830)",
+      "recorded": "Both listed as 'still SIGSEGV' in the docstring comment",
+      "actual_evidence": "No JSON artifact for bisect-3 or bisect-4 exists in box_out_bisect/ or results/. The docstring records the author's intent/expectation, not a measured outcome. Status is UNTESTED per artifact record."
+    },
+    {
+      "claim": "bisect-5 and bisect-6 (the loopfix applied to real kernel) described as next steps in run_incb2_fix.sh",
+      "recorded": "run_incb2_fix.sh planned results/k1_microgate_bisect5.json and bisect6_nt1/nt4.json",
+      "actual_evidence": "None of these files exist. These were planned but not executed or not synced back."
+    },
+    {
+      "claim": "loop_gemm_repro and loop_tile_repro outcomes referenced in project memory as GO/ICE/GO",
+      "recorded": "session-record only",
+      "actual_evidence": "No results/repro_*.json or results/tile_*.json files exist (glob confirms). All outcomes for these probes are session-record only."
+    }
+  ]
+}

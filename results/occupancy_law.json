@@ -1,0 +1,278 @@
+{
+  "schema": "occupancy_law v1",
+  "sm_count": {
+    "value": 148,
+    "source": "NVIDIA B200 product brief (2024); not recorded in results/*.json"
+  },
+  "serial_programs_formula": {
+    "forward_chunked_scan": "batch * ceil(width / 64)  [block_d=min(64,next_pow2(D))=64 for D>=64]",
+    "backward_selective_scan": "batch * ceil(width / 64)  [block_d=min(64,max(16,2048//next_pow2(N)))=64 at N=16]",
+    "fused_block_backward": "batch * ceil(width / 64)  [block_d=min(64,next_pow2(D))=64 for D>=64]"
+  },
+  "fit": {
+    "rows_n": 7,
+    "serial_programs_range": [
+      4,
+      512
+    ],
+    "t_serial_ms_range": [
+      7.331,
+      14.704
+    ],
+    "t_chunk_ms_range": [
+      0.777,
+      15.472
+    ],
+    "serial_flat_evidence": {
+      "under_sm_rows": 6,
+      "over_sm_rows": 1,
+      "cv_under_sm": 0.1702,
+      "cv_over_sm": 0.0,
+      "note": "CV (std/mean) of t_serial for rows with serial_programs < SM vs >= SM; low CV under-SM supports latency-bound flatness claim"
+    },
+    "chunk_scaling": {
+      "model": "t_chunk ~ slope * serial_programs (OLS through origin, fixed L=16384)",
+      "slope_ms_per_program": 0.030794,
+      "r2": 0.9878
+    },
+    "crossover_programs": 502.6,
+    "crossover_over_sm": 3.396,
+    "speedup_at_each_row": [
+      {
+        "serial_programs": 4,
+        "speedup": 9.432
+      },
+      {
+        "serial_programs": 16,
+        "speedup": 10.314
+      },
+      {
+        "serial_programs": 32,
+        "speedup": 8.141
+      },
+      {
+        "serial_programs": 64,
+        "speedup": 5.264
+      },
+      {
+        "serial_programs": 64,
+        "speedup": 5.049
+      },
+      {
+        "serial_programs": 128,
+        "speedup": 2.994
+      },
+      {
+        "serial_programs": 512,
+        "speedup": 0.95
+      }
+    ]
+  },
+  "claim_3_3x": {
+    "claimed_crossover_programs": 488.4,
+    "assessment": "consistent: fitted 3.40x vs claimed 3.3x (within 15%)"
+  },
+  "validation": {
+    "n_shapes": 178,
+    "accuracy": 0.9157,
+    "correct": 163,
+    "per_op": {
+      "forward_chunked_scan": {
+        "correct": 49,
+        "total": 60,
+        "accuracy": 0.8167
+      },
+      "backward_selective_scan": {
+        "correct": 58,
+        "total": 59,
+        "accuracy": 0.9831
+      },
+      "fused_block_backward": {
+        "correct": 56,
+        "total": 59,
+        "accuracy": 0.9492
+      }
+    },
+    "wrong_shapes": [
+      {
+        "op": "forward_chunked_scan",
+        "batch": 1,
+        "seq_len": 512,
+        "width": 256,
+        "serial_programs": 4,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.943
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 1,
+        "seq_len": 512,
+        "width": 1024,
+        "serial_programs": 16,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.953
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 1,
+        "seq_len": 512,
+        "width": 2048,
+        "serial_programs": 32,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.905
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 1,
+        "seq_len": 512,
+        "width": 4096,
+        "serial_programs": 64,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.997
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 2,
+        "seq_len": 512,
+        "width": 256,
+        "serial_programs": 8,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.968
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 2,
+        "seq_len": 512,
+        "width": 1024,
+        "serial_programs": 32,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.913
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 2,
+        "seq_len": 512,
+        "width": 2048,
+        "serial_programs": 64,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.894
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 2,
+        "seq_len": 512,
+        "width": 4096,
+        "serial_programs": 128,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.8
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 8,
+        "seq_len": 512,
+        "width": 256,
+        "serial_programs": 32,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.924
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 8,
+        "seq_len": 512,
+        "width": 1024,
+        "serial_programs": 128,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.988
+      },
+      {
+        "op": "forward_chunked_scan",
+        "batch": 8,
+        "seq_len": 512,
+        "width": 2048,
+        "serial_programs": 256,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.806
+      },
+      {
+        "op": "backward_selective_scan",
+        "batch": 8,
+        "seq_len": 512,
+        "width": 2048,
+        "serial_programs": 256,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.926
+      },
+      {
+        "op": "fused_block_backward",
+        "batch": 8,
+        "seq_len": 512,
+        "width": 2048,
+        "serial_programs": 256,
+        "predicted": "chunk_parallel",
+        "actual": "serial",
+        "cp_over_serial": 0.885
+      },
+      {
+        "op": "fused_block_backward",
+        "batch": 8,
+        "seq_len": 2048,
+        "width": 4096,
+        "serial_programs": 512,
+        "predicted": "serial",
+        "actual": "chunk_parallel",
+        "cp_over_serial": 1.031
+      },
+      {
+        "op": "fused_block_backward",
+        "batch": 8,
+        "seq_len": 4096,
+        "width": 4096,
+        "serial_programs": 512,
+        "predicted": "serial",
+        "actual": "chunk_parallel",
+        "cp_over_serial": 1.045
+      }
+    ],
+    "baselines": {
+      "always_cp": {
+        "correct": 154,
+        "accuracy": 0.8652
+      },
+      "l_gt_512": {
+        "correct": 150,
+        "accuracy": 0.8427
+      }
+    }
+  },
+  "tmem_904": {
+    "status": "partial",
+    "evidence_count": 5,
+    "unique_required_limit_pairs": [
+      {
+        "required": 544,
+        "limit": 512
+      }
+    ],
+    "all_exceed_limit": true,
+    "note": "repro_904_report.json records Required/Limit pairs from compiler error strings but contains no per-config tile breakdown; f(tile,warps,stages) vs 512 cannot be validated against a pass/fail split from this data alone."
+  },
+  "caveats": [
+    "cp_occupancy.json has only 7 rows at fixed L=16384 and n_state=16; crossover interpolation spans a gap from 128 to 512 programs (4x range).",
+    "SM_COUNT=148 is from the NVIDIA B200 product brief; not queried at runtime in any results/*.json file (env_b200.json lacks multiProcessorCount).",
+    "The boundary sweep used n_state=16 for all ops; the serial block_d formula depends on n_state for backward_selective_scan (block_d=min(64,2048//block_n)); at n_state=16 block_d=64 as for forward, but at n_state=128 block_d=16 (serial_programs = 4x higher for same batch/width).",
+    "chunk-parallel speedup in the boundary sweep is measured relative to the shipped serial baseline (speedup~1.0), not wall-clock t_serial vs t_chunk; the cp_occupancy fit uses raw ms times. The two measurements are consistent in direction but not directly comparable in magnitude.",
+    "Baseline 'L>512 => chunk_parallel' is the shipped selector heuristic; accuracy below it does not necessarily indicate the law is worse \u2014 the shipped heuristic was tuned on a different data regime."
+  ]
+}

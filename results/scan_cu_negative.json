@@ -1,0 +1,66 @@
+{
+  "schema": "CUDA-core (scan.cu) route falsification: 2-D-over-d_state warp-split forward premise falsified on B200.",
+  "recorded": "2026-07-02",
+  "verdict": "NEGATIVE",
+  "status": "qualitative — exact numbers pending re-measurement",
+  "provenance": "box session record 2026-06-26; the bench script printed to stdout and the log was not retained",
+  "remeasure": "box burst 1 — rerun scratch/cuda_inc2_forward_bench.py with a JSON writer (add --out flag)",
+  "env": {
+    "gpu": "NVIDIA B200 (sm_100)",
+    "driver": "580.159.03",
+    "python": "3.12.3",
+    "torch": "2.11.0+cu128",
+    "env_artifact": "results/env_b200.json"
+  },
+  "bench_shapes": [
+    {"shape": "(8, 2048, 4096, 128)", "layout": "(B, L, D, N)"},
+    {"shape": "(2, 16384, 4096, 128)", "layout": "(B, L, D, N)"}
+  ],
+  "bench_script": "scratch/cuda_inc2_forward_bench.py",
+  "result": {
+    "relative_speed_vs_official_forward": "~0.18x (approx 5.6x slower than official mamba_ssm selective_scan_fn forward at both bench shapes)",
+    "our_kernels_tested": ["forward_scan (serial d_state)", "forward_scan_2d (2-D warp-split, warps=4/8/16/32)"],
+    "conclusion": "Both naive CUDA kernels measured approximately 5.6x slower than the official mamba_ssm selective_scan_fn forward at the N=128 bench shapes. The 2-D warp-split approach did not yield a speedup over the serial kernel at these shapes."
+  },
+  "structural_reason": "The naive kernels lack the two structural advantages of the official kernel: (a) d-major [B, D, L] memory layout (our kernels use [B, L, D] which is L-major, causing non-coalesced d_state access at large D), and (b) kNItems time-tiling (the official kernel tiles L in registers, amortizing global memory traffic per thread). These are the real levers for competitive scan performance at large D and N.",
+  "kernel_inventory": {
+    "source_file": "src/flash_mamba_rl/kernels/cuda/scan.cu",
+    "kernels": [
+      {
+        "name": "forward_scan",
+        "entry_point": "forward_scan_kernel",
+        "definition_line": 59,
+        "binding_line": 621,
+        "description": "SISO selective scan forward using cub::BlockScan; [B,L,D] layout, serial d_state",
+        "layout": "[B, L, D]"
+      },
+      {
+        "name": "forward_scan_2d",
+        "entry_point": "forward_scan_2d_kernel",
+        "definition_line": 145,
+        "binding_line": 639,
+        "description": "SISO forward, 2-D warp-split over d_state (warps=4/8/16/32); N<=128; statically-allocated y_red buffer",
+        "layout": "[B, L, D]"
+      },
+      {
+        "name": "forward_scan_tiled",
+        "entry_point": "forward_scan_tiled_kernel",
+        "definition_line": 217,
+        "binding_line": 672,
+        "description": "SISO forward, d-major [B,D,L] layout + kNItems time-tiling (the official kernel structure); N<=128",
+        "layout": "[B, D, L]"
+      },
+      {
+        "name": "backward_scan",
+        "entry_point": "backward_scan_kernel",
+        "definition_line": 342,
+        "binding_line": 704,
+        "description": "SISO selective scan backward, d-major layout; not benchmarked in inc2 forward bench",
+        "layout": "[B, D, L]"
+      }
+    ]
+  },
+  "backward_bench_script": "scratch/cuda_inc4_backward_bench.py",
+  "disposition": "scan.cu retained as an explicit archived negative. The falsification of the 2-D-over-d_state forward premise motivated the pivot to the tcgen05/cutlass-DSL GDN-2 native backward approach.",
+  "what_was_not_tested": "forward_scan_tiled (kNItems tiling, d-major) was not included in the BENCH_SHAPES comparison against the official forward at the time of the negative result. It represents the closer approximation to the official structure and should be included in any re-measurement."
+}
