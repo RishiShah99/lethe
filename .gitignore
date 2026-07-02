@@ -67,3 +67,10 @@ data/
 !.env.example
 credentials.json
 *.pem
+
+# Box-burst artifacts (deploy tars, pulled output dirs, kernel IO bundles)
+/*.tgz
+*_out/
+box_out_*/
+e2_config_seed/
+*_bundle_*.pt
