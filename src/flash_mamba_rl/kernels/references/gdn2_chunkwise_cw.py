@@ -115,6 +115,7 @@ class ChunkwiseForwardCW:
     leaves: tuple[Tensor, ...]
     chunk_len: int
     scale: float
+    skip_erase: bool = False
 
 
 def chunkwise_forward_cw(
@@ -129,6 +130,7 @@ def chunkwise_forward_cw(
     scale: float | None = None,
     initial_state: Tensor | None = None,
     use_qk_l2norm: bool = False,
+    skip_erase: bool = False,
 ) -> ChunkwiseForwardCW:
     """Channel-wise GDN-2 chunkwise forward, retaining all intermediates.
 
@@ -136,9 +138,17 @@ def chunkwise_forward_cw(
     log-decay (key axis); ``b``/``w`` are the erase/write gates. The graph is rooted at
     fresh leaves cloned from the inputs so ``autograd.grad`` can be called against both
     leaves and intermediates.
+
+    ``skip_erase`` is the ``b = 0`` (GLA/LA/SSD-class) fast path: with the erase gate
+    off, ``M = 0`` so ``T = I`` and ``wy = 0`` exactly — the M-einsum, the triangular
+    solve, and the ``wy @ h`` GEMM are skipped, ``u = w ⊙ v``, ``v_new = u``. Output
+    equality with the full path at ``b = 0`` is pinned by test (the b path leaves the
+    graph, so ``chunkwise_backward_cw`` rejects a skip-erase forward).
     """
     if q.dtype not in (torch.float32, torch.float64):
         raise ValueError(f"Expected float32/float64, got {q.dtype}")
+    if skip_erase and bool((b != 0).any()):
+        raise ValueError("skip_erase requires b == 0 everywhere")
     bsz, t, h, d_k = q.shape
     d_v = v.shape[-1]
     s = d_k**-0.5 if scale is None else scale
@@ -197,17 +207,24 @@ def chunkwise_forward_cw(
         # triangle that M/A actually read.
         decay_rel = torch.exp2(g2_c[..., :, None, :] - g2_c[..., None, :, :])  # [B,H,C,C,d_k]
 
-        bk = bc_c * kc_c  # erase-gated key  [B,H,C,d_k]
-        m = torch.einsum("...id,...sd,...isd->...is", bk, kc_c, decay_rel)
-        m = torch.where(strict_lower, m, torch.zeros_like(m))
-        t_mat = torch.linalg.solve_triangular(eye + m, eye, upper=False, unitriangular=True)
-        T_list.append(t_mat)
-
-        u_c = t_mat @ (wc_c * vc_c)  # T (w (.) v)   [B,H,C,d_v]
-        kbg = bk * gamma_c  # b (.) gamma (.) k       [B,H,C,d_k]
-        wy_c = t_mat @ kbg  # T (b gamma k)           [B,H,C,d_k]
         h_c = h_list[c]
-        v_new_c = u_c - wy_c @ h_c  # [B,H,C,d_v]
+        if skip_erase:
+            t_mat = eye.expand(bsz, h, chunk_len, chunk_len)
+            T_list.append(t_mat)
+            u_c = wc_c * vc_c
+            wy_c = torch.zeros(bsz, h, chunk_len, d_k, dtype=q.dtype, device=q.device)
+            v_new_c = u_c
+        else:
+            bk = bc_c * kc_c  # erase-gated key  [B,H,C,d_k]
+            m = torch.einsum("...id,...sd,...isd->...is", bk, kc_c, decay_rel)
+            m = torch.where(strict_lower, m, torch.zeros_like(m))
+            t_mat = torch.linalg.solve_triangular(eye + m, eye, upper=False, unitriangular=True)
+            T_list.append(t_mat)
+
+            u_c = t_mat @ (wc_c * vc_c)  # T (w (.) v)   [B,H,C,d_v]
+            kbg = bk * gamma_c  # b (.) gamma (.) k       [B,H,C,d_k]
+            wy_c = t_mat @ kbg  # T (b gamma k)           [B,H,C,d_k]
+            v_new_c = u_c - wy_c @ h_c  # [B,H,C,d_v]
 
         qg = qc_c * gamma_c
         o_inter = qg @ h_c
@@ -252,6 +269,7 @@ def chunkwise_forward_cw(
         leaves=tuple(leaves),
         chunk_len=chunk_len,
         scale=s,
+        skip_erase=skip_erase,
     )
 
 
@@ -308,6 +326,8 @@ def chunkwise_backward_cw(fwd: ChunkwiseForwardCW, do: Tensor) -> ChunkwiseBackw
     the retained chunk tensors), plus the B1 sub-map VJP for the WY-VJP partial grads,
     plus the closed-form B3 ``dv_local``.
     """
+    if fwd.skip_erase:
+        raise ValueError("chunkwise_backward_cw needs the full graph; rebuild without skip_erase")
     o = fwd.o
     leaves = fwd.leaves
 

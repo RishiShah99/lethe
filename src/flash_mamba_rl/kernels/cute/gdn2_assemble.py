@@ -730,6 +730,100 @@ def assemble_gdn2_backward_channelwise(
     return ChannelwiseGdn2Grads(dq=dq, dk=dk, dv=dv_full, dg=dg, db=db_full, dw=dw_full, dh0=dh0)
 
 
+@dataclass
+class NoEraseGrads:
+    """``b = 0`` (GLA/LA/SSD-class regime) assembly output.
+
+    The erase gate is off and is not a model parameter in this regime, so no ``db``
+    is produced (the mathematically nonzero db at b=0 belongs to GDN-2, not to these
+    families). ``dq``/``dk``/``dg`` [B,T,H,d_k]; ``dv``/``dw`` [B,T,H,d_v]; ``dh0``
+    [B,H,d_k,d_v].
+    """
+
+    dq: Tensor
+    dk: Tensor
+    dv: Tensor
+    dg: Tensor
+    dw: Tensor
+    dh0: Tensor
+
+
+def assemble_gdn2_backward_no_erase(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    w: Tensor,
+    do: Tensor,
+    *,
+    chunk_len: int | None = None,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+    k1_fn: K1FnCW | None = None,
+    create_graph: bool = False,
+) -> NoEraseGrads:
+    """The ``b = 0`` fast path: skip-T forward, no K#2, K#1 with ``wy = 0``.
+
+    At ``b = 0`` the WY machinery is exactly inert: ``M = 0`` so ``T = I`` (the
+    unitriangular solve never touches the diagonal) and ``wy = 0``, hence K#2's
+    ``dk2 = dg2 = 0`` and its only live contributions are ``dv = dv2 ⊙ w`` and
+    ``dw = dv2 ⊙ v`` — one elementwise op each. The K#1 contract is unchanged
+    (``wy`` operand fed exact zeros; its GEMM contributes exact zeros), so the
+    injected tcgen05 kernel slots in as-is. Grad equality with the full channel-wise
+    assembly at ``b = 0`` is pinned by test.
+    """
+    k1 = k1_fn if k1_fn is not None else k1_reverse_state_cw_ref
+    cl = pick_chunk_len(q.shape[1]) if chunk_len is None else chunk_len
+    b = torch.zeros_like(g)
+
+    fwd = chunkwise_forward_cw(
+        q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm, skip_erase=True
+    )
+    dq_b, dk_b, dg_b, _dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
+
+    do_c = _to_chunks(do, cl)
+    dv_local = fwd.A_qk.transpose(-1, -2) @ do_c
+    dht = torch.zeros_like(fwd.h_list[0])
+
+    def _det(t: Tensor) -> Tensor:
+        return t if create_graph else t.detach()
+
+    _dh, dv2, dh0 = k1(
+        _det(fwd.q),
+        _det(fwd.k),
+        _det(fwd.wy),
+        _det(fwd.g2),
+        _det(fwd.g_last),
+        _det(do_c),
+        _det(dv_local),
+        _det(dht),
+    )
+
+    dv = dv2 * _det(fwd.w_gate)
+    dw = dv2 * _det(fwd.v)
+
+    dq_n = _from_chunks(dq_b)
+    dk_n = _from_chunks(dk_b)
+    dg = _from_chunks(dg_b)
+    dv_full = _from_chunks(dv)
+    dw_full = _from_chunks(dw)
+
+    if use_qk_l2norm:
+        s = q.shape[-1] ** -0.5 if scale is None else scale
+        q_lf = q.detach().clone().requires_grad_(True)
+        k_lf = k.detach().clone().requires_grad_(True)
+        q_sn = _l2norm(q_lf) * s
+        k_nn = _l2norm(k_lf)
+        dq, dk = torch.autograd.grad(
+            (q_sn, k_nn), (q_lf, k_lf), (dq_n, dk_n), create_graph=create_graph
+        )
+    else:
+        s = q.shape[-1] ** -0.5 if scale is None else scale
+        dq, dk = dq_n * s, dk_n
+
+    return NoEraseGrads(dq=dq, dk=dk, dv=dv_full, dg=dg, dw=dw_full, dh0=dh0)
+
+
 def assembled_channelwise_gdn2_backward(
     q: Tensor,
     k: Tensor,

@@ -38,6 +38,18 @@ from flash_mamba_rl.kernels.cute.gdn2_assemble import (
     assembled_channelwise_gdn2_backward,
     assembled_scalar_gdn2_backward,
 )
+from flash_mamba_rl.kernels.cute.gdn2_family import (
+    gla_backward,
+    kda_backward,
+    la_backward,
+    ssd_backward,
+)
+from flash_mamba_rl.kernels.references.family_oracles import (
+    GlaGrads,
+    KdaGrads,
+    LaGrads,
+    SsdGrads,
+)
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
 SUPPORTED_DTYPES: tuple[torch.dtype, ...] = (torch.bfloat16, torch.float16, torch.float32)
@@ -157,6 +169,100 @@ def native_gdn2_backward(
         g,
         b,
         w,
+        do,
+        scale=scale,
+        use_qk_l2norm=use_qk_l2norm,
+        k1_fn=k1_cw,
+        k2_fn=k2_cw,
+    )
+
+
+def _family_dims_ok(q: Tensor, v: Tensor) -> bool:
+    """The channel-wise kernels' dim locks, shared by every family mode."""
+    return bool(
+        is_available(q.device)
+        and q.dtype in SUPPORTED_DTYPES
+        and q.shape[-1] == _KERNEL_D_K
+        and q.shape[1] % _KERNEL_CHUNK == 0
+        and v.shape[-1] in _KERNEL_D_V_CW
+    )
+
+
+def native_gla_backward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    do: Tensor,
+    *,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+) -> GlaGrads | None:
+    """GLA family mode through the tcgen05 kernels, or ``None`` if unavailable.
+
+    The no-erase modes ride the skip-T fast path — K#2 never launches; K#1 runs with
+    an exact-zero ``wy`` operand.
+    """
+    if not _family_dims_ok(q, v):
+        return None
+    k1_cw, _k2_cw = _load_box_kernels_cw()
+    return gla_backward(q, k, v, g, do, scale=scale, use_qk_l2norm=use_qk_l2norm, k1_fn=k1_cw)
+
+
+def native_la_backward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    do: Tensor,
+    *,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+) -> LaGrads | None:
+    """Plain linear-attention family mode, or ``None`` if unavailable."""
+    if not _family_dims_ok(q, v):
+        return None
+    k1_cw, _k2_cw = _load_box_kernels_cw()
+    return la_backward(q, k, v, do, scale=scale, use_qk_l2norm=use_qk_l2norm, k1_fn=k1_cw)
+
+
+def native_ssd_backward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    do: Tensor,
+    *,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+) -> SsdGrads | None:
+    """SSD-class family mode (``g`` [B, L, H]), or ``None`` if unavailable."""
+    if not _family_dims_ok(q, v):
+        return None
+    k1_cw, _k2_cw = _load_box_kernels_cw()
+    return ssd_backward(q, k, v, g, do, scale=scale, use_qk_l2norm=use_qk_l2norm, k1_fn=k1_cw)
+
+
+def native_kda_backward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    g: Tensor,
+    beta: Tensor,
+    do: Tensor,
+    *,
+    scale: float | None = None,
+    use_qk_l2norm: bool = True,
+) -> KdaGrads | None:
+    """KDA family mode (full WY machinery, both kernels), or ``None`` if unavailable."""
+    if not _family_dims_ok(q, v):
+        return None
+    k1_cw, k2_cw = _load_box_kernels_cw()
+    return kda_backward(
+        q,
+        k,
+        v,
+        g,
+        beta,
         do,
         scale=scale,
         use_qk_l2norm=use_qk_l2norm,
