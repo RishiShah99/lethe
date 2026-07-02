@@ -48,12 +48,46 @@ def _inputs(b: int, t: int, h: int, dtype: torch.dtype, dev: torch.device, seed:
     return tuple(cast(x) for x in (q, k, v, g, g_head, bg, wg, beta, do))
 
 
+def _env_fingerprint() -> dict[str, Any]:
+    # Burst-1 lesson: the failing capture matrix was confounded by an unrecorded env
+    # (cu13 .so swap + non-pristine restore). Every bench JSON now pins the DSL runtime
+    # bytes + the cuda-* package set so an env delta can never hide again.
+    import hashlib
+    import importlib.metadata as md
+    from pathlib import Path
+
+    fp: dict[str, Any] = {
+        "gpu": torch.cuda.get_device_name(0),
+        "torch": torch.__version__,
+    }
+    pkgs: dict[str, str] = {}
+    for dist in md.distributions():
+        name = (dist.metadata["Name"] or "").lower()
+        if any(s in name for s in ("cutlass", "cuda", "triton", "nvidia")):
+            pkgs[name] = dist.version
+    fp["packages"] = dict(sorted(pkgs.items()))
+    try:
+        import nvidia_cutlass_dsl
+
+        so = Path(nvidia_cutlass_dsl.__file__).parent / "lib" / "libcute_dsl_runtime.so"
+        fp["libcute_dsl_runtime_md5"] = hashlib.md5(so.read_bytes()).hexdigest()
+    except Exception:
+        fp["libcute_dsl_runtime_md5"] = None
+    return fp
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=str, default="results/gdn2_graph_bench.json")
     ap.add_argument("--trials", type=int, default=30, help="trials for graph + fla")
     ap.add_argument("--eager-trials", type=int, default=3, help="trials for eager ours (slow)")
+    ap.add_argument(
+        "--shapes", type=str, default="", help="comma list BxLxH (e.g. 1x512x4); default = all"
+    )
     args = ap.parse_args()
+    shapes = SHAPES
+    if args.shapes:
+        shapes = [tuple(int(x) for x in s.split("x")) for s in args.shapes.split(",")]
 
     report: dict[str, Any] = {"bench": "gdn2_graph_bench", "runs": []}
     if not torch.cuda.is_available():
@@ -67,10 +101,7 @@ def main() -> None:
     from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
     from flash_mamba_rl.verifier.timing import benchmark
 
-    report["env"] = {
-        "gpu": torch.cuda.get_device_name(0),
-        "torch": torch.__version__,
-    }
+    report["env"] = _env_fingerprint()
     k1_cw, k2_cw = _load_box_kernels_cw()
     dev = torch.device("cuda")
     dtype = torch.bfloat16
@@ -117,7 +148,7 @@ def main() -> None:
         bwd()
         return benchmark(bwd, (), warmup=10, trials=trials).median_ms
 
-    for b, t, h in SHAPES:
+    for b, t, h in shapes:
         label = f"B{b}xL{t}xH{h}"
         print(f"[graph-bench] {label} ...", flush=True)
         inp = _inputs(b, t, h, dtype, dev, seed=b * 100 + t)
@@ -130,7 +161,7 @@ def main() -> None:
             eager_run()  # warm/JIT
             row["eager_ms"] = benchmark(eager_run, (), warmup=1, trials=args.eager_trials).median_ms
         except Exception:
-            row["eager_err"] = traceback.format_exc(limit=2)
+            row["eager_err"] = traceback.format_exc()
 
         # graphed ours (build once, time pure replay)
         try:
@@ -140,7 +171,7 @@ def main() -> None:
                 graphed.replay_only, (), warmup=10, trials=args.trials
             ).median_ms
         except Exception:
-            row["graph_err"] = traceback.format_exc(limit=2)
+            row["graph_err"] = traceback.format_exc()
 
         # de-glue Level 1a: closed stage-B — parity vs the default path, then eager+graph time
         try:
@@ -162,12 +193,12 @@ def main() -> None:
                 graphed_c.replay_only, (), warmup=10, trials=args.trials
             ).median_ms
         except Exception:
-            row["closed_err"] = traceback.format_exc(limit=2)
+            row["closed_err"] = traceback.format_exc()
 
         try:
             row["fla_ms"] = bench_fla(inp, args.trials)
         except Exception:
-            row["fla_err"] = traceback.format_exc(limit=2)
+            row["fla_err"] = traceback.format_exc()
 
         if "graph_ms" in row and "fla_ms" in row:
             row["graph_over_fla"] = row["graph_ms"] / row["fla_ms"]
