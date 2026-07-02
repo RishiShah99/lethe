@@ -82,25 +82,33 @@ _rc "d" "$?"
 # nt=1 = single acquire/commit cycle (equivalent to the proven straight-line body);
 # nt=4 adjudicates multi-cycle pipeline phase behavior; nt=8 probes compile-time
 # growth (record wall time from the logs; nt=32 only if it extrapolates sanely).
+_S0=$SECONDS
 _step "e1: L3 v3 scalar nt=1"
-timeout 1800 bash -c "$PP $L2FLAG time $PY scratch/k1_incb2_v3_unroll.py --mode scalar --nt 1 \
+timeout 1800 bash -c "$PP $L2FLAG $PY scratch/k1_incb2_v3_unroll.py --mode scalar --nt 1 \
     --out $OUTDIR/k1_incb2_v3_scalar_nt1.json" > "$OUTDIR/k1_incb2_v3_scalar_nt1.log" 2>&1
 _rc "e1" "$?"
+echo "  elapsed_s=$((SECONDS - _S0))"
 
+_S0=$SECONDS
 _step "e2: L3 v3 scalar nt=4"
-timeout 3600 bash -c "$PP $L2FLAG time $PY scratch/k1_incb2_v3_unroll.py --mode scalar --nt 4 \
+timeout 3600 bash -c "$PP $L2FLAG $PY scratch/k1_incb2_v3_unroll.py --mode scalar --nt 4 \
     --out $OUTDIR/k1_incb2_v3_scalar_nt4.json" > "$OUTDIR/k1_incb2_v3_scalar_nt4.log" 2>&1
 _rc "e2" "$?"
+echo "  elapsed_s=$((SECONDS - _S0))"
 
+_S0=$SECONDS
 _step "e3: L3 v3 cw nt=4"
-timeout 3600 bash -c "$PP $L2FLAG time $PY scratch/k1_incb2_v3_unroll.py --mode cw --nt 4 \
+timeout 3600 bash -c "$PP $L2FLAG $PY scratch/k1_incb2_v3_unroll.py --mode cw --nt 4 \
     --out $OUTDIR/k1_incb2_v3_cw_nt4.json" > "$OUTDIR/k1_incb2_v3_cw_nt4.log" 2>&1
 _rc "e3" "$?"
+echo "  elapsed_s=$((SECONDS - _S0))"
 
+_S0=$SECONDS
 _step "e4: L3 v3 cw nt=8 (compile-scale probe; only meaningful if e3 GO)"
-timeout 3600 bash -c "$PP $L2FLAG time $PY scratch/k1_incb2_v3_unroll.py --mode cw --nt 8 \
+timeout 3600 bash -c "$PP $L2FLAG $PY scratch/k1_incb2_v3_unroll.py --mode cw --nt 8 \
     --out $OUTDIR/k1_incb2_v3_cw_nt8.json" > "$OUTDIR/k1_incb2_v3_cw_nt8.log" 2>&1
 _rc "e4" "$?"
+echo "  elapsed_s=$((SECONDS - _S0))"
 
 # ── f. promoted-L2 module re-gate (src import path) ──────────────────────────
 _step "f: k1_l2_epilogue gate via promoted src module"
