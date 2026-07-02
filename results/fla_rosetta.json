@@ -1,0 +1,70 @@
+{
+  "verdict": "MATCH \u2014 A_no_l2norm (max_scale_rel=6.02e-07)",
+  "mappings": [
+    {
+      "mapping": "A_no_l2norm",
+      "scale_rel": {
+        "dq": 4.226655221373221e-07,
+        "dk": 5.489670229508192e-07,
+        "dv": 4.042973955620255e-07,
+        "dg": 6.017580176376214e-07,
+        "db": 5.733683678954549e-07,
+        "dw": 4.747679724914633e-07
+      },
+      "max_scale_rel": 6.017580176376214e-07,
+      "win": true
+    },
+    {
+      "mapping": "B_with_l2norm",
+      "scale_rel": {
+        "dq": 1.0,
+        "dk": 1.0,
+        "dv": 1.0,
+        "dg": 1.0,
+        "db": 1.0,
+        "dw": 1.0
+      },
+      "max_scale_rel": 1.0,
+      "win": false
+    },
+    {
+      "mapping": "C_bw_scaled_x2",
+      "scale_rel": {
+        "dq": 0.999995231628418,
+        "dk": 0.9999991655349731,
+        "dv": 0.9999953508377075,
+        "dg": 0.999998927116394,
+        "db": 0.9999982118606567,
+        "dw": 0.9999913573265076
+      },
+      "max_scale_rel": 0.9999991655349731,
+      "win": false
+    },
+    {
+      "mapping": "D_prenorm_scale1",
+      "scale_rel": {
+        "dq": 1.0220930590776334e-07,
+        "dk": 1.1086840601137737e-07,
+        "dv": 1.0853727872017771e-07,
+        "dg": 1.2454454179078311e-07,
+        "db": 1.446379940261977e-07,
+        "dw": 9.843012804822138e-08
+      },
+      "max_scale_rel": 1.446379940261977e-07,
+      "win": true
+    }
+  ],
+  "inputs": {
+    "B": 2,
+    "T": 32,
+    "H": 3,
+    "dk": 16,
+    "dv": 16,
+    "seed": 7
+  },
+  "fla_source": {
+    "url": "https://raw.githubusercontent.com/fla-org/flash-linear-attention/main/fla/ops/gdn2/naive.py",
+    "commit": "dd7867d261fbe2f30868e0b62bf6963e9ea38e9e",
+    "date": "2026-06-03"
+  }
+}
