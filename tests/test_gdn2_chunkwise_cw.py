@@ -2,7 +2,7 @@
 
 The channel-wise decomposition (per-channel decay; erase b on the key axis, write w on
 the value axis) must (a) reproduce the GDN-2 oracle forward and its autograd grads
-bit-for-bit in fp64, (b) collapse to the scalar ``gdn2_chunkwise`` path when g is
+to machine precision in fp64, (b) collapse to the scalar ``gdn2_chunkwise`` path when g is
 channel-constant and b = w = beta (the Phase-3 -> Phase-2 reduction kill-gate), and
 (c) satisfy the channel-wise B4 recurrence the K#1 kernel implements. CPU only.
 """

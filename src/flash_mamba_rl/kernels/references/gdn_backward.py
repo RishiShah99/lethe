@@ -27,8 +27,9 @@ GDN-2 -> KDA SELF-CONSISTENCY (built-in correctness test)
 ---------------------------------------------------------
 Setting ``b = w = beta · 1`` gives ``v_new = beta·v - beta·(k^T S) = beta·(v - k^T S)``,
 which is exactly the scalar gated delta rule (fla ``naive_recurrent_gated_delta_rule``).
-``reference_gdn2_forward`` with constant ``b``/``w`` must equal that scalar path bit-for-bit
-(machine precision). This is the cheapest GO/NO-GO check for any GDN-2 kernel.
+``reference_gdn2_forward`` with constant ``b``/``w`` must equal that scalar path to machine
+precision (fp64 allclose; op order differs). This is the cheapest GO/NO-GO check for any
+GDN-2 kernel.
 
 SHAPES (crown target H == HV, i.e. no GVA; see PROJECT_PLAN §6)
 --------------------------------------------------------------

@@ -5,7 +5,7 @@
 * The full assembly (default refs) reproduces the token-serial GDN-2 oracle's six
   per-channel gradients end-to-end, through the L2-norm VJP.
 * The ``b = w = beta``, g-channel-constant reduction collapses to the Phase-2 scalar
-  assembly bit-for-bit (the Phase-3 -> Phase-2 kill-gate). CPU only.
+  assembly to machine precision (the Phase-3 -> Phase-2 kill-gate). CPU only.
 """
 
 from __future__ import annotations

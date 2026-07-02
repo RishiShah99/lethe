@@ -11,7 +11,7 @@ hand-VJP of the same forward). The B1 sub-map is differentiated on its own so th
 *partial* grads (dk2, dg2 — accumulated with B5's in B7) come out cleanly.
 
 Scope = Phase 2: scalar decay ``g`` (one log-decay per token) and gates ``b = w = beta``.
-This reduces the GDN-2 oracle (``references/gdn_backward.py``) bit-for-bit when its ``g`` is
+This reduces the GDN-2 oracle (``references/gdn_backward.py``) to machine precision when its ``g`` is
 fed channel-constant and ``b/w`` are ``beta`` broadcast — the regime the Hopper kill-gate
 already verified to machine precision. Phase 3 lifts ``beta`` to per-channel ``b∈[0,1]^{d_k}``
 / ``w∈[0,1]^{d_v}`` and channel-wise decay.

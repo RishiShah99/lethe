@@ -14,7 +14,7 @@ decay_end = exp2(g_last - g2) and gamma = exp2(g2) are now ``[C, d_k]``; exp2(g_
 positions that contribute, so the pre-scaled GEMM operands stay in range (no secondary
 normalization needed at this host-orchestrated step). Ground truth =
 ``kernels.cute.gdn2_assemble.k1_reverse_state_cw_ref`` (validated to fp64 by
-``tests/test_gdn2_assemble_cw.py``); the math holds bit-for-bit before any box spend.
+``tests/test_gdn2_assemble_cw.py``); the math holds to machine precision before any box spend.
 
 Step 1 (THIS): host-orchestrated — the two GEMMs/chunk route through the proven (128,64,128)
 config via :func:`gdn2_bwd_wy._mm_tc` (M-pad to 128, K-pad to 128, N split into 64-tiles, so

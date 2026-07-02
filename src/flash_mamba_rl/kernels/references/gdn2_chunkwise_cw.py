@@ -21,7 +21,7 @@ inclusive within-chunk cumsum of g; ``<= 0`` on the strict-lower triangle, so bo
     h_next = Diag(gamma_C) h + (k (.) gamma_C/gamma)^T @ v_new
 
 Setting ``g`` channel-constant and ``b = w = beta`` collapses every per-channel quantity to
-the scalar form, so this reference reproduces ``gdn2_chunkwise`` bit-for-bit in that regime
+the scalar form, so this reference reproduces ``gdn2_chunkwise`` to machine precision in that regime
 (the Phase-3 -> Phase-2 reduction kill-gate) and the token-serial GDN-2 oracle
 (``references/gdn_backward``) end-to-end.
 

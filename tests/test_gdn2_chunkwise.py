@@ -1,7 +1,7 @@
 """Chunkwise GDN (Phase-2) reference vs the verified token-serial oracle.
 
 The chunkwise decomposition (T/u/w/v_new + inter-chunk scan) must reproduce the
-oracle forward and its autograd grads bit-for-bit (fp64), and the exposed
+oracle forward and its autograd grads to machine precision (fp64), and the exposed
 backward intermediates must satisfy the B4 recurrence the K#1 kernel implements
 and the B1/B6 path-completeness the K#2 kernel implements. CPU only.
 """

@@ -25,7 +25,7 @@ assembly is exact in fp64 on CPU. On a Blackwell box the caller passes the compi
 tcgen05 kernels — identical signatures, identical assembly.
 
 Scope = scalar GDN (g scalar per token, ``b = w = beta``). This reduces the GDN-2
-oracle bit-for-bit when ``g`` is channel-constant and ``b``/``w`` are ``beta``
+oracle to machine precision (fp64) when ``g`` is channel-constant and ``b``/``w`` are ``beta``
 broadcast; the per-channel ``grad_g``/``grad_b``/``grad_w`` are then validated by
 channel-sum (only the sum is recoverable from a scalar kernel). Phase 3 lifts the
 gates to per-channel.
@@ -198,7 +198,8 @@ def _k2_beta_split(
 
     With ``b = w = beta``, the v-side ``bv = beta*v`` is the write gate ``w`` and the
     k-side (``bgk = beta*gamma*k`` plus the ``M = beta*ratio*kk`` term) is the erase
-    gate ``b``. Verified bit-for-bit against the oracle's separate ``grad_b``/``grad_w``.
+    gate ``b``. Verified to machine precision against the oracle's separate
+    ``grad_b``/``grad_w``.
     Returns ``(db_erase, dw_write)`` head-major chunked.
     """
     b, h, nt, c, _ = k.shape

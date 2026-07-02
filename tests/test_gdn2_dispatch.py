@@ -2,7 +2,7 @@
 
 Proves the Phase-2 integration boundary is correct *before* the kernel exists:
 the candidate ``gdn2_backward`` falls back to the oracle-faithful eager path and
-matches ``reference_gdn2_backward`` bit-for-bit in fp64.
+matches ``reference_gdn2_backward`` to machine precision in fp64.
 """
 
 from __future__ import annotations
