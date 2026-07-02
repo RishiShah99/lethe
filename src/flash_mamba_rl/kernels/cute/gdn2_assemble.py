@@ -627,6 +627,70 @@ def _stage_b_vjp_cw(
     return dq_b, dk_b, dg_b, dwy, du, dh0
 
 
+def _stage_b_vjp_cw_closed(
+    fwd: ChunkwiseForwardCW,
+    do: Tensor,
+    dh: Tensor,
+    dv2: Tensor,
+    *,
+    create_graph: bool = False,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Closed-form channel-wise Stage-B VJP — chunk-local, batched over [B·H·NT].
+
+    Replaces the autograd recurrence of ``_stage_b_vjp_cw``: all cross-chunk gradient
+    flow is already carried by K#1's outputs — ``dh[ci] = dL/d(exit state of chunk ci)``
+    (the output the assembly previously discarded) and ``dv2 = dL/dv_new`` (total) —
+    so every remaining term is per-chunk arithmetic with no sequential dependence:
+
+        da_qk = tril(do @ v_new^T, 0)      dq = (do @ h^T) (.) gamma + da_qk q-side
+        dk    = da_qk k-side + (v_new @ dh^T) (.) decay_end
+        dwy   = -dv2 @ h^T                 du = dv2 (returned by K#1 directly)
+        dg2   = LN2 * [(do @ h^T) (.) q (.) gamma + q (.) dq_intra - k (.) dk_intra
+                       - (v_new @ dh^T) (.) k (.) decay_end]  (+ last-row dg_last terms)
+
+    where the two intra einsums are shared with dq/dk (nothing extra materialized
+    beyond ``decay_rel`` [B,H,NT,C,C,d_k]). Returns ``(dq_B, dk_B, dg_B, dwy)`` in
+    ``_stage_b_vjp_cw``'s spaces (q/k pre-normed chunked; g raw per-token, key axis);
+    ``du`` is ``dv2`` and ``dh0`` is K#1's third output. fp64 equality with the
+    autograd Stage B is pinned by test.
+    """
+
+    def _det(t: Tensor) -> Tensor:
+        return t if create_graph else t.detach()
+
+    do_c = _to_chunks(_det(do), fwd.chunk_len)
+    h_entry = _det(fwd.h[:, :, :-1])  # [B,H,NT,d_k,d_v] chunk ENTRY states
+    gamma = _det(fwd.gamma)
+    g2, g_last = _det(fwd.g2), _det(fwd.g_last)
+    q, k, v_new = _det(fwd.q), _det(fwd.k), _det(fwd.v_new)
+    dh, dv2 = _det(dh), _det(dv2)
+    c = fwd.chunk_len
+
+    lower_incl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=do.device), 0)
+    decay_rel = torch.exp2(g2[..., :, None, :] - g2[..., None, :, :])  # [B,H,NT,C,C,d_k]
+    decay_end = torch.exp2(g_last[..., None, :] - g2)  # [B,H,NT,C,d_k]
+
+    dqg = do_c @ h_entry.transpose(-1, -2)  # [B,H,NT,C,d_k]
+    da_qk = do_c @ v_new.transpose(-1, -2)
+    da_qk = torch.where(lower_incl, da_qk, torch.zeros_like(da_qk))
+
+    dq_intra = torch.einsum("...is,...sd,...isd->...id", da_qk, k, decay_rel)
+    dk_intra = torch.einsum("...is,...id,...isd->...sd", da_qk, q, decay_rel)
+    dk_dec = v_new @ dh.transpose(-1, -2)  # [B,H,NT,C,d_k]
+
+    dq_b = dqg * gamma + dq_intra
+    dk_b = dk_intra + dk_dec * decay_end
+    dwy = -dv2 @ h_entry.transpose(-1, -2)
+
+    dde = dk_dec * k * decay_end
+    dg2 = LN2 * (dqg * q * gamma + q * dq_intra - k * dk_intra - dde)
+    dg_last = LN2 * (torch.exp2(g_last) * (dh * h_entry).sum(-1) + dde.sum(-2))  # [B,H,NT,d_k]
+    dg2 = dg2 + torch.cat([torch.zeros_like(dg2[..., :-1, :]), dg_last.unsqueeze(-2)], dim=-2)
+    dg_b = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2, [-2]), -2), [-2])
+
+    return dq_b, dk_b, dg_b, dwy
+
+
 @dataclass
 class ChannelwiseGdn2Grads:
     """Channel-wise GDN-2 backward output: six full channel-wise grads + dh0.
@@ -660,6 +724,7 @@ def assemble_gdn2_backward_channelwise(
     k1_fn: K1FnCW | None = None,
     k2_fn: K2FnCW | None = None,
     create_graph: bool = False,
+    stage_b_closed: bool = False,
 ) -> ChannelwiseGdn2Grads:
     """Assemble the six channel-wise GDN-2 grads from K#1 + K#2 + supporting torch stages.
 
@@ -668,6 +733,8 @@ def assemble_gdn2_backward_channelwise(
     (exact in fp64); pass the compiled tcgen05 kernels on a Blackwell box. The two-stage
     splice is identical to the scalar path; the erase/write grads come straight from K#2's
     separate ``db``/``dw`` (no beta split), and ``dg`` sums the B1 and stage-B parts.
+    ``stage_b_closed`` swaps the autograd Stage B for the chunk-local closed form fed by
+    K#1's ``dh`` (the de-glue lever; fp64-pinned equal).
     """
     k1 = k1_fn if k1_fn is not None else k1_reverse_state_cw_ref
     k2 = k2_fn if k2_fn is not None else k2_wy_vjp_cw_ref
@@ -676,7 +743,6 @@ def assemble_gdn2_backward_channelwise(
     fwd = chunkwise_forward_cw(
         q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
     )
-    dq_b, dk_b, dg_b, dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
 
     do_c = _to_chunks(do, cl)
     dv_local = fwd.A_qk.transpose(-1, -2) @ do_c
@@ -685,7 +751,7 @@ def assemble_gdn2_backward_channelwise(
     def _det(t: Tensor) -> Tensor:
         return t if create_graph else t.detach()
 
-    _dh, dv2, dh0 = k1(
+    dh_k1, dv2, dh0 = k1(
         _det(fwd.q),
         _det(fwd.k),
         _det(fwd.wy),
@@ -695,6 +761,13 @@ def assemble_gdn2_backward_channelwise(
         _det(dv_local),
         _det(dht),
     )
+
+    if stage_b_closed:
+        dq_b, dk_b, dg_b, dwy = _stage_b_vjp_cw_closed(
+            fwd, do, dh_k1, dv2, create_graph=create_graph
+        )
+    else:
+        dq_b, dk_b, dg_b, dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
 
     dk2, dv, db, dw, dg2 = k2(
         _det(fwd.k),
