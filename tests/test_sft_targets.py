@@ -202,6 +202,20 @@ class TestTritonVariantCpuFallback:
         for g, w in zip(got, want, strict=True):
             torch.testing.assert_close(g, w, rtol=1e-5, atol=1e-6)
 
+    def test_scan_targets_enforce_chunk_divisibility(self, stub_triton: None) -> None:
+        # The triton scan SFT targets must raise on a non-dividing chunk_size on
+        # the CPU-fallback path too — matching the eager variants, the fused
+        # triton siblings, and the production ops (else the warm-start label
+        # teaches a looser contract than the op it stands in for).
+        inputs = _scan_inputs()  # seq_len = 64
+        fwd = _load_triton_target("forward_chunked_scan")
+        with pytest.raises(ValueError, match="divisible"):
+            fwd.forward_chunked_scan(*inputs, chunk_size=48)
+        bwd = _load_triton_target("backward_selective_scan")
+        dy = torch.randn(2, 64, 8, generator=torch.Generator().manual_seed(7))
+        with pytest.raises(ValueError, match="divisible"):
+            bwd.backward_selective_scan(*inputs, dy, chunk_size=48)
+
 
 def test_triton_variants_parse_and_self_contained() -> None:
     # Triton is absent on the dev box, so the CUDA targets are pinned at the

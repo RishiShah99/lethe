@@ -348,6 +348,9 @@ def backward_selective_scan(
     ``(grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)`` whose elements
     match the corresponding input shapes and dtypes.
     """
+    seq_len = u.shape[1]
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
     # Device residency: non-CUDA (and fp64) inputs take the eager path.
     if not (u.is_cuda and u.dtype in (torch.float32, torch.float16, torch.bfloat16)):
         return _backward_eager(u, delta, A, B, C, D, dy)
