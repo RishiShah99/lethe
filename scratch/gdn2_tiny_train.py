@@ -4,9 +4,12 @@ A 2-layer toy sequence model (embed -> [GDN-2 mixer + MLP] x2 -> head) trained o
 deterministic synthetic delayed-copy task (delay=1: predict the previous token).
 Three arms selectable via ``--arm``:
 
-  native  — (default) native dispatch; on B200 the tcgen05 assembly runs via gdn2_backward
-  fla     — fla.ops.gdn2.chunk_gdn2 if importable (box-only); skips gracefully otherwise
-  eager   — monkeypatches is_available to False, forcing the oracle-faithful eager path
+  native   — (default) native dispatch; on B200 the tcgen05 assembly runs via gdn2_backward
+  fla      — fla.ops.gdn2.chunk_gdn2 if importable (box-only); skips gracefully otherwise
+  eager    — monkeypatches is_available to False, forcing the oracle-faithful eager path
+  assembly — routes backward through assembled_channelwise_gdn2_backward with the
+             pure-torch kernel refs (CPU-runnable): the native path's exact glue minus
+             the tcgen05 GEMMs. The desk gate for the drifted-regime NaN fix.
 
 Envelope (enforced only for native arm on CUDA):
   d_k=128, d_v=64, L%64==0 (default L=256, B=4, H=2), dtype bf16
@@ -189,6 +192,19 @@ def train(
         _orig_is_available = _gdn2_shim.is_available
         _gdn2_shim.is_available = lambda *_a, **_kw: False  # type: ignore[assignment]
 
+    # -----------------------------------------------------------------------
+    # Arm: assembly (CPU-runnable native glue; kernel refs stand in for tcgen05)
+    # -----------------------------------------------------------------------
+    _orig_backward = None
+    if arm == "assembly":
+        import flash_mamba_rl.kernels.ops.gdn_layer as _layer
+        from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+            assembled_channelwise_gdn2_backward,
+        )
+
+        _orig_backward = _layer.gdn2_backward
+        _layer.gdn2_backward = assembled_channelwise_gdn2_backward  # type: ignore[assignment]
+
     try:
         torch.manual_seed(seed)
         model = ToyModel(vocab, d_model, nheads, d_k, d_v, n_layers, run_dtype).to(device)
@@ -234,6 +250,10 @@ def train(
             import flash_mamba_rl.kernels.cute.gdn2_backward as _gdn2_shim2
 
             _gdn2_shim2.is_available = _orig_is_available  # type: ignore[assignment]
+        if _orig_backward is not None:
+            import flash_mamba_rl.kernels.ops.gdn_layer as _layer2
+
+            _layer2.gdn2_backward = _orig_backward  # type: ignore[assignment]
 
     initial = loss_curve[0]
     final = loss_curve[-1]
@@ -274,7 +294,7 @@ def train(
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--arm", choices=["native", "fla", "eager"], default="native")
+    p.add_argument("--arm", choices=["native", "fla", "eager", "assembly"], default="native")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--batch", type=int, default=None)
