@@ -821,6 +821,10 @@ if _HAVE:
     # BOX STATUS (2026-06-30, B200): COMPILES (cute.compile succeeds); FAILS at launch with a hard
     # host SIGSEGV (core dumped) that survives CUDA_LAUNCH_BLOCKING=1 and is NOT caught by the
     # microgate try/except → it fires inside ex(*args) (the launch), not a recoverable CUDA error.
+    # REFRAME (2026-07-03 desk, v3 adversarial review): ex(*args) re-passed the 5 trailing
+    # Constexprs the executor DROPS from the runtime signature → pointer-slot shift → host
+    # SIGSEGV regardless of kernel content — which is why EVERY bisect value crashed alike.
+    # The launcher call is now ex(*args[:16]); the kernel-side bisect matrix is unadjudicated.
     # BISECTED via the `bisect` Constexpr knob (--bisect {0,1,2,3,4}; const_expr-guarded so each
     # value compiles only the taken branch). The lever-B batched GEMM is GO=True on the same box
     # (toolchain healthy). RULED OUT — all of these still SIGSEGV at NT=1:
@@ -981,15 +985,20 @@ if _HAVE:
                 tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
                 for _kt in cutlass.range(cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1):
                     ab_e = ab_prod.acquire_and_advance()
+                    # gmem K coordinate is literal 0, NOT ab_e.count: the K-rest extent is
+                    # statically 1 and count grows monotonically across the 2·nt unrolled
+                    # mainloops on the one persistent ab pipeline (mamba2_ssd resets its
+                    # producer state per work tile for exactly this reason) — count as the
+                    # coordinate is OOB from the second GEMM onward (v3 arbiter, desk).
                     cute.copy(
                         tma_ag1,
-                        tAgA[(None, ab_e.count)],
+                        tAgA[(None, 0)],
                         tAsA[(None, ab_e.index)],
                         tma_bar_ptr=ab_e.barrier,
                     )
                     cute.copy(
                         tma_bdhT,
-                        tBgB[(None, ab_e.count)],
+                        tBgB[(None, 0)],
                         tBsB[(None, ab_e.index)],
                         tma_bar_ptr=ab_e.barrier,
                     )
@@ -1061,13 +1070,13 @@ if _HAVE:
                         ab_e = ab_prod.acquire_and_advance()
                         cute.copy(
                             tma_aga,
-                            tAgA[(None, ab_e.count)],
+                            tAgA[(None, 0)],
                             tAsA[(None, ab_e.index)],
                             tma_bar_ptr=ab_e.barrier,
                         )
                         cute.copy(
                             tma_bga,
-                            tBgB[(None, ab_e.count)],
+                            tBgB[(None, 0)],
                             tBsB[(None, ab_e.index)],
                             tma_bar_ptr=ab_e.barrier,
                         )
@@ -1252,7 +1261,12 @@ def _incb2_launch(
     if ex is None:
         ex = cute.compile(_incb2_host, *args)
         _incb2_cache[key] = ex
-    ex(*args)
+    # Constexpr args (n_bh, nt, c, d_v, bisect) are baked at compile and DROPPED from
+    # the runtime signature; re-passing them shifts the executor's result/kernel pointer
+    # slots -> host SIGSEGV at launch. The v0 bisect matrix (SIGSEGV at EVERY bisect
+    # value) is plausibly THIS launcher fault, not kernel machinery (v3 arbiter, desk;
+    # wheel source: jit_executor generate_execution_args appends extras to exe_args).
+    ex(*args[:16])
     torch.cuda.synchronize()
     return (
         dh.reshape(n_bh, nt, d_k, d_v),
