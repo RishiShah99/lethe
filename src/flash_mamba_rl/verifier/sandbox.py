@@ -31,7 +31,6 @@ from flash_mamba_rl.verifier.compile import ErrorClass, kill_process_tree
 
 # Return codes we care about
 _RC_TIMEOUT = -998  # synthetic sentinel
-_RC_OOM = -999  # synthetic sentinel
 
 # POSIX segfault return code
 _RC_SEGFAULT_POSIX = -11
@@ -138,8 +137,6 @@ def _classify_subprocess_failure(stderr: str, rc: int) -> ErrorClass:
     """Map return code + stderr to an ErrorClass."""
     if rc == _RC_TIMEOUT:
         return ErrorClass.TIMEOUT
-    if rc == _RC_OOM:
-        return ErrorClass.OOM
     if rc in (_RC_SEGFAULT_POSIX, _RC_ACCESS_VIOLATION_WIN, _RC_ACCESS_VIOLATION_WIN_U):
         return ErrorClass.OTHER  # segfault — "OTHER" since ErrorClass has no SEGFAULT variant
 
