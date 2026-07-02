@@ -68,7 +68,11 @@ def main() -> None:
     ap.add_argument("--out", type=str, default="")
     ap.add_argument("--ref-candidate", action="store_true", help="desk dry-run: cw refs, not kernels")
     ap.add_argument("--atol", type=float, default=ATOL_BF16)
+    ap.add_argument("--shapes", type=str, default="", help="semicolon list of b,t,h; overrides GRID")
     args = ap.parse_args()
+    grid = GRID
+    if args.shapes:
+        grid = [tuple(int(x) for x in s.split(",")) for s in args.shapes.split(";")]
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16 if dev.type == "cuda" and not args.ref_candidate else torch.float32
@@ -85,7 +89,7 @@ def main() -> None:
     results: list[dict[str, object]] = []
     worst = 0.0
     ok = True
-    for b, t, h in GRID:
+    for b, t, h in grid:
         q, k, v, g, bg, wg, do = _inputs(b, t, h, dtype, dev, seed=b * 100 + t)
         got = candidate(q, k, v, g, bg, wg, do)
         if got is None:

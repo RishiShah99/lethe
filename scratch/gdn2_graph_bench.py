@@ -81,6 +81,23 @@ def main() -> None:
         )
         return (gr.grad_q, gr.grad_k, gr.grad_v, gr.grad_g, gr.grad_b, gr.grad_w)
 
+    def adapter_closed(q, k, v, g, bg, wg, do):
+        # de-glue Level 1a: the chunk-local closed-form stage-B fed by K#1's dh.
+        gr = assembled_channelwise_gdn2_backward(
+            q,
+            k,
+            v,
+            g,
+            bg,
+            wg,
+            do,
+            use_qk_l2norm=True,
+            k1_fn=k1_cw,
+            k2_fn=k2_cw,
+            stage_b_closed=True,
+        )
+        return (gr.grad_q, gr.grad_k, gr.grad_v, gr.grad_g, gr.grad_b, gr.grad_w)
+
     def bench_fla(inp, trials):
         from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
@@ -125,6 +142,28 @@ def main() -> None:
         except Exception:
             row["graph_err"] = traceback.format_exc(limit=2)
 
+        # de-glue Level 1a: closed stage-B — parity vs the default path, then eager+graph time
+        try:
+            base_out = adapter(*cw)
+            closed_out = adapter_closed(*cw)
+            row["closed_parity_scale_rel"] = max(
+                (
+                    (a.float() - c.float()).abs().max() / a.float().abs().max().clamp_min(1e-12)
+                ).item()
+                for a, c in zip(base_out, closed_out, strict=True)
+            )
+            closed_run = partial(adapter_closed, *cw)
+            row["closed_eager_ms"] = benchmark(
+                closed_run, (), warmup=1, trials=args.eager_trials
+            ).median_ms
+            graphed_c = GraphedBackward(adapter_closed)
+            graphed_c(*cw)
+            row["closed_graph_ms"] = benchmark(
+                graphed_c.replay_only, (), warmup=10, trials=args.trials
+            ).median_ms
+        except Exception:
+            row["closed_err"] = traceback.format_exc(limit=2)
+
         try:
             row["fla_ms"] = bench_fla(inp, args.trials)
         except Exception:
@@ -134,6 +173,10 @@ def main() -> None:
             row["graph_over_fla"] = row["graph_ms"] / row["fla_ms"]
         if "graph_ms" in row and "eager_ms" in row:
             row["eager_over_graph"] = row["eager_ms"] / row["graph_ms"]
+        if "closed_graph_ms" in row and "fla_ms" in row:
+            row["closed_graph_over_fla"] = row["closed_graph_ms"] / row["fla_ms"]
+        if "closed_graph_ms" in row and "graph_ms" in row:
+            row["graph_over_closed_graph"] = row["graph_ms"] / row["closed_graph_ms"]
         report["runs"].append(row)
         with open(args.out, "w") as f:
             json.dump(report, f, indent=2)

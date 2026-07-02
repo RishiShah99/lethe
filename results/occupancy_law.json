@@ -2,7 +2,7 @@
   "schema": "occupancy_law v1",
   "sm_count": {
     "value": 148,
-    "source": "NVIDIA B200 product brief (2024); not recorded in results/*.json"
+    "source": "measured: torch.cuda.get_device_properties(0).multi_processor_count on the box (box_out_burst1 env capture)"
   },
   "serial_programs_formula": {
     "forward_chunked_scan": "batch * ceil(width / 64)  [block_d=min(64,next_pow2(D))=64 for D>=64]",

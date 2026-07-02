@@ -1,0 +1,171 @@
+{
+  "schema": "fla.ops.gdn2 chunk_gdn2 full-backward timing bar + determinism on B200 (the de-glue ladder target)",
+  "env": {
+    "torch_version": "2.11.0+cu128",
+    "cuda_available": true,
+    "device_name": "NVIDIA B200",
+    "fla_version": "0.5.1"
+  },
+  "fla_version": "0.5.1",
+  "timing_ms": {
+    "B2_L512_H8_dk128_dv128": {
+      "median_ms": 1.4499839544296265,
+      "min_ms": 1.4040640592575073,
+      "max_ms": 1.5265599489212036,
+      "reps": 20,
+      "warmup": 5
+    },
+    "B2_L2048_H8_dk128_dv128": {
+      "median_ms": 1.5424000024795532,
+      "min_ms": 1.4905920028686523,
+      "max_ms": 1.5885759592056274,
+      "reps": 20,
+      "warmup": 5
+    },
+    "B2_L4096_H8_dk128_dv128": {
+      "median_ms": 2.1860480308532715,
+      "min_ms": 2.178976058959961,
+      "max_ms": 2.2066879272460938,
+      "reps": 20,
+      "warmup": 5
+    },
+    "B8_L2048_H8_dk128_dv128": {
+      "median_ms": 3.0269761085510254,
+      "min_ms": 3.023616075515747,
+      "max_ms": 3.03439998626709,
+      "reps": 20,
+      "warmup": 5
+    }
+  },
+  "determinism": {
+    "B2_L512_H8_dk128_dv128": {
+      "bitwise_equal": false
+    },
+    "B2_L2048_H8_dk128_dv128": {
+      "bitwise_equal": false
+    },
+    "B2_L4096_H8_dk128_dv128": {
+      "bitwise_equal": false
+    },
+    "B8_L2048_H8_dk128_dv128": {
+      "bitwise_equal": false
+    }
+  },
+  "parity": {
+    "status": "not_established",
+    "note": "parameterization mapping open: fla chunk_gdn2 likely applies sigmoid/normalization internally (grad_w returned None; norm=False NaNs); fla ships naive_recurrent_gdn2 in the same package as the mapping Rosetta stone for a later pass",
+    "best_scale_rel_seen": {
+      "B2_L512_H8_dk128_dv128": {
+        "grad_q": 2.2671892642974854,
+        "grad_k": 2.518035411834717,
+        "grad_v": 2.2825238704681396,
+        "grad_g": NaN,
+        "grad_b": NaN,
+        "grad_w": "grad_None"
+      },
+      "B2_L2048_H8_dk128_dv128": {
+        "grad_q": 2.0106849670410156,
+        "grad_k": 2.428612232208252,
+        "grad_v": 2.0528643131256104,
+        "grad_g": NaN,
+        "grad_b": NaN,
+        "grad_w": "grad_None"
+      },
+      "B2_L4096_H8_dk128_dv128": {
+        "grad_q": 2.2348058223724365,
+        "grad_k": 2.5610575675964355,
+        "grad_v": 2.081230878829956,
+        "grad_g": 107.28605651855469,
+        "grad_b": 42.864410400390625,
+        "grad_w": "grad_None"
+      },
+      "B8_L2048_H8_dk128_dv128": {
+        "grad_q": 2.0112340450286865,
+        "grad_k": 2.53668475151062,
+        "grad_v": 2.092989206314087,
+        "grad_g": 79.34627532958984,
+        "grad_b": 53.90803146362305,
+        "grad_w": "grad_None"
+      }
+    }
+  },
+  "introspection": {
+    "candidates": {
+      "gdn2": {
+        "chunk_gdn2": "(q: 'torch.Tensor', k: 'torch.Tensor', v: 'torch.Tensor', g: 'torch.Tensor', b: 'torch.Tensor', w: 'torch.Tensor', scale: 'float | None' = None, initial_state: 'torch.Tensor | None' = None, output_final_state: 'bool' = False, use_qk_l2norm_in_kernel: 'bool' = False, use_gate_in_kernel: 'bool' = False, cu_seqlens: 'torch.LongTensor | None' = None, cu_seqlens_cpu: 'torch.LongTensor | None' = None, safe_gate: 'bool' = False, lower_bound: 'float | None' = None, disable_recompute: 'bool' = False, return_intermediate_states: 'bool' = False, state_v_first: 'bool' = False, **kwargs)",
+        "fused_recurrent_gdn2": "(q: 'torch.Tensor', k: 'torch.Tensor', v: 'torch.Tensor', g: 'torch.Tensor', b: 'torch.Tensor', w: 'torch.Tensor', A_log: 'torch.Tensor | None' = None, dt_bias: 'torch.Tensor | None' = None, scale: 'float | None' = None, initial_state: 'torch.Tensor | None' = None, output_final_state: 'bool' = False, use_qk_l2norm_in_kernel: 'bool' = False, use_gate_in_kernel: 'bool' = False, lower_bound: 'float | None' = None, state_v_first: 'bool' = False, cu_seqlens: 'torch.LongTensor | None' = None, **kwargs) -> 'tuple[torch.Tensor, torch.Tensor]'",
+        "naive_chunk_gdn2": "(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, b: torch.Tensor, w: torch.Tensor, scale: float | None = None, initial_state: torch.Tensor | None = None, output_final_state: bool = False, chunk_size: int = 64)",
+        "naive_recurrent_gdn2": "(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, b: torch.Tensor, w: torch.Tensor, scale: float | None = None, initial_state: torch.Tensor | None = None, output_final_state: bool = False)"
+      }
+    },
+    "found": {
+      "module": "fla.ops.gated_delta_rule",
+      "fn": "chunk_gated_delta_rule",
+      "sig": "(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, beta: torch.Tensor, scale: float | None = None, initial_state: torch.Tensor | None = None, output_final_state: bool = False, use_qk_l2norm_in_kernel: bool = False, use_beta_sigmoid_in_kernel: bool = False, allow_neg_eigval: bool = False, state_v_first: bool = False, cu_seqlens: torch.LongTensor | None = None, cu_seqlens_cpu: torch.LongTensor | None = None, cp_context: fla.ops.cp.context.FLACPContext | None = None, **kwargs)",
+      "note": "scalar predecessor only; b/w not separately parameterizable"
+    },
+    "error": null,
+    "fla_ops_attrs": [
+      "abc",
+      "attn",
+      "attnres",
+      "backends",
+      "based",
+      "chunk_abc",
+      "chunk_comba",
+      "chunk_delta_rule",
+      "chunk_dplr_delta_rule",
+      "chunk_gated_delta_rule",
+      "chunk_gdn",
+      "chunk_gla",
+      "chunk_gsa",
+      "chunk_iplr_delta_rule",
+      "chunk_kda",
+      "chunk_lightning_attn",
+      "chunk_linear_attn",
+      "chunk_log_linear_attn",
+      "chunk_mesa_net",
+      "chunk_retention",
+      "chunk_rwkv6",
+      "chunk_rwkv7",
+      "chunk_simple_gla",
+      "comba",
+      "common",
+      "cp",
+      "delta_rule",
+      "deltaformer",
+      "forgetting_attn",
+      "fused_attnres",
+      "fused_chunk_based",
+      "fused_chunk_delta_rule",
+      "fused_chunk_gla",
+      "fused_chunk_linear_attn",
+      "fused_chunk_retention",
+      "fused_chunk_simple_gla",
+      "fused_recurrent_comba",
+      "fused_recurrent_delta_rule",
+      "fused_recurrent_dplr_delta_rule",
+      "fused_recurrent_gated_delta_rule",
+      "fused_recurrent_gdn",
+      "fused_recurrent_gla",
+      "fused_recurrent_gsa",
+      "fused_recurrent_hgrn",
+      "fused_recurrent_iplr_delta_rule",
+      "fused_recurrent_kda",
+      "fused_recurrent_lightning_attn",
+      "fused_recurrent_linear_attn",
+      "fused_recurrent_retention",
+      "fused_recurrent_rwkv6",
+      "fused_recurrent_rwkv7",
+      "fused_recurrent_simple_gla",
+      "gated_delta_product",
+      "gated_delta_rule",
+      "gdn2",
+      "generalized_delta_rule",
+      "gla",
+      "gsa",
+      "hgrn",
+      "kda"
+    ]
+  }
+}

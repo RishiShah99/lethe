@@ -911,6 +911,7 @@ def assembled_channelwise_gdn2_backward(
     use_qk_l2norm: bool = True,
     k1_fn: K1FnCW | None = None,
     k2_fn: K2FnCW | None = None,
+    stage_b_closed: bool = False,
 ) -> Gdn2Grads:
     """GDN-2-signature wrapper around the channel-wise assembly (the crown gate entry).
 
@@ -938,6 +939,7 @@ def assembled_channelwise_gdn2_backward(
         k1_fn=k1_fn,
         k2_fn=k2_fn,
         create_graph=do.requires_grad,
+        stage_b_closed=stage_b_closed,
     )
     out = Gdn2Grads(
         grad_q=grads.dq,
