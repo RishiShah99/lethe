@@ -752,6 +752,11 @@ def assemble_gdn2_backward_channelwise(
     def _det(t: Tensor) -> Tensor:
         return t if create_graph else t.detach()
 
+    # Default path keeps the proven autograd-Stage-B-before-K#1 order (the order the
+    # CUDA-graph lever was verified in); the closed path needs K#1's dh first.
+    if not stage_b_closed:
+        dq_b, dk_b, dg_b, dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
+
     dh_k1, dv2, dh0 = k1(
         _det(fwd.q),
         _det(fwd.k),
@@ -767,8 +772,6 @@ def assemble_gdn2_backward_channelwise(
         dq_b, dk_b, dg_b, dwy = _stage_b_vjp_cw_closed(
             fwd, do, dh_k1, dv2, create_graph=create_graph
         )
-    else:
-        dq_b, dk_b, dg_b, dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
 
     dk2, dv, db, dw, dg2 = k2(
         _det(fwd.k),
