@@ -60,6 +60,20 @@ class TestLoadCandidate:
         assert cand.target_op is None  # ast.parse failed, attrs empty
         assert cand.callable_name == "broken"
 
+    def test_literal_eval_typeerror_skipped(self, tmp_path: Path) -> None:
+        """ast.literal_eval raises TypeError for certain non-literal node types;
+        discovery must skip these rather than crash."""
+        src = (
+            # dict with an unhashable list key: parses as a literal, but
+            # literal_eval raises TypeError constructing it (a bare name like
+            # `open` raises ValueError instead and never exercised the fix).
+            "__candidate_op__ = {[]: 1}\ndef typeerr_kernel(x):\n    return x\n"
+        )
+        path = _write(tmp_path / "kernel_typeerr.py", src)
+        cand = load_candidate(path)
+        assert cand.target_op is None
+        assert cand.callable_name == "typeerr"
+
 
 class TestDiscoverCandidates:
     def test_discovers_kernel_files(self, tmp_path: Path) -> None:

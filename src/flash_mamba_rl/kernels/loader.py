@@ -73,7 +73,7 @@ def _parse_module_attrs(source: str) -> dict[str, Any]:
             continue
         try:
             value = ast.literal_eval(node.value)
-        except (ValueError, SyntaxError):
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
             continue
         attrs[target.id] = value
     return attrs
