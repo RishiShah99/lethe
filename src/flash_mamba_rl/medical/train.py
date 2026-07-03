@@ -231,6 +231,8 @@ class MedicalTrainer:
                     self._log({"step": self.step_idx, **metrics, "split": "val"})
             if self.step_idx % cfg.save_every == 0:
                 self.save_checkpoint()
+        if self.step_idx % cfg.save_every != 0:
+            self.save_checkpoint()
 
     # ------------------------------------------------------------------
     # Checkpointing (spot box: model + optimizer + step + RNG)

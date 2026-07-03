@@ -287,3 +287,48 @@ class TestCheckpointResume:
         loader = DataLoader(_SyntheticECG(8), batch_size=4)
         trainer.run(loader, val_loader=loader)
         assert trainer.step_idx == 6
+
+
+class TestFinalCheckpoint:
+    def test_run_saves_final_checkpoint_off_cadence(self, tmp_path: object) -> None:
+        import os
+
+        cfg = MedicalTrainConfig(
+            device="cpu",
+            checkpoint_dir=str(tmp_path),
+            total_steps=7,
+            save_every=3,
+        )
+        torch.manual_seed(0)
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        trainer = MedicalTrainer(model, cfg)
+        loader = DataLoader(_SyntheticECG(8), batch_size=4)
+        trainer.run(loader)
+        state_path = os.path.join(str(tmp_path), "trainer_state.pt")
+        assert os.path.exists(state_path)
+        state = torch.load(state_path, weights_only=True)
+        assert state["step"] == 7
+        model_path = os.path.join(str(tmp_path), state["model_name"])
+        assert os.path.exists(model_path)
+
+    def test_run_no_double_save_when_cadence_aligns(self, tmp_path: object) -> None:
+        cfg = MedicalTrainConfig(
+            device="cpu",
+            checkpoint_dir=str(tmp_path),
+            total_steps=6,
+            save_every=3,
+        )
+        torch.manual_seed(0)
+        model = Mamba3ECGClassifier(Mamba3Config.tiny())
+        trainer = MedicalTrainer(model, cfg)
+        save_calls: list[int] = []
+        orig_save = trainer.save_checkpoint
+
+        def spy() -> None:
+            save_calls.append(trainer.step_idx)
+            orig_save()
+
+        trainer.save_checkpoint = spy  # type: ignore[method-assign]
+        loader = DataLoader(_SyntheticECG(8), batch_size=4)
+        trainer.run(loader)
+        assert save_calls == [3, 6]
