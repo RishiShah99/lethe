@@ -64,9 +64,14 @@ def benchmark(
     # Choose the CUDA-event timer from the tensors actually fed, not the host:
     # a CPU candidate on a CUDA host would otherwise be "timed" on an empty
     # stream (elapsed_time ~ 0), fabricating a speedup.
+    #
+    # When no tensor arguments are present (closure-style call with inputs=()),
+    # fall back to host capability: the closure may capture CUDA tensors, and
+    # measuring host enqueue time for async work produces invalid timings.
     probe = call_inputs(-1)
-    use_cuda = torch.cuda.is_available() and any(
-        isinstance(a, torch.Tensor) and a.is_cuda for a in probe
+    tensor_args = [a for a in probe if isinstance(a, torch.Tensor)]
+    use_cuda = torch.cuda.is_available() and (
+        not tensor_args or any(t.is_cuda for t in tensor_args)
     )
 
     # ---- Warm-up ----

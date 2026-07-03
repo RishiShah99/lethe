@@ -594,6 +594,41 @@ class TestTimingOnCpu:
         result = benchmark(lambda x: x, (torch.tensor(1.0),), warmup=1, trials=7)
         assert result.n_trials == 7
 
+    def test_empty_inputs_uses_cuda_path_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Closure-style calls with inputs=() must use CUDA events when CUDA is available.
+
+        Without this fix, benchmark(fn, ()) falls to the unsynchronized wall-clock
+        path even on a CUDA host, measuring host enqueue time instead of device
+        execution time for async closures.
+        """
+        sync_calls: list[str] = []
+        event_records: list[str] = []
+
+        class FakeEvent:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            def record(self) -> None:
+                event_records.append("record")
+
+            def elapsed_time(self, _end: object) -> float:
+                return 1.0
+
+        def fake_synchronize() -> None:
+            sync_calls.append("sync")
+
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        monkeypatch.setattr("torch.cuda.Event", FakeEvent)
+        monkeypatch.setattr("torch.cuda.synchronize", fake_synchronize)
+
+        result = benchmark(lambda: None, (), warmup=1, trials=2)
+
+        assert len(sync_calls) > 0, "CUDA sync not called for empty-inputs closure"
+        assert len(event_records) > 0, "CUDA events not used for empty-inputs closure"
+        assert result.n_trials == 2
+
 
 # ---------------------------------------------------------------------------
 # sandbox.py

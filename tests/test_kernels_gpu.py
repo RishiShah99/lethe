@@ -189,10 +189,10 @@ class TestC1BenchSmoke:
     def test_faster_than_eager_reference(self) -> None:
         args = _scan_inputs(4, 512, 256, 16)
         t_triton = benchmark(
-            lambda: forward_chunked_scan(*args, chunk_size=8), (), warmup=5, trials=20
+            lambda *a: forward_chunked_scan(*a, chunk_size=8), args, warmup=5, trials=20
         )
         t_ref = benchmark(
-            lambda: reference_forward_chunked_scan(*args, chunk_size=8), (), warmup=2, trials=5
+            lambda *a: reference_forward_chunked_scan(*a, chunk_size=8), args, warmup=2, trials=5
         )
         assert t_triton.median_ms < t_ref.median_ms, (
             f"triton {t_triton.median_ms:.3f} ms not faster than eager {t_ref.median_ms:.3f} ms"
@@ -399,12 +399,16 @@ class TestC2VsOfficialMamba:
 class TestC2BenchSmoke:
     def test_faster_than_eager_reference_backward(self) -> None:
         args, dy = _bwd_inputs(4, 512, 256, 16)
+        all_inputs = (*args, dy)
         t_triton = benchmark(
-            lambda: backward_selective_scan(*args, dy, chunk_size=8), (), warmup=5, trials=20
+            lambda *a: backward_selective_scan(*a[:-1], a[-1], chunk_size=8),
+            all_inputs,
+            warmup=5,
+            trials=20,
         )
         t_ref = benchmark(
-            lambda: reference_backward_selective_scan(*args, dy, chunk_size=8),
-            (),
+            lambda *a: reference_backward_selective_scan(*a[:-1], a[-1], chunk_size=8),
+            all_inputs,
             warmup=1,
             trials=3,
         )
