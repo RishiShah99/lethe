@@ -130,13 +130,20 @@ def check_cpu_suite() -> tuple[bool, str]:
             summary = line
             break
 
-    failed = "failed" in summary or "error" in summary or result.returncode not in (0, 5)
-    # returncode 5 = no tests collected (treat as pass — cannot happen here, but safe)
+    # pytest exit codes: 0=all passed, 1=some failed, 2=interrupted, 3=internal error,
+    # 4=usage error, 5=no tests collected. Only 0 with parsed pass count is a real PASS.
     if result.returncode == 0:
-        return True, summary
+        # Parse pass count to guard against "0 passed" edge case
+        import re
+
+        match = re.search(r"(\d+)\s+passed", summary)
+        if match and int(match.group(1)) > 0:
+            return True, summary
+        return False, summary or "exit 0 but no tests passed"
     if result.returncode == 5:
-        return True, "no tests collected"
-    return not failed, summary
+        return False, "zero tests collected (exit 5) — gate FAIL"
+    # Any other nonzero exit is a failure
+    return False, summary or f"pytest exit {result.returncode}"
 
 
 # ---------------------------------------------------------------------------

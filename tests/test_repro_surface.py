@@ -135,7 +135,9 @@ class TestAuditHeadline:
     def test_finding_rate_plausible(self) -> None:
         ok, detail = repro.check_audit_headline()
         assert ok, f"audit headline check failed: {detail}"
-        assert "62.1%" in detail or "0.621" in detail or "finding_rate" in detail
+        # Pin the committed headline on the COMPUTED portion of the detail string —
+        # the "(committed~62.1%)" suffix is a constant and must not satisfy the pin.
+        assert "finding_rate=0.6213" in detail, f"committed rate not in detail: {detail}"
 
     def test_raw_finding_rate_value(self) -> None:
         data = json.loads(_AUDIT_JSON.read_text())
@@ -169,3 +171,68 @@ class TestMicrogateHarnessIntegrity:
         ):
             m = importlib.import_module(mod)
             assert hasattr(m, "is_available")
+
+
+class TestCpuSuiteGate:
+    """Regression coverage for check_cpu_suite exit-code handling."""
+
+    def test_zero_collected_is_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exit code 5 (zero tests collected) must report FAIL, not PASS."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.returncode = 5
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        ok, detail = repro.check_cpu_suite()
+        assert not ok, "exit 5 (zero collected) should be FAIL"
+        assert "zero tests collected" in detail.lower() or "exit 5" in detail.lower()
+
+    def test_exit_zero_with_zero_passed_is_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exit 0 but '0 passed' in summary must report FAIL."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "0 passed in 0.01s"
+        mock_result.stderr = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        ok, _detail = repro.check_cpu_suite()
+        assert not ok, "exit 0 with '0 passed' should be FAIL"
+
+    def test_exit_zero_with_passed_count_is_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exit 0 with nonzero passed count is a real PASS."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "705 passed, 112 skipped in 12.34s"
+        mock_result.stderr = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        ok, detail = repro.check_cpu_suite()
+        assert ok, "exit 0 with '705 passed' should be PASS"
+        assert "705 passed" in detail
+
+    @pytest.mark.parametrize("code", [1, 2, 3, 4])
+    def test_nonzero_exit_other_than_five_is_fail(
+        self, monkeypatch: pytest.MonkeyPatch, code: int
+    ) -> None:
+        """Any nonzero exit code (2=interrupted, 3=internal, 4=usage) is FAIL."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.returncode = code
+        mock_result.stdout = "some error output"
+        mock_result.stderr = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        ok, _ = repro.check_cpu_suite()
+        assert not ok, f"exit {code} should be FAIL"
