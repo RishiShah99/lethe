@@ -17,10 +17,15 @@ wiring is proven before the kernel lands.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 from torch import Tensor
 
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads, reference_gdn2_forward
+
+if TYPE_CHECKING:
+    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import ChunkwiseForwardCW
 
 
 def gdn2_backward(
@@ -34,6 +39,7 @@ def gdn2_backward(
     *,
     scale: float | None = None,
     use_qk_l2norm: bool = True,
+    fwd_stash: ChunkwiseForwardCW | None = None,
 ) -> Gdn2Grads:
     """GDN-2 backward. Returns ``Gdn2Grads`` (``grad_initial_state`` is ``None``).
 
@@ -43,12 +49,25 @@ def gdn2_backward(
 
     On a Blackwell device with a supported dtype the native CuTe kernel runs; it
     returns ``None`` until built (Phase 2), so this falls through to the eager path.
+    ``fwd_stash`` (lever 2b) is the chunkwise forward saved by the op's forward pass;
+    when given, the native route runs the closed stage-B assembly on it (no restage).
+    The eager fallback ignores it (its autograd needs its own graph).
     """
     if q.is_cuda and q.dtype in (torch.bfloat16, torch.float16, torch.float32):
         from flash_mamba_rl.kernels.cute.gdn2_backward import native_gdn2_backward
 
         native = native_gdn2_backward(
-            q, k, v, g, b, w, do, scale=scale, use_qk_l2norm=use_qk_l2norm
+            q,
+            k,
+            v,
+            g,
+            b,
+            w,
+            do,
+            scale=scale,
+            use_qk_l2norm=use_qk_l2norm,
+            stage_b_closed=fwd_stash is not None,
+            fwd_stash=fwd_stash,
         )
         if native is not None:
             return native

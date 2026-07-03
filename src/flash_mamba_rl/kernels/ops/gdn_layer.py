@@ -13,6 +13,7 @@ conventions mirror ``reference_gdn2_forward``; supported dtypes are fp32, fp64, 
 
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 
 import torch
@@ -36,19 +37,45 @@ class _GDN2Function(torch.autograd.Function):
         use_qk_l2norm: bool,
     ) -> Tensor:
         # Forward must not participate in the backward graph — evaluate in fp32/fp64
-        # so reference_gdn2_forward (which rejects half) can run; save originals.
+        # so the forward implementations (which reject half) can run; save originals.
         compute_dtype = torch.float64 if q.dtype == torch.float64 else torch.float32
+        ctx.fwd_stash = None
         with torch.no_grad():
-            o = reference_gdn2_forward(
-                q.to(compute_dtype),
-                k.to(compute_dtype),
-                v.to(compute_dtype),
-                g.to(compute_dtype),
-                b.to(compute_dtype),
-                w.to(compute_dtype),
-                scale=scale,
-                use_qk_l2norm=use_qk_l2norm,
-            ).to(q.dtype)
+            if os.environ.get("FMR_SAVE_FWD"):
+                # Lever 2b (the fla move): run the chunkwise forward and keep its
+                # chunk-local intermediates so the backward skips the restage. The
+                # 1.07 GB decay_rel stash is dropped — holding it across fwd->bwd
+                # costs more than the one rebuild the closed stage B does.
+                from flash_mamba_rl.kernels.cute.gdn2_assemble import pick_chunk_len
+                from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+                    chunkwise_restage_cw,
+                )
+
+                rst = chunkwise_restage_cw(
+                    q.to(compute_dtype),
+                    k.to(compute_dtype),
+                    v.to(compute_dtype),
+                    g.to(compute_dtype),
+                    b.to(compute_dtype),
+                    w.to(compute_dtype),
+                    chunk_len=pick_chunk_len(q.shape[1]),
+                    scale=scale,
+                    use_qk_l2norm=use_qk_l2norm,
+                )
+                o = rst.o.to(q.dtype)
+                rst.decay_rel = None
+                ctx.fwd_stash = rst
+            else:
+                o = reference_gdn2_forward(
+                    q.to(compute_dtype),
+                    k.to(compute_dtype),
+                    v.to(compute_dtype),
+                    g.to(compute_dtype),
+                    b.to(compute_dtype),
+                    w.to(compute_dtype),
+                    scale=scale,
+                    use_qk_l2norm=use_qk_l2norm,
+                ).to(q.dtype)
         ctx.save_for_backward(q, k, v, g, b, w)
         ctx.scale = scale
         ctx.use_qk_l2norm = use_qk_l2norm
@@ -72,6 +99,7 @@ class _GDN2Function(torch.autograd.Function):
                 do.detach(),
                 scale=ctx.scale,
                 use_qk_l2norm=ctx.use_qk_l2norm,
+                fwd_stash=ctx.fwd_stash,
             )
         # 8 inputs: q, k, v, g, b, w, scale, use_qk_l2norm
         return (

@@ -675,7 +675,13 @@ def _stage_b_vjp_cw_closed(
     c = fwd.chunk_len
 
     lower_incl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=do.device), 0)
-    decay_rel = masked_decay_rel(g2)  # [B,H,NT,C,C,d_k]
+    # Reuse the restage's stash when available (lever 2a: one build per backward, not
+    # two — bitwise the same function of the same g2). The stash is no-grad, so it is
+    # only valid on the detached path; create_graph rebuilds through the live g2.
+    if fwd.decay_rel is not None and not create_graph:
+        decay_rel = fwd.decay_rel  # [B,H,NT,C,C,d_k]
+    else:
+        decay_rel = masked_decay_rel(g2)
     decay_end = torch.exp2(g_last[..., None, :] - g2)  # [B,H,NT,C,d_k]
 
     dqg = do_c @ h_entry.transpose(-1, -2)  # [B,H,NT,C,d_k]
@@ -733,6 +739,7 @@ def assemble_gdn2_backward_channelwise(
     k2_fn: K2FnCW | None = None,
     create_graph: bool = False,
     stage_b_closed: bool = False,
+    fwd_stash: ChunkwiseForwardCW | None = None,
 ) -> ChannelwiseGdn2Grads:
     """Assemble the six channel-wise GDN-2 grads from K#1 + K#2 + supporting torch stages.
 
@@ -742,20 +749,27 @@ def assemble_gdn2_backward_channelwise(
     splice is identical to the scalar path; the erase/write grads come straight from K#2's
     separate ``db``/``dw`` (no beta split), and ``dg`` sums the B1 and stage-B parts.
     ``stage_b_closed`` swaps the autograd Stage B for the chunk-local closed form fed by
-    K#1's ``dh`` (the de-glue lever; fp64-pinned equal).
+    K#1's ``dh`` (the de-glue lever; fp64-pinned equal). ``fwd_stash`` (lever 2b, the fla
+    move) supplies the chunkwise forward saved at forward time so no restage runs at all —
+    honored on the closed no-graph path only (its tensors carry no graph); it must have
+    been built from the same inputs/scale/chunk decomposition.
     """
     k1 = k1_fn if k1_fn is not None else k1_reverse_state_cw_ref
     k2 = k2_fn if k2_fn is not None else k2_wy_vjp_cw_ref
-    cl = pick_chunk_len(q.shape[1]) if chunk_len is None else chunk_len
 
-    # The closed path takes no grad through the forward, so the batched no-grad
-    # restage stands in (Level 1b); the autograd stage B (and double-backward)
-    # still needs the graph-carrying forward.
-    if stage_b_closed and not create_graph:
+    # The closed path takes no grad through the forward, so the saved forward (lever 2b)
+    # or the batched no-grad restage (Level 1b) stands in; the autograd stage B (and
+    # double-backward) still needs the graph-carrying forward.
+    if stage_b_closed and not create_graph and fwd_stash is not None:
+        fwd = fwd_stash
+        cl = fwd.chunk_len
+    elif stage_b_closed and not create_graph:
+        cl = pick_chunk_len(q.shape[1]) if chunk_len is None else chunk_len
         fwd = chunkwise_restage_cw(
             q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
         )
     else:
+        cl = pick_chunk_len(q.shape[1]) if chunk_len is None else chunk_len
         fwd = chunkwise_forward_cw(
             q, k, v, g, b, w, chunk_len=cl, scale=scale, use_qk_l2norm=use_qk_l2norm
         )
@@ -930,6 +944,7 @@ def assembled_channelwise_gdn2_backward(
     k1_fn: K1FnCW | None = None,
     k2_fn: K2FnCW | None = None,
     stage_b_closed: bool = False,
+    fwd_stash: ChunkwiseForwardCW | None = None,
 ) -> Gdn2Grads:
     """GDN-2-signature wrapper around the channel-wise assembly (the crown gate entry).
 
@@ -958,6 +973,7 @@ def assembled_channelwise_gdn2_backward(
         k2_fn=k2_fn,
         create_graph=do.requires_grad,
         stage_b_closed=stage_b_closed,
+        fwd_stash=fwd_stash,
     )
     out = Gdn2Grads(
         grad_q=grads.dq,

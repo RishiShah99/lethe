@@ -50,6 +50,7 @@ from flash_mamba_rl.kernels.references.family_oracles import (
     LaGrads,
     SsdGrads,
 )
+from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import ChunkwiseForwardCW
 from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads
 
 SUPPORTED_DTYPES: tuple[torch.dtype, ...] = (torch.bfloat16, torch.float16, torch.float32)
@@ -126,6 +127,7 @@ def native_gdn2_backward(
     scale: float | None = None,
     use_qk_l2norm: bool = True,
     stage_b_closed: bool = False,
+    fwd_stash: ChunkwiseForwardCW | None = None,
 ) -> Gdn2Grads | None:
     """Six GDN-2 gradients from the native CuTe assembly, or ``None`` if unavailable.
 
@@ -178,6 +180,7 @@ def native_gdn2_backward(
         k1_fn=k1_cw,
         k2_fn=k2_cw,
         stage_b_closed=stage_b_closed,
+        fwd_stash=fwd_stash,
     )
 
 

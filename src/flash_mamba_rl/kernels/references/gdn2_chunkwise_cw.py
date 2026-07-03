@@ -131,6 +131,10 @@ class ChunkwiseForwardCW:
     chunk_len: int
     scale: float
     skip_erase: bool = False
+    # Restage-only stash: masked_decay_rel(g2) [B,H,NT,C,C,d_k], the largest shared
+    # backward tensor (~1.07 GB @B2/L2048/H8). Built once here, reused by the closed
+    # stage-B VJP instead of a second build. None on the graph-carrying forward.
+    decay_rel: Tensor | None = None
 
 
 def chunkwise_forward_cw(
@@ -395,6 +399,7 @@ def chunkwise_restage_cw(
         leaves=(),
         chunk_len=chunk_len,
         scale=s,
+        decay_rel=decay_rel,
     )
 
 
