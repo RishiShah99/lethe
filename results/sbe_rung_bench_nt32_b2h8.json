@@ -1,0 +1,16 @@
+{
+  "nt": 32,
+  "B": 2,
+  "H": 8,
+  "shape": {
+    "B": 2,
+    "H": 8,
+    "NT": 32
+  },
+  "trials": 30,
+  "sbe_kernel_scale_rel": 4.2628295204849564e-07,
+  "sbe_kernel_ms": 0.3826879858970642,
+  "torch_einsums_scale_rel": 2.841886157511908e-07,
+  "torch_einsums_ms": 17.16534423828125,
+  "torch_over_sbe": 44.85467239856963
+}
