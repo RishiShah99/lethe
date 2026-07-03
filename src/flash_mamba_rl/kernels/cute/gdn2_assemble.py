@@ -37,6 +37,7 @@ re-solved; ``dg`` exits reverse-cumsum; deterministic, no atomics).
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -675,21 +676,40 @@ def _stage_b_vjp_cw_closed(
     c = fwd.chunk_len
 
     lower_incl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=do.device), 0)
-    # Reuse the restage's stash when available (lever 2a: one build per backward, not
-    # two — bitwise the same function of the same g2). The stash is no-grad, so it is
-    # only valid on the detached path; create_graph rebuilds through the live g2.
-    if fwd.decay_rel is not None and not create_graph:
-        decay_rel = fwd.decay_rel  # [B,H,NT,C,C,d_k]
-    else:
-        decay_rel = masked_decay_rel(g2)
     decay_end = torch.exp2(g_last[..., None, :] - g2)  # [B,H,NT,C,d_k]
 
     dqg = do_c @ h_entry.transpose(-1, -2)  # [B,H,NT,C,d_k]
     da_qk = do_c @ v_new.transpose(-1, -2)
     da_qk = torch.where(lower_incl, da_qk, torch.zeros_like(da_qk))
 
-    dq_intra = torch.einsum("...is,...sd,...isd->...id", da_qk, k, decay_rel)
-    dk_intra = torch.einsum("...is,...id,...isd->...sd", da_qk, q, decay_rel)
+    # The intra einsums: SIMT kernel with on-the-fly exp2 (no decay_rel materialized;
+    # the squeeze) when on-tile on a DSL box; else the torch einsums over decay_rel —
+    # reusing the restage's stash when available (lever 2a: one build per backward).
+    # The stash is no-grad, so both fast paths are detached-only; create_graph
+    # rebuilds through the live g2. FMR_DISABLE_SBE=1 pins the torch path.
+    sbe: tuple[Tensor, Tensor] | None = None
+    if (
+        not create_graph
+        and do.is_cuda
+        and g2.dtype == torch.float32  # the kernel is the f32 hot path; fp64 keeps torch
+        and not os.environ.get("FMR_DISABLE_SBE")
+    ):
+        from flash_mamba_rl.kernels.cute.gdn2_sb_einsum import (
+            is_available as _sbe_available,
+        )
+        from flash_mamba_rl.kernels.cute.gdn2_sb_einsum import run_sb_einsum, sbe_dims_ok
+
+        if _sbe_available() and sbe_dims_ok(c, k.shape[-1]):
+            sbe = run_sb_einsum(da_qk, k, q, g2)
+    if sbe is not None:
+        dq_intra, dk_intra = sbe
+    else:
+        if fwd.decay_rel is not None and not create_graph:
+            decay_rel = fwd.decay_rel  # [B,H,NT,C,C,d_k]
+        else:
+            decay_rel = masked_decay_rel(g2)
+        dq_intra = torch.einsum("...is,...sd,...isd->...id", da_qk, k, decay_rel)
+        dk_intra = torch.einsum("...is,...id,...isd->...sd", da_qk, q, decay_rel)
     dk_dec = v_new @ dh.transpose(-1, -2)  # [B,H,NT,C,d_k]
 
     dq_b = dqg * gamma + dq_intra

@@ -108,5 +108,6 @@ module = [
     "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3",
     "flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw",
     "flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f",
+    "flash_mamba_rl.kernels.cute.gdn2_sb_einsum",
 ]
 ignore_errors = true
