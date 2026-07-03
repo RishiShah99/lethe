@@ -1,0 +1,64 @@
+{
+  "mode": "cw",
+  "nt": 32,
+  "device": "NVIDIA B200",
+  "bundle": "",
+  "meta": {
+    "scale": 0.08838834764831845,
+    "chunk_len": 64,
+    "B": 2,
+    "H": 2,
+    "NT": 32,
+    "C": 64,
+    "d_k": 128,
+    "d_v": 64
+  },
+  "checks": [
+    {
+      "name": "dh",
+      "shape": [
+        2,
+        2,
+        32,
+        128,
+        64
+      ],
+      "scale_rel": 0.0006636859034188092,
+      "max_abs": 9.591877460479736e-05,
+      "max_rel": 20.326757431030273,
+      "finite": true,
+      "passed": true
+    },
+    {
+      "name": "dv2",
+      "shape": [
+        2,
+        2,
+        32,
+        64,
+        64
+      ],
+      "scale_rel": 0.0005709053366445005,
+      "max_abs": 8.032470941543579e-05,
+      "max_rel": 18.267505645751953,
+      "finite": true,
+      "passed": true
+    },
+    {
+      "name": "dh0",
+      "shape": [
+        2,
+        2,
+        128,
+        64
+      ],
+      "scale_rel": 0.0004591939505189657,
+      "max_abs": 5.0283968448638916e-05,
+      "max_rel": 1.7330149412155151,
+      "finite": true,
+      "passed": true
+    }
+  ],
+  "deterministic": true,
+  "GO": true
+}

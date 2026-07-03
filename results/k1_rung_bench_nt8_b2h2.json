@@ -1,0 +1,22 @@
+{
+  "mode": "scalar",
+  "nt": 8,
+  "shape": {
+    "B": 2,
+    "H": 2,
+    "NT": 8,
+    "L": 512,
+    "c": 64,
+    "d_k": 128,
+    "d_v": 64
+  },
+  "trials": 30,
+  "l3_fused_scale_rel": 0.0006518549052998424,
+  "l3_fused_ms": 0.9676800072193146,
+  "l2_epilogue_scale_rel": 0.0006518549052998424,
+  "l2_epilogue_ms": 2.432543992996216,
+  "leverb_batched_scale_rel": 0.000571623386349529,
+  "leverb_batched_ms": 3.2649439573287964,
+  "l2_epilogue_over_l3": 2.5137896565480093,
+  "leverb_batched_over_l3": 3.373991332848557
+}

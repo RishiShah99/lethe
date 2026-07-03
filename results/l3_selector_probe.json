@@ -1,0 +1,11 @@
+{
+  "eager_selector_l3_calls": 1,
+  "eager_selector_ms": 2.787616014480591,
+  "build_plus_replay_l3_calls": 4,
+  "replay_l3_calls": 0,
+  "replay1_vs_eager1_scale_rel": 0.0,
+  "replay2_vs_eager2_scale_rel": 0.0,
+  "replay2_vs_eager1_scale_rel": 1.409615397453308,
+  "replay_fresh_inputs_correct": true,
+  "GO": true
+}
