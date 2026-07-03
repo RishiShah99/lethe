@@ -103,3 +103,15 @@ def test_validate_chunk_len_must_divide_seq_len() -> None:
     assert validate("forward_chunked_scan", cfg, shape=ShapeSpec(2, 4096, 1024)) == []
     bad = validate("forward_chunked_scan", cfg, shape=ShapeSpec(2, 1000, 1024))
     assert bad and any("chunk_len" in s for s in bad)
+
+
+def test_validate_zero_chunk_k_returns_violation_not_crash() -> None:
+    cfg = KernelConfig(chunk_k=0)
+    v = validate("backward_selective_scan", cfg, shape=ShapeSpec(2, 2048, 1024))
+    assert v and any("chunk_k=0" in s and "positive" in s for s in v)
+
+
+def test_validate_zero_chunk_len_returns_violation_not_crash() -> None:
+    cfg = KernelConfig(scan_mode="chunk_parallel", chunk_len=0)
+    v = validate("forward_chunked_scan", cfg, shape=ShapeSpec(2, 2048, 1024))
+    assert v and any("chunk_len=0" in s and "positive" in s for s in v)

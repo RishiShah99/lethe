@@ -140,10 +140,18 @@ def validate(op: str, config: KernelConfig, *, shape: ShapeSpec | None = None) -
             violations.append(f"{name} is not tunable for {op}")
         elif value not in grid[name]:
             violations.append(f"{name}={value} not in {grid[name]}")
-    if shape is not None and config.chunk_k is not None and shape.seq_len % config.chunk_k != 0:
-        violations.append(f"chunk_k={config.chunk_k} does not divide seq_len={shape.seq_len}")
-    if shape is not None and config.chunk_len is not None and shape.seq_len % config.chunk_len != 0:
-        violations.append(f"chunk_len={config.chunk_len} does not divide seq_len={shape.seq_len}")
+    if shape is not None and config.chunk_k is not None:
+        if config.chunk_k <= 0:
+            violations.append(f"chunk_k={config.chunk_k} must be positive")
+        elif shape.seq_len % config.chunk_k != 0:
+            violations.append(f"chunk_k={config.chunk_k} does not divide seq_len={shape.seq_len}")
+    if shape is not None and config.chunk_len is not None:
+        if config.chunk_len <= 0:
+            violations.append(f"chunk_len={config.chunk_len} must be positive")
+        elif shape.seq_len % config.chunk_len != 0:
+            violations.append(
+                f"chunk_len={config.chunk_len} does not divide seq_len={shape.seq_len}"
+            )
     return sorted(violations)
 
 
