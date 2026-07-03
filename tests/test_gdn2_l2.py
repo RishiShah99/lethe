@@ -55,6 +55,9 @@ def test_modelled_l2_tracks_fp64_bundle(nt: int) -> None:
 
 
 def test_selector_routes_l2_on_proven_tile(monkeypatch: pytest.MonkeyPatch) -> None:
+    # FMR_DISABLE_L3 drops the selector past the Level-3 fused kernel to Level-2
+    # (also the L3 kill-switch regression: L3 disabled must not shadow L2).
+    monkeypatch.setenv("FMR_DISABLE_L3", "1")
     b, hv, nt, c, d_k, d_v = 1, 2, 2, 64, 128, 64
     shape_args = [
         torch.zeros(b, hv, nt, c, d_k),  # q
