@@ -128,8 +128,8 @@ def run_k2_serial(
     the six un-decayed matmuls (dp, dq_wy, dT's two GEMMs, dM's two GEMMs) route through the
     proven (128,64,128) GEMM via :func:`gdn2_bwd_wy._mm_tc`; the decay-weighted pushes
     (dbk_m, dk_m, E -> dg2_m via ``decay_rel`` <= 1) and the reverse-cumsum stay fp32 torch.
-    Per-chunk independent. Returns ``(dk2, dv, db, dw, dg2)`` head-major chunked. Lever B's
-    :func:`run_k2_batched` is the default; this stays for fallback/debug.
+    Per-chunk independent. Returns ``(dk2, dv, db, dw, dg2)`` head-major chunked. The
+    :func:`run_k2` selector (fused > batched) is the default; this stays for fallback/debug.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -259,5 +259,195 @@ def run_k2_batched(
     )
 
 
-# Lever B batched path is the default; run_k2_serial stays as the proven per-chunk fallback.
-run_k2 = run_k2_batched
+# ------------------------------------------------------------------
+# Fused K#2 — one grid-z-batched kernel per backward (the campaign's big rock).
+# Chunk-local (no carry), so the right grid is one CTA per chunk over Z=B·H·NT —
+# the Level-2 batching idiom, not L3's unroll. _run_k2_fused_modelled is the kernel
+# spec (fp64-pinned vs k2_wy_vjp_cw_ref by tests/test_gdn2_k2_fused.py); _k2f_pack
+# is the host pre-glue the launcher casts to fp16.
+# ------------------------------------------------------------------
+
+_M_PAD = 128  # tiler M: every A operand / accumulator M-pads to 128 rows
+_N_TILE = 64  # tiler N: one accumulator tile; d_k=128 outputs span 2 tiles
+_K_PAD = 128  # tiler K
+
+
+def k2f_dims_ok(c: int, d_k: int, d_v: int) -> bool:
+    """True iff the fused kernel's baked tile fits: C=64, d_k=128, d_v=64 exactly."""
+    return c == 64 and d_k == 128 and d_v == 64
+
+
+def _k2f_pack(
+    k: Tensor,
+    v: Tensor,
+    b: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    t_mat: Tensor,
+    dwy: Tensor,
+    du: Tensor,
+) -> dict[str, Tensor]:
+    """Host pre-glue for the fused K#2 kernel: staged GEMM operands, flat over Z=B·H·NT.
+
+    Six GEMM sites on the proven a@b^T (128,64,128) tiler: A operands [Z,128,128]
+    (M/K zero-pad), B operands [Z,N,128] (K zero-pad); G2's d_k=128 output spans two
+    N=64 tiles. Elementwise pre-glue (gamma, bk, pwv, q_kbg) is O(C·d) and stays host —
+    the ``_incb2_pack`` discipline. The SIMT epilogue operands ride along unpadded.
+    Dtype-preserving; the launcher casts GEMM operands to fp16.
+    """
+    bsz, hh, nt, c, d_k = k.shape
+    d_v = v.shape[-1]
+    if c > _N_TILE or d_v > _N_TILE or d_k > _K_PAD:
+        raise ValueError(
+            f"_k2f_pack stages on the ({_M_PAD},{_N_TILE},{_K_PAD}) tiler; "
+            f"got c={c}, d_k={d_k}, d_v={d_v}"
+        )
+    z = bsz * hh * nt
+    dev, dt = k.device, k.dtype
+
+    def _flat(x: Tensor) -> Tensor:
+        return x.reshape(z, *x.shape[3:])
+
+    kf, vf, bf, wf, g2f, tf = _flat(k), _flat(v), _flat(b), _flat(w), _flat(g2), _flat(t_mat)
+    dwyf, duf = _flat(dwy), _flat(du)
+
+    gamma = torch.exp2(g2f)
+    bk = bf * kf
+    pwv = wf * vf
+    q_kbg = bk * gamma
+
+    a_tt = torch.zeros(z, _M_PAD, _K_PAD, dtype=dt, device=dev)
+    a_tt[:, :c, :c] = tf.transpose(-1, -2)
+    a_du = torch.zeros(z, _M_PAD, _K_PAD, dtype=dt, device=dev)
+    a_du[:, :c, :d_v] = duf
+    a_dwy = torch.zeros(z, _M_PAD, _K_PAD, dtype=dt, device=dev)
+    a_dwy[:, :c, :d_k] = dwyf
+
+    b_du = torch.zeros(z, _N_TILE, _K_PAD, dtype=dt, device=dev)
+    b_du[:, :d_v, :c] = duf.transpose(-1, -2)
+    b_dwy = torch.zeros(z, 2 * _N_TILE, _K_PAD, dtype=dt, device=dev)
+    b_dwy[:, :d_k, :c] = dwyf.transpose(-1, -2)
+    b_pwv = torch.zeros(z, _N_TILE, _K_PAD, dtype=dt, device=dev)
+    b_pwv[:, :c, :d_v] = pwv
+    b_qkbg = torch.zeros(z, _N_TILE, _K_PAD, dtype=dt, device=dev)
+    b_qkbg[:, :c, :d_k] = q_kbg
+    b_t = torch.zeros(z, _N_TILE, _K_PAD, dtype=dt, device=dev)
+    b_t[:, :c, :c] = tf
+
+    return {
+        "a_tt": a_tt,
+        "a_du": a_du,
+        "a_dwy": a_dwy,
+        "b_du": b_du,
+        "b_dwy": b_dwy,
+        "b_pwv": b_pwv,
+        "b_qkbg": b_qkbg,
+        "b_t": b_t,
+        "k": kf,
+        "v": vf,
+        "b": bf,
+        "w": wf,
+        "g2": g2f,
+        "gamma": gamma,
+        "bk": bk,
+        "q_kbg": q_kbg,
+    }
+
+
+def _run_k2_fused_modelled(
+    k: Tensor,
+    v: Tensor,
+    b: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    t_mat: Tensor,
+    dwy: Tensor,
+    du: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Pure-torch model of the fused K#2 kernel's in-kernel dataflow (the kernel spec).
+
+    Statement order mirrors the kernel: G1 dp / G2 dq_wy / G3+G4 dT (one shared
+    accumulator), the two chained landings written into the zero-padded operand scratch
+    (``s_dt`` A-shaped, ``s_x`` B-shaped/transposed — fp16 on silicon) before G5/G6,
+    strict-lower mask + negate in G6's epilogue, then the decay pushes and the
+    reverse-cumsum. The kernel computes ``exp2(g2_i - g2_s)`` on the fly on the
+    strict-lower triangle only; ``masked_decay_rel`` is bitwise the same on every entry
+    ``d_m`` reads (its live diagonal multiplies ``d_m``'s zero diagonal). Device/dtype-
+    agnostic; in fp64 it reproduces ``k2_wy_vjp_cw_ref`` to roundoff. Returns
+    ``(dk2, dv, db, dw, dg2)`` head-major chunked.
+    """
+    bsz, hh, nt, c, d_k = k.shape
+    d_v = v.shape[-1]
+    z = bsz * hh * nt
+    dev, dt = k.device, k.dtype
+
+    buf = _k2f_pack(k, v, b, w, g2, t_mat, dwy, du)
+    sl = torch.tril(torch.ones(c, c, dtype=torch.bool, device=dev), -1)
+
+    dp = (buf["a_tt"] @ buf["b_du"].transpose(-1, -2))[:, :c, :d_v]
+    dq_wy = (buf["a_tt"] @ buf["b_dwy"].transpose(-1, -2))[:, :c, :d_k]
+    d_t_acc = buf["a_du"] @ buf["b_pwv"].transpose(-1, -2) + buf["a_dwy"] @ buf["b_qkbg"].transpose(
+        -1, -2
+    )
+
+    s_dt = torch.zeros(z, _M_PAD, _K_PAD, dtype=dt, device=dev)
+    s_dt[:, :c, :c] = d_t_acc[:, :c, :c]
+    x_acc = s_dt @ buf["b_t"].transpose(-1, -2)
+    s_x = torch.zeros(z, _N_TILE, _K_PAD, dtype=dt, device=dev)
+    s_x[:, :c, :c] = x_acc[:, :c, :c].transpose(-1, -2)
+    dm_acc = buf["a_tt"] @ s_x.transpose(-1, -2)
+    d_m = torch.where(sl, -dm_acc[:, :c, :c], torch.zeros_like(dm_acc[:, :c, :c]))
+
+    kf, vf, bf, wf = buf["k"], buf["v"], buf["b"], buf["w"]
+    gamma, bk, q_kbg = buf["gamma"], buf["bk"], buf["q_kbg"]
+    decay_rel = masked_decay_rel(buf["g2"])
+
+    dv = dp * wf
+    dw = dp * vf
+    dbk_q = dq_wy * gamma
+    dg2_q = dq_wy * q_kbg * LN2
+    dbk_m = torch.einsum("nis,nsd,nisd->nid", d_m, kf, decay_rel)
+    dk_m = torch.einsum("nis,nid,nisd->nsd", d_m, bk, decay_rel)
+    dg2_m = LN2 * (bk * dbk_m - kf * dk_m)  # rowsum(E)/colsum(E) reuse; E never built
+
+    dbk = dbk_q + dbk_m
+    db = dbk * kf
+    dk = dbk * bf + dk_m
+    dg2 = dg2_q + dg2_m
+    dg = RCP_LN2 * torch.flip(torch.cumsum(torch.flip(dg2, [1]), 1), [1])
+
+    return (
+        dk.reshape(bsz, hh, nt, c, d_k),
+        dv.reshape(bsz, hh, nt, c, d_v),
+        db.reshape(bsz, hh, nt, c, d_k),
+        dw.reshape(bsz, hh, nt, c, d_v),
+        dg.reshape(bsz, hh, nt, c, d_k),
+    )
+
+
+def run_k2(
+    k: Tensor,
+    v: Tensor,
+    b: Tensor,
+    w: Tensor,
+    g2: Tensor,
+    t_mat: Tensor,
+    dwy: Tensor,
+    du: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Default cw K#2: fused single-launch kernel > lever-B batched, by tile fit.
+
+    The fused path (ONE grid-z launch for all chunks, no ``decay_rel``
+    materialization; :mod:`gdn2_bwd_wy_f`) is dim-locked to C=64, d_k=128, d_v=64;
+    d_v=128 stays on the batched path until the N-tiling increment. Kill-switch:
+    ``FMR_DISABLE_K2F=1`` drops to the batched path (box-burst fallback while the
+    default re-gates). ``run_k2_serial`` stays as the proven per-chunk fallback.
+    """
+    import os
+
+    c, d_k = k.shape[3], k.shape[4]
+    if not os.environ.get("FMR_DISABLE_K2F") and k2f_dims_ok(c, d_k, v.shape[-1]):
+        from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
+
+        return run_k2_fused(k, v, b, w, g2, t_mat, dwy, du)
+    return run_k2_batched(k, v, b, w, g2, t_mat, dwy, du)
