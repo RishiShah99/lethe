@@ -312,6 +312,8 @@ class GRPOTrainingLoop:
             )
             if self.step_idx % self.config.save_every == 0:
                 self.save_checkpoint()
+        if self.step_idx % self.config.save_every != 0:
+            self.save_checkpoint()
         return history
 
     # ------------------------------------------------------------------

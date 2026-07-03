@@ -290,3 +290,20 @@ class TestRunAndCheckpoint:
         rollout_rows = [json.loads(line) for line in (ckpt / "rollouts.jsonl").open()]
         metric_rows = [json.loads(line) for line in (ckpt / "metrics.jsonl").open()]
         assert {r["step"] for r in rollout_rows} == {metric_rows[0]["step"]} == {1}
+
+    def test_final_checkpoint_saved_when_total_steps_not_divisible(self, tmp_path: Any) -> None:
+        loop, _ = make_loop(tmp_path, [GOOD, BAD], total_steps=5, save_every=2)
+        history = loop.run()
+        assert len(history) == 5
+        assert loop.step_idx == 5
+        path = GRPOTrainingLoop.latest_adapter_path(str(tmp_path / "ckpt"))
+        assert path is not None and path.endswith("adapter_step_5")
+        state = torch.load(tmp_path / "ckpt" / "trainer_state.pt", weights_only=True)
+        assert state["step"] == 5
+
+    def test_no_double_save_when_total_steps_divisible(self, tmp_path: Any) -> None:
+        loop, policy = make_loop(tmp_path, [GOOD, BAD], total_steps=4, save_every=2)
+        loop.run()
+        assert policy.saved_paths[-1].endswith("adapter_step_4")
+        save_count = sum(1 for p in policy.saved_paths if p.endswith("adapter_step_4"))
+        assert save_count == 1
