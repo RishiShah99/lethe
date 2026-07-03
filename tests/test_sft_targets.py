@@ -359,3 +359,19 @@ def test_c1_target_passes_full_battery() -> None:
     failed = {g: r for g, r in result["gates"].items() if not r["passed"]}
     assert result["contracts_passed"] is True, (result["status"], result["error"], failed)
     assert result["reward"] == 0.5
+
+
+def test_mimo_triton_target_int64_checkpoint_offset() -> None:
+    """Pin that mimo_backward_triton promotes checkpoint-tile offsets to int64.
+
+    At large B*L*D the flattened offset (c * BLOCK_P * BLOCK_N) overflows int32;
+    the production kernel (_triton_mimo_bwd.py) applies `c.to(tl.int64)` before
+    the multiplication. The SFT target must match so training data teaches the
+    correct (overflow-safe) pattern. Source-level assertion — the overflow
+    itself requires CUDA at huge shapes.
+    """
+    source = target_source("mimo_backward", "triton")
+    assert "c.to(tl.int64) * BLOCK_P * BLOCK_N" in source, (
+        "mimo_backward_triton must promote `c` to int64 before checkpoint-tile "
+        "offset multiplication to prevent int32 overflow at large shapes"
+    )
