@@ -9,11 +9,16 @@ exact proven tile / lever-B otherwise, upcasting L2's f16 outputs to fp32.
 
 from __future__ import annotations
 
+import inspect
+import re
+
 import pytest
 import torch
 
+import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as dhu
 import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as dhu_cw
 import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2 as l2
+import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3 as l3
 from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
 
@@ -105,3 +110,26 @@ def test_selector_routes_batched_off_tile(monkeypatch: pytest.MonkeyPatch) -> No
     out = dhu_cw.run_k1_incB(*shape_args)
     assert hit == {"batched": 1, "l2": 0}
     assert out == ("b", "b", "b")
+
+
+@pytest.mark.parametrize(
+    "module",
+    [l2, l3, dhu],
+    ids=lambda m: m.__name__.rsplit(".", 1)[-1],
+)
+def test_fence_proxy_precedes_barrier_on_simt_tma_roundtrip(module: object) -> None:
+    """Pin that fence_proxy always precedes barrier at SIMT-store-to-TMA round-trip sites.
+
+    The PTX mixed-proxy model requires stores -> fence_proxy (each writing thread)
+    -> barrier -> TMA for cross-proxy SIMT/TMA round-trips. This source-pin catches
+    any accidental inversion across the L2/L3/v0 sibling kernels.
+    """
+    src = inspect.getsource(module)  # type: ignore[arg-type]
+    barrier_then_fence = re.compile(
+        r"cute\.arch\.barrier\(\)\s*\n\s*(?:if\s+[^\n]+:\s*\n\s*)?cute\.arch\.fence_proxy"
+    )
+    match = barrier_then_fence.search(src)
+    assert match is None, (
+        f"{module.__name__}: barrier() before fence_proxy() at SIMT-TMA round-trip — "
+        f"inverted order breaks cross-proxy synchronization (match at char {match.start()})"
+    )

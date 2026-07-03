@@ -1027,9 +1027,9 @@ if _HAVE:
                     m_dv2[lid, r, col] = val.to(_io)
                     if cutlass.const_expr(bisect == 0):
                         m_bga_s[lid, col, c + r] = val.to(_io)  # b_dv^T → 2nd half (round-trip)
-                cute.arch.barrier()
                 if cutlass.const_expr(bisect == 0):
                     cute.arch.fence_proxy("async.global")  # SIMT store → TMA (async-proxy) read
+                cute.arch.barrier()
 
                 # ===== GA: m_t[·,bh] = m_aga[·,lid] @ m_bga[·,lid]^T =====
                 gA = cute.local_tile(m_aga, _MNK_TILER, (0, 0, None, lid), proj=(1, None, 1))
@@ -1102,9 +1102,9 @@ if _HAVE:
                     m_bdh[bh, r, col] = val
                     if cutlass.const_expr(bisect == 0):
                         m_bdhT_s[bh, col, r] = val.to(_io)  # transposed operand for next G1
-                cute.arch.barrier()
                 if cutlass.const_expr(bisect == 0):
                     cute.arch.fence_proxy("async.global")  # b_dhT round-trip → next chunk's G1 TMA
+                cute.arch.barrier()
 
         tmem.free(tmem.retrieve_ptr(_acc))
 
