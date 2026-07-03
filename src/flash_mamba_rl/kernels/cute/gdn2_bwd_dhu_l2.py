@@ -518,7 +518,8 @@ def _modelled_l2(
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Pure-torch model of _kern_g1_epi + _kern_ga_epi per step (the kernel spec).
 
-    Includes fp16 cast round-trips for all kernel I/O (operand casts, b_ga/b_dhT stores).
+    Includes fp16 cast round-trips for all kernel I/O: operand casts, GEMM outputs
+    (bdv_raw, t_scr land fp16 in GMEM before SIMT re-reads), b_ga/b_dhT stores.
     fp32 GEMM stand-ins (no tcgen05). In fp64 input tracks the cw bundle within the fp16
     quantisation floor (~3e-4 relative).
     """
@@ -555,12 +556,14 @@ def _modelled_l2(
         dh_out[it] = b_dh.to(f16)
 
         raw = a_g1_step @ b_dhT.to(f32).transpose(-1, -2)
+        raw = raw.to(f16).to(f32)
         b_dv = raw[:, :c] + dvl_step
         dv2_out[it] = b_dv.to(f16)
         # b_dv^T round-trip into GA's 2nd half; fp16 matches in-kernel SIMT store dtype.
         b_ga_step[:, :, c:] = b_dv.to(f16).transpose(-1, -2)
 
         t = a_ga_step @ b_ga_step.to(f32).transpose(-1, -2)
+        t = t.to(f16).to(f32)
         b_dh = gl_step[:, :, None] * b_dh + t
         # fp16 round-trip: b_dhT is the next G1's TMA operand; precision floor matches kernel.
         b_dhT = b_dh.to(f16).transpose(-1, -2).contiguous()
