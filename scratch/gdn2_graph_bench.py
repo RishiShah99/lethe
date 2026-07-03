@@ -87,7 +87,10 @@ def main() -> None:
         "--shapes", type=str, default="", help="comma list BxLxH (e.g. 1x512x4); default = all"
     )
     ap.add_argument(
-        "--dv", type=int, default=D_V, choices=[64, 128],
+        "--dv",
+        type=int,
+        default=D_V,
+        choices=[64, 128],
         help="value head dim (64 = the L3/L2 fused-kernel tile; 128 = the headline shapes)",
     )
     args = ap.parse_args()
@@ -207,6 +210,60 @@ def main() -> None:
         except Exception:
             row["closed_err"] = traceback.format_exc()
 
+        # lever 2b: save-from-forward — the stash is built OUTSIDE the timed region
+        # (in training it is the chunkwise forward's own output, the fla accounting:
+        # fla saves its triangular inverse from forward too). Backward = closed
+        # stage-B on the stash, NO restage. stash_build_ms reports the forward-side
+        # cost explicitly. Replay-only caveat: the captured stash is static, so the
+        # graph number is a pure-replay figure (same regime as every arm here).
+        try:
+            from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+                chunkwise_restage_cw,
+            )
+
+            fp32_in = tuple(x.float() for x in cw[:6])
+
+            def build_stash(fp32_in=fp32_in):
+                st = chunkwise_restage_cw(*fp32_in, chunk_len=CHUNK, use_qk_l2norm=True)
+                st.decay_rel = None  # not held across fwd->bwd in the op binding
+                return st
+
+            stash = build_stash()
+            row["stash_build_ms"] = bench_cuda(build_stash, 1, args.eager_trials)
+
+            def adapter_savefwd(q, k, v, g, bg, wg, do, stash=stash):
+                gr = assembled_channelwise_gdn2_backward(
+                    q,
+                    k,
+                    v,
+                    g,
+                    bg,
+                    wg,
+                    do,
+                    use_qk_l2norm=True,
+                    k1_fn=k1_cw,
+                    k2_fn=k2_cw,
+                    stage_b_closed=True,
+                    fwd_stash=stash,
+                )
+                return (gr.grad_q, gr.grad_k, gr.grad_v, gr.grad_g, gr.grad_b, gr.grad_w)
+
+            base_out = adapter(*cw)
+            sf_out = adapter_savefwd(*cw)
+            row["savefwd_parity_scale_rel"] = max(
+                (
+                    (a.float() - c.float()).abs().max() / a.float().abs().max().clamp_min(1e-12)
+                ).item()
+                for a, c in zip(base_out, sf_out, strict=True)
+            )
+            sf_run = partial(adapter_savefwd, *cw)
+            row["savefwd_eager_ms"] = bench_cuda(sf_run, 1, args.eager_trials)
+            graphed_sf = GraphedBackward(adapter_savefwd)
+            graphed_sf(*cw)
+            row["savefwd_graph_ms"] = bench_cuda(graphed_sf.replay_only, 10, args.trials)
+        except Exception:
+            row["savefwd_err"] = traceback.format_exc()
+
         try:
             row["fla_ms"] = bench_fla(inp, args.trials)
         except Exception:
@@ -220,6 +277,12 @@ def main() -> None:
             row["closed_graph_over_fla"] = row["closed_graph_ms"] / row["fla_ms"]
         if "closed_graph_ms" in row and "graph_ms" in row:
             row["graph_over_closed_graph"] = row["graph_ms"] / row["closed_graph_ms"]
+        if "savefwd_graph_ms" in row and "fla_ms" in row:
+            row["savefwd_graph_over_fla"] = row["savefwd_graph_ms"] / row["fla_ms"]
+        if "savefwd_graph_ms" in row and "closed_graph_ms" in row:
+            row["closed_graph_over_savefwd_graph"] = (
+                row["closed_graph_ms"] / row["savefwd_graph_ms"]
+            )
         report["runs"].append(row)
         with open(args.out, "w") as f:
             json.dump(report, f, indent=2)
