@@ -70,13 +70,31 @@ def test_shape_and_dtype_preserved(dtype: torch.dtype) -> None:
 
 
 def test_no_grad_inputs_produce_none_grads() -> None:
-    """Non-leaf inputs that don't require grad produce None gradients (standard autograd)."""
+    """Inputs with requires_grad=False have .grad=None after backward; grad-requiring ones are populated."""
     q, k, v, g, b, w, do = _inputs(seed=2)
-    # Only q requires grad; the rest do not.
+
+    # q and v require grad; k, g, b, w do not.
     q_leaf = q.detach().requires_grad_(True)
-    o = gdn2_op(q_leaf, k, v, g, b, w)
+    k_leaf = k.detach().requires_grad_(False)
+    v_leaf = v.detach().requires_grad_(True)
+    g_leaf = g.detach().requires_grad_(False)
+    b_leaf = b.detach().requires_grad_(False)
+    w_leaf = w.detach().requires_grad_(False)
+
+    o = gdn2_op(q_leaf, k_leaf, v_leaf, g_leaf, b_leaf, w_leaf)
     o.backward(do)
-    assert q_leaf.grad is not None
+
+    # Grad-requiring inputs must have finite, populated gradients.
+    assert q_leaf.grad is not None, "q_leaf.grad should be populated"
+    assert torch.isfinite(q_leaf.grad).all(), "q_leaf.grad has non-finite values"
+    assert v_leaf.grad is not None, "v_leaf.grad should be populated"
+    assert torch.isfinite(v_leaf.grad).all(), "v_leaf.grad has non-finite values"
+
+    # Non-grad-requiring inputs must have .grad=None (standard autograd contract).
+    assert k_leaf.grad is None, "k_leaf.grad should be None (requires_grad=False)"
+    assert g_leaf.grad is None, "g_leaf.grad should be None (requires_grad=False)"
+    assert b_leaf.grad is None, "b_leaf.grad should be None (requires_grad=False)"
+    assert w_leaf.grad is None, "w_leaf.grad should be None (requires_grad=False)"
 
 
 def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPatch) -> None:

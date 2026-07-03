@@ -1,14 +1,13 @@
-"""Regression: the scalar K#1/K#2 backward run functions are CUDA-graph safe.
+"""Regression: all shipped K#1/K#2/SBE backward run functions are CUDA-graph safe.
 
 A ``torch.cuda.synchronize()`` inside a ``torch.cuda.graph`` capture region is
-illegal and aborts the capture. The channel-wise crown routes its end-of-run
-device sync through ``maybe_sync()`` (a no-op under ``graph_capture()``); the
-scalar K#1/K#2 run functions (and the cw serial fallbacks) previously used an
-unconditional sync, silently non-capturable. These tests pin that every run
-function uses the capturable sync, and that the scalar batched paths actually run
-under capture without calling ``torch.cuda.synchronize`` while still syncing once
-outside capture. CPU-only: the tcgen05 GEMM is stubbed, so only the host
-orchestration + the sync placement are exercised.
+illegal and aborts the capture. All run functions route their end-of-run device
+sync through ``maybe_sync()`` (a no-op under ``graph_capture()``). These tests
+pin that every run function — including the shipped defaults (L3 K#1, fused K#2,
+L2 K#1, SBE) — uses the capturable sync, and that the scalar batched paths
+actually run under capture without calling ``torch.cuda.synchronize`` while still
+syncing once outside capture. CPU-only: the tcgen05 GEMM is stubbed, so only the
+host orchestration + the sync placement are exercised.
 """
 
 from __future__ import annotations
@@ -22,8 +21,12 @@ import torch
 from flash_mamba_rl.kernels.cute import (
     gdn2_bwd_dhu,
     gdn2_bwd_dhu_cw,
+    gdn2_bwd_dhu_l2,
+    gdn2_bwd_dhu_l3,
     gdn2_bwd_wy,
     gdn2_bwd_wy_cw,
+    gdn2_bwd_wy_f,
+    gdn2_sb_einsum,
 )
 from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import graph_capture
 
@@ -37,6 +40,10 @@ _RUN_FNS = [
     gdn2_bwd_dhu_cw.run_k1_incB_batched,
     gdn2_bwd_wy_cw.run_k2_serial,
     gdn2_bwd_wy_cw.run_k2_batched,
+    gdn2_bwd_dhu_l3.run_k1_incB2_v3,
+    gdn2_bwd_wy_f.run_k2_fused,
+    gdn2_bwd_dhu_l2.run_k1_incB_l2,
+    gdn2_sb_einsum.run_sb_einsum,
 ]
 
 
