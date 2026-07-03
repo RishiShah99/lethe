@@ -16,7 +16,9 @@ from statistics import geometric_mean
 
 from flash_mamba_rl.kernels.autotune import KernelConfig
 from flash_mamba_rl.kernels.ops.forward_chunked_scan import (
+    _chunk_parallel_bwd_scratch_bytes,
     _default_scan_mode,
+    _next_power_of_2,
     _resolve_scan_mode,
 )
 
@@ -70,6 +72,71 @@ class TestResolveScanMode:
         cfg = KernelConfig(num_warps=4)
         assert _resolve_scan_mode(cfg, 16384, 1, 1024, is_forward=True) == "chunk_parallel"
         assert _resolve_scan_mode(cfg, 512, 8, 4096, is_forward=True) == "serial"
+
+
+class TestMemoryBoundFallback:
+    """CMP-05: selector falls back to serial when scratch would exceed memory."""
+
+    def test_scratch_bytes_formula_matches_block_sizing(self) -> None:
+        # Verify the helper computes the same formula as the kernels:
+        # hbuf_elems = batch * n_chunks * n_d_blocks * chunk_len * block_d * block_n
+        batch, seq_len, d_model, n_state, chunk_len = 4, 2048, 1024, 16, 128
+        block_n = _next_power_of_2(n_state)
+        block_d = min(64, max(16, 2048 // block_n))
+        n_chunks = seq_len // chunk_len
+        n_d_blocks = (d_model + block_d - 1) // block_d
+        expected = batch * n_chunks * n_d_blocks * chunk_len * block_d * block_n * 4
+
+        actual = _chunk_parallel_bwd_scratch_bytes(batch, seq_len, d_model, n_state, chunk_len)
+        assert actual == expected
+
+    def test_large_n_state_uses_more_memory(self) -> None:
+        # At larger n_state, block_d shrinks but block_n grows, and n_d_blocks
+        # increases, so total scratch is larger.
+        small = _chunk_parallel_bwd_scratch_bytes(4, 4096, 1024, 16, 128)
+        large = _chunk_parallel_bwd_scratch_bytes(4, 4096, 1024, 128, 128)
+        assert large > small
+
+    def test_selector_keeps_chunk_parallel_when_n_state_missing(self) -> None:
+        # Without n_state, the selector cannot check memory — it uses the
+        # shape-based heuristics only. For a shape that would normally pick
+        # chunk_parallel, it still does.
+        assert _default_scan_mode(4096, 2, 1024, is_forward=False) == "chunk_parallel"
+
+    def test_selector_returns_serial_for_overcap_n_state(self) -> None:
+        # The chunk-parallel backward launchers reject n_state > 128 outright;
+        # the selector must not route there.
+        assert _default_scan_mode(4096, 2, 1024, is_forward=False, n_state=256) == "serial"
+
+    def test_selector_returns_serial_for_memory_exceeding_shape(self) -> None:
+        # A shape with huge batch * seq_len * d_model * n_state that would exceed
+        # any plausible GPU memory budget should fall back to serial. On CPU-only
+        # test runners (torch.cuda.is_available() == False), the selector skips
+        # the memory check and returns chunk_parallel, so we test the formula
+        # directly in those environments.
+        import torch
+
+        batch, seq_len, d_model, n_state = 64, 65536, 4096, 128
+        chunk_len = 512
+        scratch = _chunk_parallel_bwd_scratch_bytes(batch, seq_len, d_model, n_state, chunk_len)
+        # This shape needs multiple TB of scratch — exceeds any current GPU
+        assert scratch > 100 * 1e9
+
+        if torch.cuda.is_available():
+            # On GPU, selector should return serial
+            mode = _default_scan_mode(seq_len, batch, d_model, is_forward=False, n_state=n_state)
+            assert mode == "serial"
+
+    def test_selector_still_picks_chunk_parallel_for_small_shapes(self) -> None:
+        # A typical training shape (batch=2, L=2048, d=1024, n_state=16) should
+        # still route to chunk_parallel with the memory check.
+        batch, seq_len, d_model, n_state = 2, 2048, 1024, 16
+        scratch = _chunk_parallel_bwd_scratch_bytes(batch, seq_len, d_model, n_state, 128)
+        # ~268 MB — fits easily on any modern GPU
+        assert scratch < 500 * 1e6
+
+        mode = _default_scan_mode(seq_len, batch, d_model, is_forward=False, n_state=n_state)
+        assert mode == "chunk_parallel"
 
 
 class TestAgainstBoundarySweep:

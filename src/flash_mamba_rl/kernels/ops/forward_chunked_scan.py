@@ -44,6 +44,37 @@ def _triton_usable() -> bool:
 
 
 _CHUNK_PARALLEL_CAP = 512
+_BWD_TILE_BUDGET = 2048
+_MAX_BLOCK_N = 128
+
+
+def _next_power_of_2(n: int) -> int:
+    """Smallest power of 2 >= n. Mirrors triton.next_power_of_2."""
+    if n <= 0:
+        return 1
+    return 1 << (n - 1).bit_length()
+
+
+def _chunk_parallel_bwd_scratch_bytes(
+    batch: int, seq_len: int, d_model: int, n_state: int, chunk_len: int
+) -> int:
+    """Compute the fp32 scratch buffer size (bytes) for chunk-parallel backward.
+
+    The backward kernels allocate a per-chunk forward-recompute buffer sized for
+    all chunks at once. This mirrors the default block sizing in
+    _triton_chunk_parallel_bwd and _triton_chunk_parallel_fused_bwd; a
+    config.block_d override or the fused launcher's narrower block_d can pad
+    the true allocation by at most one block_d remainder per d-block — exact
+    for every width where block_d divides d_model.
+    """
+    block_n = _next_power_of_2(n_state)
+    if block_n > _MAX_BLOCK_N:
+        block_n = _MAX_BLOCK_N
+    block_d = min(64, max(16, _BWD_TILE_BUDGET // block_n))
+    n_chunks = seq_len // chunk_len if chunk_len > 0 else 1
+    n_d_blocks = (d_model + block_d - 1) // block_d
+    hbuf_elems = batch * n_chunks * n_d_blocks * chunk_len * block_d * block_n
+    return hbuf_elems * 4
 
 
 def _auto_chunk_len(seq_len: int, requested: int | None) -> int:
@@ -64,7 +95,15 @@ def _auto_chunk_len(seq_len: int, requested: int | None) -> int:
     return 1
 
 
-def _default_scan_mode(seq_len: int, batch: int, width: int, *, is_forward: bool) -> str:
+def _default_scan_mode(
+    seq_len: int,
+    batch: int,
+    width: int,
+    *,
+    is_forward: bool,
+    n_state: int | None = None,
+    device: torch.device | None = None,
+) -> str:
     """Launch-default scan mode for a shape, consulted only when scan_mode is unset.
 
     Calibrated to the broad boundary sweep (``results/scan_mode_boundary.json``,
@@ -79,6 +118,12 @@ def _default_scan_mode(seq_len: int, batch: int, width: int, *, is_forward: bool
     are the sweep's measured boundary, slightly biased toward chunk_parallel (the
     dominant winner): the rule trails the per-shape oracle by <0.1% in geomean
     with its worst single-shape regression ~5%.
+
+    When ``n_state`` is provided and ``is_forward=False``, the selector also
+    checks whether the chunk-parallel backward scratch buffer would exceed 70%
+    of GPU memory on ``device`` (the same bound the guard uses) and whether
+    ``n_state`` exceeds the launchers' hard block cap. Either way it falls back
+    to serial — routing to a mode whose guard would raise is a bug (CMP-05).
     """
     if is_forward and seq_len <= 512:
         return "serial"
@@ -86,16 +131,38 @@ def _default_scan_mode(seq_len: int, batch: int, width: int, *, is_forward: bool
         return "serial"
     if batch >= 8 and width >= 2048 and seq_len <= 512:
         return "serial"
+    if not is_forward and n_state is not None:
+        if n_state > _MAX_BLOCK_N:
+            return "serial"
+        if torch.cuda.is_available():
+            chunk_len = _auto_chunk_len(seq_len, None)
+            scratch = _chunk_parallel_bwd_scratch_bytes(batch, seq_len, width, n_state, chunk_len)
+            cuda_device = device if device is not None and device.type == "cuda" else None
+            try:
+                free_bytes, _ = torch.cuda.mem_get_info(cuda_device)
+            except RuntimeError:
+                free_bytes = 0
+            if scratch > 0.7 * free_bytes:
+                return "serial"
     return "chunk_parallel"
 
 
 def _resolve_scan_mode(
-    config: KernelConfig | None, seq_len: int, batch: int, width: int, *, is_forward: bool
+    config: KernelConfig | None,
+    seq_len: int,
+    batch: int,
+    width: int,
+    *,
+    is_forward: bool,
+    n_state: int | None = None,
+    device: torch.device | None = None,
 ) -> str:
     """The effective scan mode: an explicit config knob, else the shape default."""
     if config is not None and config.scan_mode is not None:
         return config.scan_mode
-    return _default_scan_mode(seq_len, batch, width, is_forward=is_forward)
+    return _default_scan_mode(
+        seq_len, batch, width, is_forward=is_forward, n_state=n_state, device=device
+    )
 
 
 def _scan_eager(u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor) -> Tensor:
@@ -166,7 +233,13 @@ class _ForwardScanCuda(torch.autograd.Function):
         # regime (the C2 adjoint, not the C1 forward), so it resolves the mode
         # with is_forward=False rather than inheriting the forward pass's choice.
         batch, seq_len, width = u.shape
-        if _resolve_scan_mode(config, seq_len, batch, width, is_forward=False) == "chunk_parallel":
+        n_state = a.shape[1]
+        if (
+            _resolve_scan_mode(
+                config, seq_len, batch, width, is_forward=False, n_state=n_state, device=u.device
+            )
+            == "chunk_parallel"
+        ):
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
 
             k = _auto_chunk_len(seq_len, config.chunk_len if config is not None else None)

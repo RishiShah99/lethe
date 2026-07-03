@@ -80,7 +80,13 @@ def backward_selective_scan(
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
     if u.is_cuda and u.dtype in _TRITON_DTYPES and _triton_usable():
         batch, _, width = u.shape
-        if _resolve_scan_mode(config, seq_len, batch, width, is_forward=False) == "chunk_parallel":
+        n_state = A.shape[1]
+        if (
+            _resolve_scan_mode(
+                config, seq_len, batch, width, is_forward=False, n_state=n_state, device=u.device
+            )
+            == "chunk_parallel"
+        ):
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd
 
             k = _auto_chunk_len(seq_len, config.chunk_len if config is not None else None)

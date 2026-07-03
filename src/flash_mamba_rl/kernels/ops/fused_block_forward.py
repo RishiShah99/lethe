@@ -105,7 +105,13 @@ class _FusedBlockCuda(torch.autograd.Function):
         config = ctx.config
         l_out = delta.shape[1]
         batch, _, width = x.shape
-        if _resolve_scan_mode(config, l_out, batch, width, is_forward=False) == "chunk_parallel":
+        n_state = a.shape[1]
+        if (
+            _resolve_scan_mode(
+                config, l_out, batch, width, is_forward=False, n_state=n_state, device=x.device
+            )
+            == "chunk_parallel"
+        ):
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fused_bwd
 
             k = _auto_chunk_len(l_out, config.chunk_len if config is not None else None)

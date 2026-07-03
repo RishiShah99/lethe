@@ -53,6 +53,7 @@ from flash_mamba_rl.kernels.ops._triton_chunk_parallel_fwd import (
     _carry_scan,
     _chunk_reduce_kernel,
 )
+from flash_mamba_rl.kernels.ops.forward_chunked_scan import _chunk_parallel_bwd_scratch_bytes
 
 try:  # moved between minor versions
     from triton.language.extra import libdevice
@@ -312,12 +313,12 @@ def launch_backward_chunk_parallel_scan(
     # and nc*chunk_len=L, so hbuf is O(B*L*D*block_n) — the whole state tensor).
     # Guard before allocating so a too-large shape/config raises instead of an
     # opaque CUDA OOM mid-backward (and so config scoring records it honestly).
-    hbuf_elems = batch * n_chunks * n_d_blocks * chunk_len * block_d * block_n
+    scratch_bytes = _chunk_parallel_bwd_scratch_bytes(batch, seq_len, d_model, n_state, chunk_len)
     if u.is_cuda:
         free_bytes, _ = torch.cuda.mem_get_info(u.device)
-        if hbuf_elems * 4 > 0.7 * free_bytes:
+        if scratch_bytes > 0.7 * free_bytes:
             raise ValueError(
-                f"chunk_parallel backward scratch ~{hbuf_elems * 4 / 1e9:.1f} GB exceeds "
+                f"chunk_parallel backward scratch ~{scratch_bytes / 1e9:.1f} GB exceeds "
                 f"{0.7 * free_bytes / 1e9:.1f} GB free; use serial scan_mode or smaller chunk_len"
             )
 

@@ -104,7 +104,13 @@ def fused_block_backward(
         raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")
     if x.is_cuda and x.dtype in _TRITON_DTYPES and _triton_usable():
         batch, _, width = x.shape
-        if _resolve_scan_mode(config, l_out, batch, width, is_forward=False) == "chunk_parallel":
+        n_state = A.shape[1]
+        if (
+            _resolve_scan_mode(
+                config, l_out, batch, width, is_forward=False, n_state=n_state, device=x.device
+            )
+            == "chunk_parallel"
+        ):
             from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_fused_bwd
 
             k = _auto_chunk_len(l_out, config.chunk_len if config is not None else None)
