@@ -1,8 +1,8 @@
 """Tiny GDN-2 training run — purchases the "trains the family" claim.
 
-A 2-layer toy sequence model (embed -> [GDN-2 mixer + MLP] x2 -> head) trained on a
+A 2-layer toy sequence model (embed -> [mixer + MLP] x2 -> head) trained on a
 deterministic synthetic delayed-copy task (delay=1: predict the previous token).
-Three arms selectable via ``--arm``:
+Arms selectable via ``--arm``:
 
   native   — (default) native dispatch; on B200 the tcgen05 assembly runs via gdn2_backward
   fla      — fla.ops.gdn2.chunk_gdn2 if importable (box-only); skips gracefully otherwise
@@ -10,14 +10,22 @@ Three arms selectable via ``--arm``:
   assembly — routes backward through assembled_channelwise_gdn2_backward with the
              pure-torch kernel refs (CPU-runnable): the native path's exact glue minus
              the tcgen05 GEMMs. The desk gate for the drifted-regime NaN fix.
+  gla/la/ssd/kda — FAMILY training arms: the mixer emits that family's gate set and the
+             backward routes through native_{gla,la,ssd,kda}_backward (forward = the
+             family's token-serial oracle). ``backward_dispatch`` in the result counts
+             native vs fallback calls — the family gate additionally requires
+             fallback == 0 on CUDA, so a silent eager fallback cannot fabricate the
+             "trains the family" purchase.
 
-Envelope (enforced only for native arm on CUDA):
-  d_k=128, d_v=64, L%64==0 (default L=256, B=4, H=2), dtype bf16
+Envelope (enforced for native + family arms on CUDA):
+  d_k=128, d_v=64, L%64==0 (default L=256, B=4, H=2)
 
-CPU desk run uses fp32 (reference_gdn2_forward rejects half) with smaller shapes.
+CPU desk run uses fp32 (the reference forwards reject half) with smaller shapes.
 
-Gate (box / native arm): final_loss < 0.5 * initial_loss.
-Desk validation: ``--arm eager --steps 60 --device cpu`` achieves that criterion.
+Gate: final_loss < 0.5 * initial_loss (+ finite grads via the NaN probe; family arms
+also gate on the dispatch counter).
+Desk validation: ``--arm eager --steps 60 --device cpu`` achieves the loss criterion;
+family arms desk-run the same way (reference-backward fallback stands in off-box).
 """
 
 from __future__ import annotations
@@ -50,6 +58,105 @@ def make_batch(
     if delay < seqlen:
         tgt[:, delay:] = src[:, : seqlen - delay]
     return src, tgt
+
+
+# ---------------------------------------------------------------------------
+# Family autograd ops — forward = token-serial family oracle; backward = the
+# native family dispatch (native_{gla,la,ssd,kda}_backward) with the family's
+# autograd reference as the off-box fallback. Dispatch calls are counted so the
+# gate can prove the native path actually ran.
+# ---------------------------------------------------------------------------
+
+FAMILY_ARMS = ("gla", "la", "ssd", "kda")
+_DISPATCH_COUNTS = {"native": 0, "fallback": 0}
+
+
+def _make_family_op(fam: str) -> Any:
+    import flash_mamba_rl.kernels.cute.gdn2_backward as native
+    from flash_mamba_rl.kernels.references import family_oracles as fo
+
+    fwd = getattr(fo, f"reference_{fam}_forward")
+    ref_bwd = getattr(fo, f"reference_{fam}_backward")
+    nat_bwd = getattr(native, f"native_{fam}_backward")
+
+    class _FamilyFn(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, *tensors: Tensor) -> Tensor:
+            with torch.no_grad():
+                o = fwd(*tensors)
+            ctx.save_for_backward(*tensors)
+            return o
+
+        @staticmethod
+        def backward(ctx: Any, do: Tensor) -> tuple[Tensor, ...]:
+            saved = ctx.saved_tensors
+            # Function.backward runs grad-mode-OFF; the native assembly's supporting
+            # stages take autograd VJPs internally (stage B, L2-norm VJP).
+            with torch.enable_grad():
+                grads = nat_bwd(*saved, do.detach())
+                if grads is None:
+                    _DISPATCH_COUNTS["fallback"] += 1
+                    grads = ref_bwd(*saved, do.detach())
+                else:
+                    _DISPATCH_COUNTS["native"] += 1
+            # Grad NamedTuple fields align 1:1 with the family's tensor inputs.
+            return tuple(grads)
+
+    def op(*tensors: Tensor) -> Tensor:
+        return _FamilyFn.apply(*tensors)  # type: ignore[no-any-return]
+
+    return op
+
+
+class FamilyMixer(nn.Module):
+    """Family-gated mixer: emits exactly the gate set the family mode consumes.
+
+    gla: (q, k, v, g[B,L,H,d_k]) · la: (q, k, v) · ssd: (q, k, v, g[B,L,H]) ·
+    kda: (q, k, v, g[B,L,H,d_k], beta[B,L,H]).
+    """
+
+    def __init__(
+        self, fam: str, d_model: int, nheads: int, d_k: int, d_v: int, dtype: torch.dtype
+    ) -> None:
+        super().__init__()
+        self.fam = fam
+        self.nheads = nheads
+        self.d_k = d_k
+        self.d_v = d_v
+        self.dtype = dtype
+        self.op = _make_family_op(fam)
+        self.q_proj = nn.Linear(d_model, nheads * d_k, bias=False)
+        self.k_proj = nn.Linear(d_model, nheads * d_k, bias=False)
+        self.v_proj = nn.Linear(d_model, nheads * d_v, bias=False)
+        if fam in ("gla", "kda"):
+            self.g_proj = nn.Linear(d_model, nheads * d_k, bias=True)  # per key channel
+        elif fam == "ssd":
+            self.g_proj = nn.Linear(d_model, nheads, bias=True)  # scalar per token-head
+        if fam == "kda":
+            self.beta_proj = nn.Linear(d_model, nheads, bias=True)
+        self.out_proj = nn.Linear(nheads * d_v, d_model, bias=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        b, t, _ = x.shape
+        h, dk, dv = self.nheads, self.d_k, self.d_v
+        q = self.q_proj(x).view(b, t, h, dk).to(self.dtype)
+        k = self.k_proj(x).view(b, t, h, dk).to(self.dtype)
+        v = self.v_proj(x).view(b, t, h, dv).to(self.dtype)
+        args: tuple[Tensor, ...]
+        if self.fam == "la":
+            args = (q, k, v)
+        elif self.fam == "ssd":
+            g = -F.softplus(self.g_proj(x)).view(b, t, h).to(self.dtype)
+            args = (q, k, v, g)
+        elif self.fam == "gla":
+            g = -F.softplus(self.g_proj(x)).view(b, t, h, dk).to(self.dtype)
+            args = (q, k, v, g)
+        else:  # kda
+            g = -F.softplus(self.g_proj(x)).view(b, t, h, dk).to(self.dtype)
+            beta = torch.sigmoid(self.beta_proj(x)).view(b, t, h).to(self.dtype)
+            args = (q, k, v, g, beta)
+        o = self.op(*args).to(x.dtype)
+        return self.out_proj(o.reshape(b, t, h * dv))
 
 
 # ---------------------------------------------------------------------------
@@ -96,10 +203,22 @@ class GDN2Mixer(nn.Module):
 
 
 class GDN2Block(nn.Module):
-    def __init__(self, d_model: int, nheads: int, d_k: int, d_v: int, dtype: torch.dtype) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        nheads: int,
+        d_k: int,
+        d_v: int,
+        dtype: torch.dtype,
+        fam: str | None = None,
+    ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
-        self.mixer = GDN2Mixer(d_model, nheads, d_k, d_v, dtype)
+        self.mixer: nn.Module = (
+            FamilyMixer(fam, d_model, nheads, d_k, d_v, dtype)
+            if fam
+            else GDN2Mixer(d_model, nheads, d_k, d_v, dtype)
+        )
         self.norm2 = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
@@ -123,11 +242,12 @@ class ToyModel(nn.Module):
         d_v: int,
         n_layers: int,
         dtype: torch.dtype,
+        fam: str | None = None,
     ) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab, d_model)
         self.blocks = nn.ModuleList(
-            [GDN2Block(d_model, nheads, d_k, d_v, dtype) for _ in range(n_layers)]
+            [GDN2Block(d_model, nheads, d_k, d_v, dtype, fam=fam) for _ in range(n_layers)]
         )
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab, bias=False)
@@ -205,9 +325,15 @@ def train(
         _orig_backward = _layer.gdn2_backward
         _layer.gdn2_backward = assembled_channelwise_gdn2_backward  # type: ignore[assignment]
 
+    fam = arm if arm in FAMILY_ARMS else None
+    _DISPATCH_COUNTS["native"] = 0
+    _DISPATCH_COUNTS["fallback"] = 0
+
     try:
         torch.manual_seed(seed)
-        model = ToyModel(vocab, d_model, nheads, d_k, d_v, n_layers, run_dtype).to(device)
+        model = ToyModel(vocab, d_model, nheads, d_k, d_v, n_layers, run_dtype, fam=fam).to(
+            device
+        )
         opt = torch.optim.AdamW(model.parameters(), lr=lr)
 
         loss_curve: list[float] = []
@@ -258,6 +384,11 @@ def train(
     initial = loss_curve[0]
     final = loss_curve[-1]
     gate_ok = final < 0.5 * initial
+    dispatch = dict(_DISPATCH_COUNTS)
+    if fam and device.type == "cuda":
+        # The family purchase requires the NATIVE dispatch to have carried every
+        # backward — a fallback-trained curve is not native evidence.
+        gate_ok = gate_ok and dispatch["native"] > 0 and dispatch["fallback"] == 0
 
     result: dict[str, Any] = {
         "arm": arm,
@@ -278,6 +409,8 @@ def train(
         "delay": delay,
         "lr": lr,
     }
+    if fam:
+        result["backward_dispatch"] = dispatch
 
     status = "GO" if gate_ok else "FAIL"
     print(
@@ -294,7 +427,11 @@ def train(
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--arm", choices=["native", "fla", "eager", "assembly"], default="native")
+    p.add_argument(
+        "--arm",
+        choices=["native", "fla", "eager", "assembly", *FAMILY_ARMS],
+        default="native",
+    )
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--batch", type=int, default=None)
@@ -308,7 +445,7 @@ def main() -> None:
 
     device = torch.device(args.device)
 
-    if args.arm == "native" and device.type == "cuda":
+    if args.arm in ("native", *FAMILY_ARMS) and device.type == "cuda":
         # Enforce the dispatch envelope
         d_k = 128
         d_v = 64

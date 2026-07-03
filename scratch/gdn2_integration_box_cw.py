@@ -40,15 +40,17 @@ ATOL_BF16 = 5e-3  # re-pin against the real assembled tcgen05 path on B200
 GRAD_FIELDS = ("grad_q", "grad_k", "grad_v", "grad_g", "grad_b", "grad_w")
 
 
-def _inputs(b: int, t: int, h: int, dtype: torch.dtype, dev: torch.device, seed: int):
+def _inputs(
+    b: int, t: int, h: int, dtype: torch.dtype, dev: torch.device, seed: int, d_v: int = D_V
+):
     gen = torch.Generator(device="cpu").manual_seed(seed)
     q = torch.randn(b, t, h, D_K, generator=gen)
     k = torch.randn(b, t, h, D_K, generator=gen)
-    v = torch.randn(b, t, h, D_V, generator=gen)
+    v = torch.randn(b, t, h, d_v, generator=gen)
     g = -torch.rand(b, t, h, D_K, generator=gen) * 0.1  # per-channel decay (key axis)
     bg = torch.rand(b, t, h, D_K, generator=gen).sigmoid()  # erase gate (key axis)
-    wg = torch.rand(b, t, h, D_V, generator=gen).sigmoid()  # write gate (value axis)
-    do = torch.randn(b, t, h, D_V, generator=gen)
+    wg = torch.rand(b, t, h, d_v, generator=gen).sigmoid()  # write gate (value axis)
+    do = torch.randn(b, t, h, d_v, generator=gen)
 
     def cast(x: torch.Tensor) -> torch.Tensor:
         return x.to(device=dev, dtype=dtype).contiguous()
@@ -73,6 +75,10 @@ def main() -> None:
     ap.add_argument(
         "--closed", action="store_true", help="grade the closed stage-B path (de-glue Level 1)"
     )
+    ap.add_argument(
+        "--dv", type=int, default=D_V, choices=[64, 128],
+        help="value head dim (64 = the L3/L2 fused-kernel tile; 128 = the crown)",
+    )
     args = ap.parse_args()
     grid = GRID
     if args.shapes:
@@ -92,12 +98,14 @@ def main() -> None:
         mode = "native_cw(box)"
     if args.closed:
         mode += "+closed"
+    if args.dv != D_V:
+        mode += f"+dv{args.dv}"
 
     results: list[dict[str, object]] = []
     worst = 0.0
     ok = True
     for b, t, h in grid:
-        q, k, v, g, bg, wg, do = _inputs(b, t, h, dtype, dev, seed=b * 100 + t)
+        q, k, v, g, bg, wg, do = _inputs(b, t, h, dtype, dev, seed=b * 100 + t, d_v=args.dv)
         got = candidate(q, k, v, g, bg, wg, do)
         if got is None:
             results.append({"shape": [b, t, h], "error": "candidate returned None"})

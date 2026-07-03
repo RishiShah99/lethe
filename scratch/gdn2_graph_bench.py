@@ -30,17 +30,19 @@ CHUNK = 64
 SHAPES = [(1, 512, 4), (1, 1024, 8), (2, 2048, 8), (2, 4096, 4)]
 
 
-def _inputs(b: int, t: int, h: int, dtype: torch.dtype, dev: torch.device, seed: int):
+def _inputs(
+    b: int, t: int, h: int, dtype: torch.dtype, dev: torch.device, seed: int, d_v: int = D_V
+):
     gen = torch.Generator(device="cpu").manual_seed(seed)
     q = torch.randn(b, t, h, D_K, generator=gen)
     k = torch.randn(b, t, h, D_K, generator=gen)
-    v = torch.randn(b, t, h, D_V, generator=gen)
+    v = torch.randn(b, t, h, d_v, generator=gen)
     g = -torch.rand(b, t, h, D_K, generator=gen) * 0.1
     g_head = g.mean(-1)
     bg = torch.rand(b, t, h, D_K, generator=gen).sigmoid()
-    wg = torch.rand(b, t, h, D_V, generator=gen).sigmoid()
+    wg = torch.rand(b, t, h, d_v, generator=gen).sigmoid()
     beta = torch.rand(b, t, h, generator=gen).sigmoid()
-    do = torch.randn(b, t, h, D_V, generator=gen)
+    do = torch.randn(b, t, h, d_v, generator=gen)
 
     def cast(x: torch.Tensor) -> torch.Tensor:
         return x.to(device=dev, dtype=dtype).contiguous()
@@ -83,6 +85,10 @@ def main() -> None:
     ap.add_argument("--eager-trials", type=int, default=3, help="trials for eager ours (slow)")
     ap.add_argument(
         "--shapes", type=str, default="", help="comma list BxLxH (e.g. 1x512x4); default = all"
+    )
+    ap.add_argument(
+        "--dv", type=int, default=D_V, choices=[64, 128],
+        help="value head dim (64 = the L3/L2 fused-kernel tile; 128 = the headline shapes)",
     )
     args = ap.parse_args()
     shapes = SHAPES
@@ -139,6 +145,8 @@ def main() -> None:
         return (gr.grad_q, gr.grad_k, gr.grad_v, gr.grad_g, gr.grad_b, gr.grad_w)
 
     def bench_fla(inp, trials):
+        # fla's scalar fused Triton backward — supports head_v 64 and 128, so this
+        # bar stays apples-to-apples under --dv 64 (the L3 tile).
         from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
         q, k, v, _g, g_head, _bg, _wg, beta, do = inp
@@ -157,12 +165,13 @@ def main() -> None:
         bwd()
         return bench_cuda(bwd, 10, trials)
 
+    report["d_v"] = args.dv
     for b, t, h in shapes:
-        label = f"B{b}xL{t}xH{h}"
+        label = f"B{b}xL{t}xH{h}xdv{args.dv}"
         print(f"[graph-bench] {label} ...", flush=True)
-        inp = _inputs(b, t, h, dtype, dev, seed=b * 100 + t)
+        inp = _inputs(b, t, h, dtype, dev, seed=b * 100 + t, d_v=args.dv)
         cw = inp[:4] + inp[5:7] + (inp[8],)  # (q,k,v,g, bg,wg, do) for the cw assembly
-        row: dict[str, Any] = {"shape": [b, t, h]}
+        row: dict[str, Any] = {"shape": [b, t, h], "d_v": args.dv}
 
         # eager ours (assembly direct; same path the graph captures)
         try:
