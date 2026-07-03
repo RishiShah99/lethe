@@ -184,6 +184,27 @@ class TestWrapperAndDispatch:
         assert _rel(got.grad_g.sum(-1), orc.grad_g.sum(-1)) < 1e-4
 
 
+class TestScalarBetaSplitDetach:
+    """Regression: _k2_beta_split must detach intermediates when create_graph=False."""
+
+    def test_scalar_grads_no_requires_grad_when_create_graph_false(self) -> None:
+        """grad_b/grad_w from scalar assembly have requires_grad=False when no double-backward."""
+        b, t, h, d_k, d_v = 2, 64, 2, 16, 16
+        q, k, v, g, beta, do = _scalar_inputs(b, t, h, d_k, d_v, dtype=torch.float64)
+        g_ch = g.unsqueeze(-1).expand(b, t, h, d_k).contiguous()
+        b_g = beta.unsqueeze(-1).expand(b, t, h, d_k).contiguous()
+        w_g = beta.unsqueeze(-1).expand(b, t, h, d_v).contiguous()
+
+        grads = assembled_scalar_gdn2_backward(q, k, v, g_ch, b_g, w_g, do)
+
+        assert not grads.grad_b.requires_grad, "grad_b must be detached when create_graph=False"
+        assert not grads.grad_w.requires_grad, "grad_w must be detached when create_graph=False"
+        assert not grads.grad_q.requires_grad, "grad_q must be detached when create_graph=False"
+        assert not grads.grad_k.requires_grad, "grad_k must be detached when create_graph=False"
+        assert not grads.grad_v.requires_grad, "grad_v must be detached when create_graph=False"
+        assert not grads.grad_g.requires_grad, "grad_g must be detached when create_graph=False"
+
+
 class TestReductionGate:
     def test_grad_v_view_all_gates_pass(self) -> None:
         results = verify_gdn2_reduction_op(

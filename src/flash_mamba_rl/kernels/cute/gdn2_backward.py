@@ -140,7 +140,12 @@ def native_gdn2_backward(
     [B, L, H, d_v]. ``stage_b_closed`` selects the chunk-local closed-form stage-B VJP
     (the de-glue lever) — honored on the channel-wise route only (the closed form exists
     for the cw stage B); the scalar route ignores it.
+
+    Double-backward (``do.requires_grad=True``) falls back to the eager path — the native
+    tcgen05 kernels ingest operands via DLPack which rejects grad-requiring tensors.
     """
+    if do.requires_grad:
+        return None
     if not is_available(q.device) or q.dtype not in SUPPORTED_DTYPES:
         return None
     if g.shape[-1] != _KERNEL_D_K or q.shape[1] % _KERNEL_CHUNK != 0:
@@ -210,7 +215,7 @@ def native_gla_backward(
     The no-erase modes ride the skip-T fast path — K#2 never launches; K#1 runs with
     an exact-zero ``wy`` operand.
     """
-    if not _family_dims_ok(q, v):
+    if do.requires_grad or not _family_dims_ok(q, v):
         return None
     k1_cw, _k2_cw = _load_box_kernels_cw()
     return gla_backward(q, k, v, g, do, scale=scale, use_qk_l2norm=use_qk_l2norm, k1_fn=k1_cw)
@@ -226,7 +231,7 @@ def native_la_backward(
     use_qk_l2norm: bool = True,
 ) -> LaGrads | None:
     """Plain linear-attention family mode, or ``None`` if unavailable."""
-    if not _family_dims_ok(q, v):
+    if do.requires_grad or not _family_dims_ok(q, v):
         return None
     k1_cw, _k2_cw = _load_box_kernels_cw()
     return la_backward(q, k, v, do, scale=scale, use_qk_l2norm=use_qk_l2norm, k1_fn=k1_cw)
@@ -243,7 +248,7 @@ def native_ssd_backward(
     use_qk_l2norm: bool = True,
 ) -> SsdGrads | None:
     """SSD-class family mode (``g`` [B, L, H]), or ``None`` if unavailable."""
-    if not _family_dims_ok(q, v):
+    if do.requires_grad or not _family_dims_ok(q, v):
         return None
     k1_cw, _k2_cw = _load_box_kernels_cw()
     return ssd_backward(q, k, v, g, do, scale=scale, use_qk_l2norm=use_qk_l2norm, k1_fn=k1_cw)
@@ -261,7 +266,7 @@ def native_kda_backward(
     use_qk_l2norm: bool = True,
 ) -> KdaGrads | None:
     """KDA family mode (full WY machinery, both kernels), or ``None`` if unavailable."""
-    if not _family_dims_ok(q, v):
+    if do.requires_grad or not _family_dims_ok(q, v):
         return None
     k1_cw, k2_cw = _load_box_kernels_cw()
     return kda_backward(

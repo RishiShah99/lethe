@@ -367,7 +367,9 @@ def assemble_gdn2_backward_scalar(
     dk2, dv, _db, dg2 = k2(
         _det(fwd.k), _det(fwd.v), _det(fwd.beta), _det(fwd.g2), _det(fwd.T), _det(dw), _det(dv2)
     )
-    db_erase, dw_write = _k2_beta_split(fwd.k, fwd.v, fwd.beta, fwd.g2, fwd.T, dw, dv2)
+    db_erase, dw_write = _k2_beta_split(
+        _det(fwd.k), _det(fwd.v), _det(fwd.beta), _det(fwd.g2), _det(fwd.T), _det(dw), _det(dv2)
+    )
 
     dq_n = _from_chunks(dq_b)
     dk_n = _from_chunks(dk_b + dk2)
