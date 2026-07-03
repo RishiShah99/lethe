@@ -174,6 +174,41 @@ class TestFamilyWrapperValue:
         with pytest.raises(ValueError, match="B, L, H"):
             kda_backward(q, k, v, g, g, torch.randn_like(v))
 
+    def test_ssd_half_grad_g_single_round(self) -> None:
+        """Regression: SSD grad_g channel-sum must happen before half-round.
+
+        The module's mixed-precision contract is "each grad rounds once at the end".
+        Prior to the fix, ssd_backward summed the ALREADY-ROUNDED per-channel dg,
+        i.e. d_k independent roundings followed by a sum, violating the contract
+        and accumulating more error than the single-round path.
+
+        This test constructs bf16 inputs where the per-channel dg components have
+        magnitudes such that their fp32 sum differs from the sum of their bf16-rounded
+        values. The fixed path (sum in fp32, round once) matches fp64 ground truth
+        more closely than the old double-round path would.
+        """
+        gen = torch.Generator().manual_seed(42)
+        batch, seq, heads, d_k, d_v = 1, 128, 2, 128, 64
+        q = torch.randn(batch, seq, heads, d_k, generator=gen, dtype=torch.bfloat16)
+        k = torch.randn(batch, seq, heads, d_k, generator=gen, dtype=torch.bfloat16)
+        v = torch.randn(batch, seq, heads, d_v, generator=gen, dtype=torch.bfloat16)
+        g_scalar = -torch.rand(batch, seq, heads, generator=gen, dtype=torch.bfloat16) * 0.01
+        do = torch.randn(batch, seq, heads, d_v, generator=gen, dtype=torch.bfloat16)
+
+        got = ssd_backward(q, k, v, g_scalar, do)
+
+        q64, k64, v64, do64 = (t.to(torch.float64) for t in (q, k, v, do))
+        g64 = g_scalar.to(torch.float64)
+        want = reference_ssd_backward(q64, k64, v64, g64, do64)
+
+        got_dg_f64 = got.grad_g.to(torch.float64)
+        abs_err = (got_dg_f64 - want.grad_g).abs()
+        ref_scale = want.grad_g.abs().max().item()
+        max_scaled_err = (abs_err / (ref_scale + 1e-12)).max().item()
+        # Discriminating floor: on these inputs the old round-then-sum path scores
+        # 3.94e-3 and the fixed sum-then-round path 2.82e-3 — the bound must sit between.
+        assert max_scaled_err < 3.3e-3, f"SSD grad_g scaled error {max_scaled_err:.4e} >= 3.3e-3"
+
 
 class TestNoEraseFastPath:
     """skip-T forward and the no-K#2 assembly are exactly the full path at b = 0."""

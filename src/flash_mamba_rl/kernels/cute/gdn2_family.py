@@ -52,7 +52,7 @@ def gla_backward(
     fast_path: bool = True,
 ) -> GlaGrads:
     """GLA (per-channel decay, no erase): ``b = 0, w = 1``; returns (dq, dk, dv, dg)."""
-    grads = _no_erase_family_backward(
+    dq, dk, dv, dg, _ = _no_erase_family_backward(
         q,
         k,
         v,
@@ -64,7 +64,7 @@ def gla_backward(
         k2_fn=k2_fn,
         fast_path=fast_path,
     )
-    return GlaGrads(grad_q=grads[0], grad_k=grads[1], grad_v=grads[2], grad_g=grads[3])
+    return GlaGrads(grad_q=dq, grad_k=dk, grad_v=dv, grad_g=dg)
 
 
 def la_backward(
@@ -81,7 +81,7 @@ def la_backward(
 ) -> LaGrads:
     """Plain linear attention: ``g = 0, b = 0, w = 1``; returns (dq, dk, dv)."""
     g = torch.zeros(q.shape, dtype=q.dtype, device=q.device)
-    grads = _no_erase_family_backward(
+    dq, dk, dv, _, _ = _no_erase_family_backward(
         q,
         k,
         v,
@@ -93,7 +93,7 @@ def la_backward(
         k2_fn=k2_fn,
         fast_path=fast_path,
     )
-    return LaGrads(grad_q=grads[0], grad_k=grads[1], grad_v=grads[2])
+    return LaGrads(grad_q=dq, grad_k=dk, grad_v=dv)
 
 
 def ssd_backward(
@@ -117,7 +117,7 @@ def ssd_backward(
     if g.dim() != 3:
         raise ValueError(f"SSD-class g must be [B, L, H], got {tuple(g.shape)}")
     g_cw = g.unsqueeze(-1).expand(*g.shape, q.shape[-1])
-    grads = _no_erase_family_backward(
+    dq, dk, dv, dg_cw, half_dtype = _no_erase_family_backward(
         q,
         k,
         v,
@@ -128,8 +128,12 @@ def ssd_backward(
         k1_fn=k1_fn,
         k2_fn=k2_fn,
         fast_path=fast_path,
+        skip_half_round=True,
     )
-    return SsdGrads(grad_q=grads[0], grad_k=grads[1], grad_v=grads[2], grad_g=grads[3].sum(-1))
+    dg = dg_cw.sum(-1)
+    if half_dtype is not None:
+        dq, dk, dv, dg = (t.to(half_dtype) for t in (dq, dk, dv, dg))
+    return SsdGrads(grad_q=dq, grad_k=dk, grad_v=dv, grad_g=dg)
 
 
 def kda_backward(
@@ -197,12 +201,16 @@ def _no_erase_family_backward(
     k1_fn: K1FnCW | None,
     k2_fn: K2FnCW | None,
     fast_path: bool,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Shared ``b = 0, w = 1`` route: (dq, dk, dv, dg) with dg per-channel.
+    skip_half_round: bool = False,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, torch.dtype | None]:
+    """Shared ``b = 0, w = 1`` route: (dq, dk, dv, dg, in_dtype_if_half) with dg per-channel.
 
     ``fast_path`` skips K#2 entirely (its dk2/dg2 vanish exactly at b=0), so injecting
     ``k2_fn`` there is a contract error; pass ``fast_path=False`` to exercise the full
     WY machinery (e.g. grading the tcgen05 K#2 on b=0 operands).
+
+    When ``skip_half_round=True``, returns grads in fp32 and the original half dtype as
+    the fifth element; caller is responsible for rounding once after any reductions.
     """
     if fast_path and k2_fn is not None:
         raise ValueError("fast_path skips K#2; pass fast_path=False to inject k2_fn")
@@ -244,6 +252,9 @@ def _no_erase_family_backward(
         )
         dq, dk, dv, dg = cw.dq, cw.dk, cw.dv, cw.dg
 
-    if half:
+    if half and not skip_half_round:
         dq, dk, dv, dg = (t.to(in_dtype) for t in (dq, dk, dv, dg))
-    return dq, dk, dv, dg
+        return dq, dk, dv, dg, None
+    if half and skip_half_round:
+        return dq, dk, dv, dg, in_dtype
+    return dq, dk, dv, dg, None
