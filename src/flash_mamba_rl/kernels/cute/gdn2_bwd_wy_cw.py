@@ -445,8 +445,8 @@ def run_k2(
     """Default cw K#2: fused single-launch kernel > lever-B batched, by tile fit.
 
     The fused path (ONE grid-z launch for all chunks, no ``decay_rel``
-    materialization; :mod:`gdn2_bwd_wy_f`) is dim-locked to C=64, d_k=128, d_v=64;
-    d_v=128 stays on the batched path until the N-tiling increment. Kill-switch:
+    materialization; :mod:`gdn2_bwd_wy_f`) is dim-locked to C=64, d_k=128, d_v in
+    {64,128} (d_v=128 fires the dp N-tiling path); other shapes fall to batched. Kill-switch:
     ``FMR_DISABLE_K2F=1`` drops to the batched path (box-burst fallback while the
     default re-gates). ``run_k2_serial`` stays as the proven per-chunk fallback.
     """

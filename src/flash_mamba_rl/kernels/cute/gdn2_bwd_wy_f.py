@@ -858,7 +858,8 @@ def run_k2_fused(
     Packs via :func:`gdn2_bwd_wy_cw._k2f_pack`, launches ``_kern_k2f`` on torch's current
     stream (CUDA-graph-capturable; ``maybe_sync`` at the end only). Returns
     ``(dk2, dv, db, dw, dg2)`` head-major chunked, fp32. Tile contract: C=64, d_k=128,
-    d_v=64 exactly (:func:`gdn2_bwd_wy_cw.k2f_dims_ok`). ~1.07 GB ``decay_rel`` is never
+    d_v in {64,128} (:func:`gdn2_bwd_wy_cw.k2f_dims_ok`); d_v=128 fires the dp N-tiling
+    path. ~1.07 GB ``decay_rel`` is never
     materialized; staged operands + scratch total ~300 MB @B2/L2048/H8.
     """
     if not _HAVE:
