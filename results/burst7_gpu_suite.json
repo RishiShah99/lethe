@@ -1,0 +1,13 @@
+{
+ "schema": "burst-7 post-review-fix verification: full pytest suite on B200 (cuteenv, pristine .so a1e3ba0a)",
+ "passed": 1191,
+ "skipped": 3,
+ "failed": 0,
+ "duration_s": 738.54,
+ "skips": [
+  "test_gdn2_family.py:285 desk-only contract",
+  "test_kernels_gpu.py:163 mamba_ssm not installed",
+  "test_kernels_gpu.py:361 mamba_ssm not installed"
+ ],
+ "note": "117 desk CUDA-skips all live and passed, incl. rewritten C1/C2 bench smoke asserts on synchronized event timing and the memory-aware scan-mode selector paths"
+}
