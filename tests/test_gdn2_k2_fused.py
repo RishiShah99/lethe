@@ -28,6 +28,7 @@ SHAPES = [
     (2, 48, 2, 24, 20, 16),  # d_k != d_v, NT=3
     (1, 64, 4, 32, 32, 64),  # single chunk
     (2, 128, 2, 128, 64, 64),  # the fused kernel's native tile, NT=2
+    (2, 128, 2, 128, 128, 64),  # the crown tile (d_v=128 dp N-tiling), NT=2
 ]
 
 
@@ -130,7 +131,8 @@ def test_drifted_regime_fp32_finite_and_fp64_pins():
 
 def test_k2f_dims_ok():
     assert k2f_dims_ok(64, 128, 64)
-    assert not k2f_dims_ok(64, 128, 128)
+    assert k2f_dims_ok(64, 128, 128)  # crown: dp N-tiling path
+    assert not k2f_dims_ok(64, 128, 96)  # not a clean 1- or 2-tile d_v
     assert not k2f_dims_ok(32, 128, 64)
     assert not k2f_dims_ok(64, 64, 64)
 
@@ -139,7 +141,7 @@ def test_pack_rejects_oversize():
     def _z(*dims):
         return torch.zeros(*dims, dtype=torch.float64)
 
-    c, d_k, d_v = 16, 16, 96  # d_v > 64 doesn't fit the N tile
+    c, d_k, d_v = 16, 16, 160  # d_v > 2·N_TILE overflows the dp N-tiling
     with pytest.raises(ValueError, match="tiler"):
         _k2f_pack(
             _z(1, 1, 2, c, d_k),
@@ -209,25 +211,25 @@ def test_selector_kill_switch_and_off_tile(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.delenv("FMR_DISABLE_K2F")
     off_tile = tuple(
-        torch.zeros(1, 2, 2, 64, d) for d in (128, 128, 128, 128, 128, 64, 128, 128)
-    )  # d_v=128: off the fused tile
+        torch.zeros(1, 2, 2, 64, d) for d in (128, 96, 128, 96, 128, 64, 128, 96)
+    )  # d_v=96: off the fused tile (not a clean 1- or 2-tile d_v)
     wy_cw.run_k2(*off_tile)
     assert hit == {"fused": 0, "batched": 2}
 
 
 def test_fused_launcher_rejects_off_tile_dims():
-    """Dim lock fires before any toolchain use: d_v=128 is the N-tiling increment."""
+    """Dim lock fires before any toolchain use: d_v=96 is off the {64,128} tile set."""
     import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f as k2f
 
     if not k2f.is_available():
         pytest.skip("off-box: the RuntimeError guard fires before the dim lock")
-    bad = [torch.zeros(1, 1, 1, 64, 128)] * 2
-    with pytest.raises(ValueError, match="single-N-tile"):
+    bad = [torch.zeros(1, 1, 1, 64, 96)] * 2
+    with pytest.raises(ValueError, match="d_v"):
         k2f.run_k2_fused(
             torch.zeros(1, 1, 1, 64, 128),
-            torch.zeros(1, 1, 1, 64, 128),  # d_v=128
+            torch.zeros(1, 1, 1, 64, 96),  # d_v=96: off tile
             torch.zeros(1, 1, 1, 64, 128),
-            torch.zeros(1, 1, 1, 64, 128),
+            torch.zeros(1, 1, 1, 64, 96),
             torch.zeros(1, 1, 1, 64, 128),
             torch.zeros(1, 1, 1, 64, 64),
             *bad,

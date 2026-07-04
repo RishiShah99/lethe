@@ -273,8 +273,12 @@ _K_PAD = 128  # tiler K
 
 
 def k2f_dims_ok(c: int, d_k: int, d_v: int) -> bool:
-    """True iff the fused kernel's baked tile fits: C=64, d_k=128, d_v=64 exactly."""
-    return c == 64 and d_k == 128 and d_v == 64
+    """True iff the fused kernel's baked tile fits: C=64, d_k=128, d_v in {64,128}.
+
+    d_v=128 fires the dp N-tiling path (a 2nd dp mainloop over b_du's 2nd N=64 tile);
+    d_v=64 is the single-tile crown-scalar shape.
+    """
+    return c == 64 and d_k == 128 and d_v in (64, 128)
 
 
 def _k2f_pack(
@@ -297,11 +301,14 @@ def _k2f_pack(
     """
     bsz, hh, nt, c, d_k = k.shape
     d_v = v.shape[-1]
-    if c > _N_TILE or d_v > _N_TILE or d_k > _K_PAD:
+    if c > _N_TILE or d_v > 2 * _N_TILE or d_k > _K_PAD:
         raise ValueError(
-            f"_k2f_pack stages on the ({_M_PAD},{_N_TILE},{_K_PAD}) tiler; "
-            f"got c={c}, d_k={d_k}, d_v={d_v}"
+            f"_k2f_pack stages on the ({_M_PAD},{_N_TILE},{_K_PAD}) tiler (d_v up to "
+            f"2·N_TILE via the dp N-tiling); got c={c}, d_k={d_k}, d_v={d_v}"
         )
+    # ``b_du`` carries d_v in its N-dim: one N=64 tile at d_v=64, two at d_v=128 (the
+    # dp N-tiling increment, mirroring b_dwy's d_k=128 → 2·N_TILE staging).
+    n_du = _N_TILE if d_v <= _N_TILE else 2 * _N_TILE
     z = bsz * hh * nt
     dev, dt = k.device, k.dtype
 
@@ -323,7 +330,7 @@ def _k2f_pack(
     a_dwy = torch.zeros(z, _M_PAD, _K_PAD, dtype=dt, device=dev)
     a_dwy[:, :c, :d_k] = dwyf
 
-    b_du = torch.zeros(z, _N_TILE, _K_PAD, dtype=dt, device=dev)
+    b_du = torch.zeros(z, n_du, _K_PAD, dtype=dt, device=dev)
     b_du[:, :d_v, :c] = duf.transpose(-1, -2)
     b_dwy = torch.zeros(z, 2 * _N_TILE, _K_PAD, dtype=dt, device=dev)
     b_dwy[:, :d_k, :c] = dwyf.transpose(-1, -2)

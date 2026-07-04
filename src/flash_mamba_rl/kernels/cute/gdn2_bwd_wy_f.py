@@ -16,6 +16,8 @@ Seven sequential mainloop+epilogue pairs (the silicon-proven L3-at-nt=3 shape), 
 proven a@b^T (128,64,128) tiler, single K-tile each (operands K-pad to 128):
 
   G1  dp     = T^T @ du            A=a_tt   B=b_du     -> fp32 land s_dp32
+      (d_v=128 crown: a second G1b mainloop over b_du's 2nd N=64 tile lands
+       s_dp32 cols 64..127, reusing the dp accumulator+pipe — the G2a/G2b idiom)
   G2a dq_wy[:, :64]  = T^T @ dwy   A=a_tt   B=b_dwy N0 -> fp32 land s_dq32 N0
   G2b dq_wy[:, 64:]                A=a_tt   B=b_dwy N1 -> fp32 land s_dq32 N1
   G3  dT    += du @ pwv^T          A=a_du   B=b_pwv    }  ONE shared accumulator,
@@ -35,8 +37,9 @@ per-thread fp32 accumulation — deterministic), dg2 via the rowsum/colsum ident
 TMEM column budget (fp32 accs, M-padded to 128; make_tmem_copy trips on M=64):
   dp 0..63 | dqwy_n0 64..127 | dqwy_n1 128..191 | dT 192..255 | X 256..319 | dM 320..383
   total 384 -> ONE tmem.allocate(512) (power-of-2), static offsets, ONE relinquish + free
-  at the end. ZERO headroom rule: no TMEM-staged operands; d_v=64 single-N-tile only
-  (:func:`k2f_dims_ok` — d_v=128 stays on the batched path until the N-tiling increment).
+  at the end. No TMEM-staged operands. d_v=128 (crown) reuses the dp accumulator for a
+  2nd N-tile (the dv/dw SIMT tail reads full d_v from gmem), so TMEM stays at 384 — the
+  N-tiling costs a second dp mainloop, not more columns (:func:`k2f_dims_ok` d_v in {64,128}).
 
 Discipline carried from the banked silicon lessons, x7 mainloops:
   - gmem K coordinate literal 0 (ab_e.count grows monotonically across the 7 mainloops);
@@ -332,6 +335,12 @@ if _HAVE:
         tBs_g5, tBg_g5 = _part_b(tma_bt, m_bt, mma_x, 0)
         tBs_g6, tBg_g6 = _part_b(tma_bsx, m_bsx, mma_dm, 0)
 
+        # dp N-tile 1 (d_v=128 crown only): dp carries d_v in its N-dim, so d_v=128 lands
+        # cols 64..127 of m_dp_c from a second dp mainloop over b_du's 2nd N=64 tile.
+        if cutlass.const_expr(d_v > _MNK_TILER[1]):
+            tD_dp1 = _land(m_dp_c, mma_dp, thr_dp, 1)
+            tBs_g1b, tBg_g1b = _part_b(tma_bdu, m_bdu, mma_dp, 1)
+
         tCrA_dp = mma_dp.make_fragment_A(sA)
         tCrB_dp = mma_dp.make_fragment_B(sB)
         tCrA_qwy = mma_qwy.make_fragment_A(sA)
@@ -381,6 +390,45 @@ if _HAVE:
             cute.autovec_copy(tCrAcc, tD_dp[None, None, i])
         dp_f.release()
         pipeline.sync(barrier_id=2)
+
+        # G1b (d_v=128 crown): dp N-tile 1 = a_tt @ b_du[tile1]^T. dp tile 0 has already
+        # landed to gmem, so the dp accumulator + pipe are free to reuse (the G2a→G2b
+        # sequential-reuse idiom). Lands cols 64..127 of m_dp_c; the dv/dw SIMT tail then
+        # reads the full d_v width from gmem.
+        if cutlass.const_expr(d_v > _MNK_TILER[1]):
+            if warp_idx == 0:
+                dp1_empty = dp_prod.acquire_and_advance()
+                mma_dp.set(tcgen05.Field.ACCUMULATE, False)
+                for _kt in cutlass.range(
+                    cute.size(tAg_g1, mode=[1]), prefetch_stages=AB_STAGES - 1
+                ):
+                    ab_e = ab_prod.acquire_and_advance()
+                    cute.copy(
+                        tma_att1,
+                        tAg_g1[(None, 0)],
+                        tAs_g1[(None, ab_e.index)],
+                        tma_bar_ptr=ab_e.barrier,
+                    )
+                    cute.copy(
+                        tma_bdu,
+                        tBg_g1b[(None, 0)],
+                        tBs_g1b[(None, ab_e.index)],
+                        tma_bar_ptr=ab_e.barrier,
+                    )
+                    ab_f = ab_cons.wait_and_advance()
+                    for kb in cutlass.range_constexpr(cute.size(tCrA_dp, mode=[2])):
+                        cc = (None, None, kb, ab_f.index)
+                        cute.gemm(mma_dp, t_dp, tCrA_dp[cc], tCrB_dp[cc], t_dp)
+                        mma_dp.set(tcgen05.Field.ACCUMULATE, True)
+                    ab_f.release()
+                dp1_empty.commit()
+
+            dp1_f = dp_cons.wait_and_advance()
+            for i in cutlass.range(cute.size(tS_dp, mode=[2])):
+                cute.copy(cp_dp, tS_dp[None, None, i], tCrAcc)
+                cute.autovec_copy(tCrAcc, tD_dp1[None, None, i])
+            dp1_f.release()
+            pipeline.sync(barrier_id=2)
 
         # G2a/G2b: dq_wy N-tiles 0/1 = a_tt @ b_dwy^T
         if warp_idx == 0:
@@ -825,8 +873,8 @@ def run_k2_fused(
     d_v = v.shape[-1]
     if not k2f_dims_ok(c, d_k, d_v):
         raise ValueError(
-            f"run_k2_fused is single-N-tile (C=64, d_k=128, d_v=64); got "
-            f"c={c}, d_k={d_k}, d_v={d_v} — d_v=128 is the N-tiling increment."
+            f"run_k2_fused tiles C=64, d_k=128, d_v in {{64,128}}; got "
+            f"c={c}, d_k={d_k}, d_v={d_v} (d_v=128 fires the dp N-tiling path)."
         )
     z = bsz * hh * nt
     dev = k.device
@@ -851,7 +899,7 @@ def run_k2_fused(
     s_dt = torch.zeros(z, 128, 128, dtype=f16, device=dev)
     s_x = torch.zeros(z, 64, 128, dtype=f16, device=dev)
     s_xn = torch.zeros(z, 128, 64, dtype=f16, device=dev)
-    s_dp32 = torch.zeros(z, 128, 64, dtype=f32, device=dev)
+    s_dp32 = torch.zeros(z, 128, d_v, dtype=f32, device=dev)  # N=d_v: 2 tiles at d_v=128
     s_dq32 = torch.zeros(z, 128, 128, dtype=f32, device=dev)
     s_dm32 = torch.zeros(z, 128, 64, dtype=f32, device=dev)
     s_dbkm = torch.zeros(z, c, d_k, dtype=f32, device=dev)
