@@ -18,6 +18,9 @@ _SCP = pd.DataFrame(
     {
         "diagnostic": [1, 1, 1, 1, 1, 0],
         "diagnostic_class": ["NORM", "MI", "STTC", "CD", "HYP", "NORM"],
+        # code → diagnostic_subclass; NDT rolls up into STTC (differs from the
+        # raw code) so the subclass task is provably reading this column.
+        "diagnostic_subclass": ["NORM", "IMI", "STTC", "IRBBB", "LVH", "SR"],
     },
     index=["NORM", "IMI", "NDT", "IRBBB", "LVH", "SR"],
 )
@@ -81,10 +84,20 @@ class TestSuperclass:
 
 
 class TestSubclass:
-    def test_subclass_vocab_is_diagnostic_codes(self, root: Path) -> None:
+    def test_subclass_vocab_is_diagnostic_subclasses(self, root: Path) -> None:
         ds = PTBXL(root, sampling_rate=100, split="train", label_set="subclass")
-        assert ds.n_classes == 5  # NORM, IMI, NDT, IRBBB, LVH (diagnostic==1)
+        # 5 diagnostic codes → subclasses {NORM, IMI, STTC, IRBBB, LVH}
+        assert ds.n_classes == 5
+        assert "STTC" in ds.classes  # NDT's diagnostic_subclass, not the raw code
+        assert "NDT" not in ds.classes  # raw code names are not the vocabulary
         assert "SR" not in ds.classes  # diagnostic==0 excluded
+
+    def test_subclass_label_rolls_up_to_subclass(self, root: Path) -> None:
+        ds = PTBXL(root, sampling_rate=100, split="train", label_set="subclass")
+        # ecg_id 2: IMI (→IMI) and NDT (→STTC) — the label lands on the subclass
+        label = ds._labels[1]
+        assert label[ds._class_index["IMI"]] == 1.0
+        assert label[ds._class_index["STTC"]] == 1.0
 
 
 class TestValidation:

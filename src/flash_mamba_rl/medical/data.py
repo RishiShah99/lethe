@@ -19,8 +19,9 @@ Label sets:
   "superclass" -- 5 diagnostic superclasses: NORM / MI / STTC / CD / HYP
                   (diagnostic_class column of scp_statements, rows where
                    diagnostic == 1).
-  "subclass"   -- all diagnostic SCP codes where diagnostic == 1 in
-                  scp_statements; typically 23 unique codes in PTB-XL.
+  "subclass"   -- 23 diagnostic subclasses: each diagnostic SCP code (rows
+                  where diagnostic == 1) rolled up into its diagnostic_subclass
+                  grouping — the PTB-XL benchmark's 23-way diagnostic task.
 
 min_likelihood:
   The scp_codes column is a dict {code: likelihood}.  A code is included in
@@ -32,7 +33,7 @@ Output of __getitem__:
   signal : torch.Tensor  shape (12, T), float32
       T = sampling_rate * recording_duration (T=1000 at 100 Hz, T=5000 at 500 Hz)
   label  : torch.Tensor  shape (C,), float32 multi-hot
-      C = 5 for superclass, number of unique diagnostic codes for subclass
+      C = 5 for superclass, 23 for subclass (diagnostic_subclass groups)
 """
 
 from __future__ import annotations
@@ -81,7 +82,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         "train" | "val" | "test" — official strat_fold partition.
     label_set:
         "superclass" → 5-class multi-hot (NORM/MI/STTC/CD/HYP)
-        "subclass"   → diagnostic-code-level multi-hot
+        "subclass"   → 23-class diagnostic-subclass multi-hot
     min_likelihood:
         Include an SCP code in the label when its annotated likelihood is
         >= this value.  0.0 = all codes annotated for the record.
@@ -144,9 +145,15 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
                 if str(row["diagnostic_class"]) in _SUPERCLASSES
             }
         else:
-            diag_codes = sorted(diag_stmts.index.astype(str).tolist())
-            self._classes = diag_codes
-            self._code_to_label = {c: c for c in diag_codes}
+            # PTB-XL diagnostic-subclass task: each diagnostic SCP code rolls up
+            # into its diagnostic_subclass grouping (23 subclasses in PTB-XL
+            # 1.0.3), the unit the published benchmark reports — not the raw
+            # per-code set.
+            sub_col = diag_stmts["diagnostic_subclass"].dropna().astype(str)
+            sub_col = sub_col[sub_col.str.len() > 0]
+            code_to_sub: dict[str, str] = {str(code): str(sub) for code, sub in sub_col.items()}
+            self._classes = sorted(set(code_to_sub.values()))
+            self._code_to_label = code_to_sub
 
         self._class_index: dict[str, int] = {c: i for i, c in enumerate(self._classes)}
         self._n_classes = len(self._classes)
