@@ -234,10 +234,14 @@ def measure_speedup(
     bridge withholds the speedup reward. Otherwise each timed trial draws
     fresh-content inputs (``build_bench_case(seed=...)``) so memoization or
     in-place mutation cannot fabricate the ratio; candidate and baseline see
-    the identical per-trial inputs for a fair comparison. One input from the
-    timed seed range itself is also value-checked (outside the hot loop) — a
-    candidate correct only at the calibration seeds must not be paid for
-    outputs the bench never inspects.
+    the identical per-trial inputs for a fair comparison. The candidate's
+    output on every timed trial is captured (``output_sink``) and value-checked
+    against the baseline afterwards, outside the timed window — the actual
+    timed calls are verified, not a separate probe, so a candidate cannot no-op
+    the trials the ratio is built from while computing correctly only for the
+    inputs it can tell are being inspected (whether it fingerprints them by
+    seed content or by call count). A candidate correct only on inputs the
+    bench does not time is not paid for outputs it never actually produced.
     """
     failed: dict[str, float | bool] = {
         "t_candidate_ms": float("nan"),
@@ -257,19 +261,30 @@ def measure_speedup(
             op, device, batch=batch, seq_len=seq_len, width=width, seed=_BENCH_SEED + i
         ).args
 
+    def timed(fn: Callable[..., Any], sink: list[Any] | None = None) -> float:
+        call = (lambda *a: fn(*a, **kwargs)) if kwargs else fn
+        return benchmark(
+            call, warmup=warmup, trials=trials, inputs_factory=factory, output_sink=sink
+        ).median_ms
+
+    cand_outputs: list[Any] = []
     try:
-        probe_out = candidate(*factory(0), **kwargs)
-        probe_ref = baseline(*factory(0), **kwargs)
+        t_candidate = timed(candidate, cand_outputs)
     except Exception:
         return failed
-    if not _outputs_close(probe_out, probe_ref, atol=1e-2, rtol=1e-2):
-        return failed
 
-    def timed(fn: Callable[..., Any]) -> float:
-        call = (lambda *a: fn(*a, **kwargs)) if kwargs else fn
-        return benchmark(call, warmup=warmup, trials=trials, inputs_factory=factory).median_ms
+    # Verify the candidate's actual timed outputs against the baseline on the
+    # identical per-trial inputs. Any timed trial the candidate no-op'd (to
+    # collapse the median) produced a captured output that fails here — there
+    # is no probe it can be correct at while cheating the trials that are timed.
+    for i, out in enumerate(cand_outputs):
+        try:
+            ref = baseline(*factory(i), **kwargs)
+        except Exception:
+            return failed
+        if not _outputs_close(out, ref, atol=1e-2, rtol=1e-2):
+            return failed
 
-    t_candidate = timed(candidate)
     t_baseline = timed(baseline)
     return {
         "t_candidate_ms": t_candidate,

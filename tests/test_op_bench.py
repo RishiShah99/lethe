@@ -168,6 +168,52 @@ class TestBenchShapeCorrectness:
         assert r["correct_at_bench"] is False
         assert r["speedup"] == 0.0
 
+    def test_partial_timed_range_whitelist_is_caught(self) -> None:
+        # The exact hole the single-probe left open: a candidate correct at the
+        # correctness-gate seeds AND at the first timed seed — all source
+        # constants an adversary can read — but a free no-op on the rest of the
+        # timed range. The old code value-checked only the first timed seed, so
+        # this banked a fabricated median. Every timed trial's output is now
+        # captured and value-checked, so the no-op'd trials are caught even
+        # though the whitelisted seeds pass.
+        from flash_mamba_rl.verifier.op_bench import _BENCH_SEED, _CORRECTNESS_SEED_BASE
+
+        shape = {"batch": 1, "seq_len": 8, "width": 32}
+
+        def _sum(seed: int) -> float:
+            return float(
+                build_bench_case("elementwise_silu", "cpu", **shape, seed=seed).args[0].sum()
+            )
+
+        whitelist = {_sum(_CORRECTNESS_SEED_BASE + 0), _sum(_CORRECTNESS_SEED_BASE + 1)}
+        whitelist |= {_sum(_BENCH_SEED + 0)}  # the seed the old single probe checked
+
+        def cheat(x: torch.Tensor) -> torch.Tensor:
+            if float(x.sum()) in whitelist:
+                return x * torch.sigmoid(x)
+            return x  # free no-op on every other (timed) input
+
+        r = measure_speedup(cheat, "elementwise_silu", "cpu", warmup=1, trials=5, **shape)
+        assert r["correct_at_bench"] is False
+        assert r["speedup"] == 0.0
+
+    def test_stateful_counter_cheat_is_caught(self) -> None:
+        # A candidate that computes correctly for its first calls (covering the
+        # bench-shape gate) then no-ops cannot survive: capture-and-verify tests
+        # the actual timed outputs, not a probe fixed earlier in the call order.
+        calls = {"n": 0}
+
+        def counter(x: torch.Tensor) -> torch.Tensor:
+            calls["n"] += 1
+            if calls["n"] <= 2:  # correct only through correct_at_bench_shape
+                return x * torch.sigmoid(x)
+            return x  # no-op once timing begins
+
+        r = measure_speedup(
+            counter, "elementwise_silu", "cpu", warmup=1, trials=5, batch=1, seq_len=8, width=32
+        )
+        assert r["speedup"] == 0.0
+
 
 class TestBugRouting:
     def test_op_class_is_the_904_casualty_set(self) -> None:

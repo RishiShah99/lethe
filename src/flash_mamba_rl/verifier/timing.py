@@ -25,6 +25,7 @@ def benchmark(
     warmup: int = 10,
     trials: int = 100,
     inputs_factory: Callable[[int], tuple[Any, ...]] | None = None,
+    output_sink: list[Any] | None = None,
 ) -> TimingResult:
     """Benchmark *callable* with positional *inputs*.
 
@@ -50,6 +51,13 @@ def benchmark(
         speedup by serving cache hits after the first trial; rebuilding with
         varying content forces an honest recompute every trial. Warm-up uses
         negative indices so it never primes a cache the timed trials hit.
+    output_sink:
+        When given, each timed trial's return value is appended (after the
+        timing window closes, so retention never perturbs the measurement).
+        Lets the caller value-check the *actual timed outputs* — the only way
+        to bind correctness to the calls that produced the ratio, so a
+        candidate cannot no-op the timed trials while computing correctly for
+        any separate probe. Warm-up outputs are not captured.
 
     Returns
     -------
@@ -88,17 +96,21 @@ def benchmark(
             start_event = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
             end_event = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
             start_event.record()
-            callable(*args)
+            out = callable(*args)
             end_event.record()
             torch.cuda.synchronize()
             times_ms.append(start_event.elapsed_time(end_event))
+            if output_sink is not None:
+                output_sink.append(out)
     else:
         for i in range(trials):
             args = call_inputs(i)
             t0 = time.perf_counter_ns()
-            callable(*args)
+            out = callable(*args)
             t1 = time.perf_counter_ns()
             times_ms.append((t1 - t0) / 1_000_000.0)
+            if output_sink is not None:
+                output_sink.append(out)
 
     median_ms = statistics.median(times_ms)
     std_ms = statistics.stdev(times_ms) if len(times_ms) > 1 else 0.0
