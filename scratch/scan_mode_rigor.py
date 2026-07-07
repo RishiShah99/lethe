@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import json
 
-from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec
-from flash_mamba_rl.verifier.candidate_scoring import score_candidate_config
+from lethe.kernels.autotune import KernelConfig, ShapeSpec
+from lethe.verifier.candidate_scoring import score_candidate_config
 
 _SHAPES = [
     ShapeSpec(2, 16384, 1024),

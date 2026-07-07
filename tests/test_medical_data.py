@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from flash_mamba_rl.medical.data import PTBXL
+from lethe.medical.data import PTBXL
 
 _SCP = pd.DataFrame(
     {

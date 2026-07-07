@@ -16,8 +16,8 @@ import math
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.autotune import KernelConfig
-from flash_mamba_rl.kernels.ops import (
+from lethe.kernels.autotune import KernelConfig
+from lethe.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
     forward_chunked_scan,
@@ -31,17 +31,17 @@ from flash_mamba_rl.kernels.ops import (
     triton_mimo_bwd_resource_meta,
     triton_scan_resource_meta,
 )
-from flash_mamba_rl.kernels.references import (
+from lethe.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
     reference_fused_block_forward,
 )
-from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
-from flash_mamba_rl.kernels.references.fused_block_backward import (
+from lethe.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from lethe.kernels.references.fused_block_backward import (
     reference_fused_block_backward,
 )
-from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads, reference_mimo_backward
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.references.mimo_backward import MimoGrads, reference_mimo_backward
+from lethe.verifier.op_harness import (
     BWD_GRAD_FIELDS,
     FUSED_BWD_GRAD_FIELDS,
     verify_bwd_scan_op_all_grads,
@@ -51,7 +51,7 @@ from flash_mamba_rl.verifier.op_harness import (
     verify_rope_op,
     verify_scan_op,
 )
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.verifier.timing import benchmark
 
 requires_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 
@@ -280,7 +280,7 @@ class TestC2NumWarpsCompile:
         # Ours carries the recurrence without tl.dot, so the TMEM-promotion
         # pass never engages — these launches raising OutOfResources would
         # falsify the C2 story outright.
-        from flash_mamba_rl.kernels.ops import _triton_bwd_scan
+        from lethe.kernels.ops import _triton_bwd_scan
 
         args, dy = _bwd_inputs(2, 256, 128, 16)
         base = _triton_bwd_scan.launch_backward_scan(*args, dy, num_warps=2)
@@ -304,21 +304,21 @@ class TestChunkKOverrideGuard:
     The shipped defaults always satisfy both."""
 
     def test_bwd_scan_launcher_rejects_indivisible_chunk_k(self) -> None:
-        from flash_mamba_rl.kernels.ops import _triton_bwd_scan
+        from lethe.kernels.ops import _triton_bwd_scan
 
         args, dy = _bwd_inputs(2, 64, 32, 16)  # seq_len 64, default chunk_k divides
         with pytest.raises(ValueError, match="must divide"):
             _triton_bwd_scan.launch_backward_scan(*args, dy, config=KernelConfig(chunk_k=48))
 
     def test_mimo_launcher_rejects_indivisible_chunk_k(self) -> None:
-        from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
+        from lethe.kernels.ops import _triton_mimo_bwd
 
         args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)
         with pytest.raises(ValueError, match="must divide"):
             _triton_mimo_bwd.launch_mimo_backward(*args, dy, config=KernelConfig(chunk_k=48))
 
     def test_mimo_launcher_rejects_block_p_below_headdim(self) -> None:
-        from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
+        from lethe.kernels.ops import _triton_mimo_bwd
 
         args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)  # headdim 16
         with pytest.raises(ValueError, match="must cover headdim"):
@@ -537,7 +537,7 @@ class TestC3NumWarpsCompile:
     ) -> None:
         # Same #904 framing as C2: no tl.dot anywhere, so the TMEM-promotion
         # pass never engages and every warp config must compile on sm_100.
-        from flash_mamba_rl.kernels.ops import _triton_mimo_bwd
+        from lethe.kernels.ops import _triton_mimo_bwd
 
         args, dy = _mimo_inputs(b, seq, rank, h, p, n)
         base = _triton_mimo_bwd.launch_mimo_backward(*args, dy, num_warps=2)
@@ -685,7 +685,7 @@ class TestC4NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
         # Same #904 framing as C1-C3: no tl.dot anywhere, so the
         # TMEM-promotion pass never engages on sm_100.
-        from flash_mamba_rl.kernels.ops import _triton_complex_rope
+        from lethe.kernels.ops import _triton_complex_rope
 
         args = _rope_inputs(2, 256, 4, 32, 16, 8)
         base = _triton_complex_rope.launch_complex_scan_rope(*args, num_warps=2)
@@ -832,7 +832,7 @@ class TestC5NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
         # Same #904 framing as C1-C4: no tl.dot anywhere, so the
         # TMEM-promotion pass never engages on sm_100.
-        from flash_mamba_rl.kernels.ops import _triton_fused_block
+        from lethe.kernels.ops import _triton_fused_block
 
         args = _fused_inputs(2, 256, 128, 32)
         base = _triton_fused_block.launch_fused_block_forward(*args, 1e-5, num_warps=2)
@@ -973,7 +973,7 @@ class TestC6NumWarpsCompile:
         # Same #904 framing as C1-C5: no tl.dot in any of the four kernels,
         # so the TMEM-promotion pass never engages on sm_100 — where the
         # official Mamba-3 Triton *backward* is exactly the op that dies.
-        from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd
+        from lethe.kernels.ops import _triton_fused_block_bwd
 
         args, dy = _fused_bwd_inputs(2, 256, 128, 32)
         base = _triton_fused_block_bwd.launch_fused_block_backward(*args, dy, 1e-5, num_warps=2)

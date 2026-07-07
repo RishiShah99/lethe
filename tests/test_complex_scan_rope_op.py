@@ -12,8 +12,8 @@ import math
 
 import torch
 
-from flash_mamba_rl.kernels.ops import complex_scan_rope
-from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from lethe.kernels.ops import complex_scan_rope
+from lethe.kernels.references.complex_scan_rope import reference_complex_scan_rope
 
 
 def _rope_inputs(

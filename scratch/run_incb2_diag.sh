@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Localize the inc-B2 launch SIGSEGV on the minimal repro (bisect=1, G1-only).
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 SAN=/usr/local/cuda/bin/compute-sanitizer

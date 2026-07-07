@@ -14,12 +14,12 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from flash_mamba_rl.kernels.ops import fused_block_backward
-from flash_mamba_rl.kernels.references.fused_block_backward import (
+from lethe.kernels.ops import fused_block_backward
+from lethe.kernels.references.fused_block_backward import (
     FusedBlockGrads,
     reference_fused_block_backward,
 )
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.verifier.op_harness import (
     FUSED_BWD_GATE_OVERRIDES,
     FUSED_CONV_K,
     SCAN_N_STATE,

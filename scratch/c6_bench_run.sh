@@ -8,5 +8,5 @@ export PATH="$HOME/.local/bin:$PATH"
 echo "=== c6_parity_measure: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 uv run python scratch/c6_parity_measure.py
 echo "=== c6 bench ==="
-uv run python -m flash_mamba_rl.bench.c6_fused_block_backward --out "$HOME/out/c6_bench.json"
+uv run python -m lethe.bench.c6_fused_block_backward --out "$HOME/out/c6_bench.json"
 echo "=== c6 bench done ==="

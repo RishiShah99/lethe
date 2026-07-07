@@ -6,7 +6,7 @@
 # Re-runnable: SFT skips if the adapter already exists; the curriculum
 # --resume picks up its committed level state after a spot preemption.
 # Args: STEPS_SFT CKPT_SFT CKPT_CUR
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 export PATH=$HOME/.local/bin:$PATH
 STEPS_SFT="${1:-240}"
 CKPT_SFT="${2:-sft_out}"

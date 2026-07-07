@@ -10,7 +10,7 @@ import math
 import pytest
 import torch
 
-from flash_mamba_rl.rl.grpo import compute_group_advantages, compute_grpo_loss
+from lethe.rl.grpo import compute_group_advantages, compute_grpo_loss
 
 # ---------------------------------------------------------------------------
 # Helpers

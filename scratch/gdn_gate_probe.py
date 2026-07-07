@@ -34,7 +34,7 @@ section("ENV")
 print("python", sys.version.replace("\n", " "), flush=True)
 torch = None
 try:
-    import torch  # noqa: F811
+    import torch
 
     print("torch", torch.__version__, "| cuda", torch.version.cuda, flush=True)
     print("cuda_available", torch.cuda.is_available(), flush=True)

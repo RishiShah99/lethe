@@ -27,20 +27,19 @@ from __future__ import annotations
 
 import torch
 
-# pure-torch K#2 (the validated WY-VJP spec)
-from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import run_k2_ref
-
 # pure-torch K#1 (the increment-B reverse loop, kernel statement order)
 from scratch.k1_incB_desk_check import reverse_loop
 
-from flash_mamba_rl.kernels.references.gdn2_chunkwise import (
+# pure-torch K#2 (the validated WY-VJP spec)
+from lethe.kernels.cute.gdn2_bwd_wy import run_k2_ref
+from lethe.kernels.references.gdn2_chunkwise import (
     RCP_LN2,
     ChunkwiseForward,
     _from_chunks,
     _l2norm,
     chunkwise_forward,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 
 def _stage_b_vjp(

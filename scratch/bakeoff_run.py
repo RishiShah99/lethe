@@ -58,7 +58,7 @@ def main() -> None:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        from flash_mamba_rl.rl.prompts import build_op_prompt
+        from lethe.rl.prompts import build_op_prompt
 
         prompt = build_op_prompt("forward_chunked_scan")
         tok = AutoTokenizer.from_pretrained(args.model)
@@ -98,7 +98,7 @@ def main() -> None:
         del model
         torch.cuda.empty_cache()
 
-        from flash_mamba_rl.verifier.candidate_scoring import score_candidate_source
+        from lethe.verifier.candidate_scoring import score_candidate_source
 
         with open(args.out, "a", encoding="utf-8") as out_f:
             for i, completion in enumerate(completions):

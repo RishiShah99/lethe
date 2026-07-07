@@ -18,7 +18,7 @@ import tempfile
 import pytest
 import torch
 
-from flash_mamba_rl.verifier.sandbox import _deserialize_child_output, run_in_subprocess
+from lethe.verifier.sandbox import _deserialize_child_output, run_in_subprocess
 from tests._sandbox_helpers import ReduceBomb
 
 
@@ -39,7 +39,7 @@ def test_result_fd_swap_precedes_untrusted_deserialize() -> None:
     # The child must repoint fd 1 -> stderr BEFORE the stdin read, the task
     # unpickle, and the heavy imports: a C-level write to fd 1 during any of
     # those would prepend stray bytes to the torch.save result payload.
-    from flash_mamba_rl.verifier.sandbox import _WORKER_SCRIPT
+    from lethe.verifier.sandbox import _WORKER_SCRIPT
 
     swap = _WORKER_SCRIPT.index("os.dup2(2, 1)")
     for later in ("import importlib", "sys.stdin.buffer.read()", "pickle.loads(", "import torch"):

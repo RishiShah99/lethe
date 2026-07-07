@@ -17,8 +17,8 @@ import math
 
 import torch
 
-from flash_mamba_rl.kernels.ops.fused_block_forward import _fused_eager
-from flash_mamba_rl.kernels.references import reference_fused_block_forward
+from lethe.kernels.ops.fused_block_forward import _fused_eager
+from lethe.kernels.references import reference_fused_block_forward
 
 
 def _conv_scan_replica(

@@ -15,9 +15,9 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.rl.sft import SFTConfig, SFTExample, SFTTrainingLoop, build_sft_examples
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
-from flash_mamba_rl.rl.train import _OP_ENTRY_POINTS, GRPOTrainingLoop, extract_code
+from lethe.rl.sft import SFTConfig, SFTExample, SFTTrainingLoop, build_sft_examples
+from lethe.rl.sft_targets import available_targets, target_source, target_variants
+from lethe.rl.train import _OP_ENTRY_POINTS, GRPOTrainingLoop, extract_code
 
 
 class StubSFTPolicy:

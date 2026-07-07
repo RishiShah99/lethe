@@ -21,22 +21,22 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.references.backward_selective_scan import (
+from lethe.kernels.references.backward_selective_scan import (
     reference_backward_selective_scan,
 )
-from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
-from flash_mamba_rl.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
-from flash_mamba_rl.kernels.references.fused_block_backward import reference_fused_block_backward
-from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
-from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
-from flash_mamba_rl.rl.sft_targets.backward_selective_scan import backward_selective_scan
-from flash_mamba_rl.rl.sft_targets.complex_scan_rope import complex_scan_rope
-from flash_mamba_rl.rl.sft_targets.forward_chunked_scan import forward_chunked_scan
-from flash_mamba_rl.rl.sft_targets.fused_block_backward import fused_block_backward
-from flash_mamba_rl.rl.sft_targets.fused_block_forward import fused_block_forward
-from flash_mamba_rl.rl.sft_targets.mimo_backward import mimo_backward
-from flash_mamba_rl.verifier.candidate_scoring import (
+from lethe.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from lethe.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
+from lethe.kernels.references.fused_block_backward import reference_fused_block_backward
+from lethe.kernels.references.fused_block_forward import reference_fused_block_forward
+from lethe.kernels.references.mimo_backward import reference_mimo_backward
+from lethe.rl.sft_targets import available_targets, target_source, target_variants
+from lethe.rl.sft_targets.backward_selective_scan import backward_selective_scan
+from lethe.rl.sft_targets.complex_scan_rope import complex_scan_rope
+from lethe.rl.sft_targets.forward_chunked_scan import forward_chunked_scan
+from lethe.rl.sft_targets.fused_block_backward import fused_block_backward
+from lethe.rl.sft_targets.fused_block_forward import fused_block_forward
+from lethe.rl.sft_targets.mimo_backward import mimo_backward
+from lethe.verifier.candidate_scoring import (
     _ast_screen,
     score_candidate_source,
     scoreable_ops,
@@ -128,7 +128,7 @@ def stub_triton() -> Iterator[None]:
 
 
 def _load_triton_target(op: str) -> Any:
-    import flash_mamba_rl.rl.sft_targets as pkg
+    import lethe.rl.sft_targets as pkg
 
     path = Path(pkg.__file__).parent / f"{op}_triton.py"
     spec = importlib.util.spec_from_file_location(f"_sft_tgt_{op}_triton", path)

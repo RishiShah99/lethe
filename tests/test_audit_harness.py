@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from flash_mamba_rl.verifier.audit_harness import (
+from lethe.verifier.audit_harness import (
     _RI_MARKER,
     AUDIT_GATE_NAMES,
     GATE_SHORT_NAMES,
@@ -19,7 +19,7 @@ from flash_mamba_rl.verifier.audit_harness import (
     _shape_variants,
     audit_worker,
 )
-from flash_mamba_rl.verifier.contracts import GateResult
+from lethe.verifier.contracts import GateResult
 
 REF_ELEMENTWISE = """
 import torch

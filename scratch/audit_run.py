@@ -19,7 +19,7 @@ import os
 import time
 from typing import Any
 
-from flash_mamba_rl.verifier.sandbox import run_in_subprocess
+from lethe.verifier.sandbox import run_in_subprocess
 
 SSM_ADJACENT_CLASSES = "matmul,attention,softmax,scan,norm,conv,reduction"
 
@@ -70,7 +70,7 @@ def main() -> None:
                 continue
             t0 = time.time()
             res = run_in_subprocess(
-                "flash_mamba_rl.verifier.audit_harness",
+                "lethe.verifier.audit_harness",
                 "audit_worker",
                 (row["ref"], row["cand"], {"device": args.device}),
                 timeout_s=args.timeout,

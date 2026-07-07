@@ -50,7 +50,7 @@ def latest_adapter_anywhere(ckpt_dir: str) -> str | None:
     ``direct_<op>`` dir so the curriculum-off arm can never resume from
     (or contaminate itself with) curriculum-trained weights.
     """
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop
+    from lethe.rl.train import GRPOTrainingLoop
 
     candidates: list[tuple[float, str]] = []
     if os.path.isdir(ckpt_dir):
@@ -113,15 +113,15 @@ def main() -> None:
     ap.add_argument("--no-grad-ckpt", action="store_true")
     args = ap.parse_args()
 
-    from flash_mamba_rl.rl.curriculum import (
+    from lethe.rl.curriculum import (
         DEFAULT_CURRICULUM,
         CurriculumConfig,
         CurriculumRunner,
     )
-    from flash_mamba_rl.rl.gen_pool import GenerationPool
-    from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
-    from flash_mamba_rl.rl.parallel_scoring import ParallelScorer
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
+    from lethe.rl.gen_pool import GenerationPool
+    from lethe.rl.hf_policy import HFPolicy, SamplingSettings
+    from lethe.rl.parallel_scoring import ParallelScorer
+    from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     gpu_ids = tuple(int(g) for g in args.score_gpus.split(","))
     gen_gpus = [

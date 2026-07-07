@@ -17,20 +17,20 @@ full path at b = 0. CPU only.
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import assemble_gdn2_backward_no_erase
-from flash_mamba_rl.kernels.cute.gdn2_backward import (
+from lethe.kernels.cute.gdn2_assemble import assemble_gdn2_backward_no_erase
+from lethe.kernels.cute.gdn2_backward import (
     native_gla_backward,
     native_kda_backward,
     native_la_backward,
     native_ssd_backward,
 )
-from flash_mamba_rl.kernels.cute.gdn2_family import (
+from lethe.kernels.cute.gdn2_family import (
     gla_backward,
     kda_backward,
     la_backward,
     ssd_backward,
 )
-from flash_mamba_rl.kernels.references.family_oracles import (
+from lethe.kernels.references.family_oracles import (
     reference_gla_backward,
     reference_gla_forward,
     reference_kda_backward,
@@ -40,12 +40,12 @@ from flash_mamba_rl.kernels.references.family_oracles import (
     reference_ssd_backward,
     reference_ssd_forward,
 )
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+from lethe.kernels.references.gdn2_chunkwise_cw import (
     chunkwise_backward_cw,
     chunkwise_forward_cw,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_forward
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.references.gdn_backward import reference_gdn2_forward
+from lethe.verifier.op_harness import (
     FAMILY_GATE_VIEWS,
     _family_bwd_aux,
     verify_gdn2_family_op,
@@ -269,7 +269,7 @@ class TestNoEraseFastPath:
         def spy_k1(qc, kc, wy, g2, g_last, do_c, dv_local, dht):  # type: ignore[no-untyped-def]
             calls.append(1)
             assert not wy.any()
-            from flash_mamba_rl.kernels.cute.gdn2_assemble import k1_reverse_state_cw_ref
+            from lethe.kernels.cute.gdn2_assemble import k1_reverse_state_cw_ref
 
             return k1_reverse_state_cw_ref(qc, kc, wy, g2, g_last, do_c, dv_local, dht)
 

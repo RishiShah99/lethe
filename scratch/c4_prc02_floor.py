@@ -13,12 +13,12 @@ import math
 
 import torch
 
-from flash_mamba_rl.kernels.ops import complex_scan_rope
-from flash_mamba_rl.kernels.references.complex_scan_rope import (
+from lethe.kernels.ops import complex_scan_rope
+from lethe.kernels.references.complex_scan_rope import (
     _apply_rope_rotation,
     reference_complex_scan_rope,
 )
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.verifier.op_harness import (
     ROPE_HEADDIM,
     ROPE_N_STATE,
     ROPE_NUM_ANGLES,

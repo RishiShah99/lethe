@@ -73,13 +73,13 @@ _rc "d" "$?"
 # desk diff showed the harness changed by import-rewire + instrumentation only).
 if [ "$_CAPTURE_STILL_FAILS" = "1" ] && [ -d audit_out/graphreg ]; then
     _step "e: module A/B (78715a4 good src snapshots, current harness)"
-    CUTE=src/flash_mamba_rl/kernels/cute
+    CUTE=src/lethe/kernels/cute
     for f in gdn2_bwd_dhu gdn2_bwd_dhu_cw gdn2_bwd_wy gdn2_bwd_wy_cw; do
         cp "$CUTE/$f.py" "$CUTE/$f.py.ab_bak"
         cp "audit_out/graphreg/good_$f.py" "$CUTE/$f.py"
     done
     # snapshots are scratch-era: rewrite their intra-module imports to the promoted paths
-    sed -i 's/from scratch\.gdn2_bwd_/from flash_mamba_rl.kernels.cute.gdn2_bwd_/' "$CUTE"/gdn2_bwd_*.py
+    sed -i 's/from scratch\.gdn2_bwd_/from lethe.kernels.cute.gdn2_bwd_/' "$CUTE"/gdn2_bwd_*.py
     eval "$PP" CUDA_LAUNCH_BLOCKING=1 "$PY" scratch/gdn2_graph_bench.py \
         --shapes 1x512x4 --out "$OUTDIR/graphreg_ab_good.json" \
         > "$OUTDIR/graphreg_ab_good.log" 2>&1

@@ -1,4 +1,4 @@
-"""One-command reproducibility surface for flash-mamba-rl.
+"""One-command reproducibility surface for lethe.
 
 Captures the local environment, pins all seeds, runs every CPU-derivable
 headline check, and prints a PASS/FAIL table.  Exits nonzero if any check
@@ -156,7 +156,7 @@ def compute_selector_geomean() -> tuple[float, int]:
 
     Returns (geomean, n_valid_rows).  Raises if the boundary JSON is absent.
     """
-    from flash_mamba_rl.kernels.ops.forward_chunked_scan import _default_scan_mode
+    from lethe.kernels.ops.forward_chunked_scan import _default_scan_mode
 
     boundary_path = RESULTS_DIR / "scan_mode_boundary.json"
     if not boundary_path.exists():

@@ -14,13 +14,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import k2_wy_vjp_cw_ref
-from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw import (
+from lethe.kernels.cute.gdn2_assemble import k2_wy_vjp_cw_ref
+from lethe.kernels.cute.gdn2_bwd_wy_cw import (
     _k2f_pack,
     _run_k2_fused_modelled,
     k2f_dims_ok,
 )
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
 SHAPES = [
     (2, 32, 2, 16, 16, 16),  # B, T, H, d_k, d_v, chunk_len  (NT=2)
@@ -157,7 +157,7 @@ def test_pack_rejects_oversize():
 
 def test_fused_module_imports_cleanly_off_box():
     """The DSL module imports without cutlass (guarded try) and dim-locks correctly."""
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f as k2f
+    import lethe.kernels.cute.gdn2_bwd_wy_f as k2f
 
     assert hasattr(k2f, "run_k2_fused")
     args = _k2_bundle_inputs((1, 64, 1, 128, 64, 64), seed=15)
@@ -167,8 +167,8 @@ def test_fused_module_imports_cleanly_off_box():
 
 
 def test_selector_routes_fused_on_proven_tile(monkeypatch: pytest.MonkeyPatch) -> None:
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw as wy_cw
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f as wy_f
+    import lethe.kernels.cute.gdn2_bwd_wy_cw as wy_cw
+    import lethe.kernels.cute.gdn2_bwd_wy_f as wy_f
 
     hit = {"fused": 0, "batched": 0}
     sentinel = tuple(torch.ones(1) for _ in range(5))
@@ -190,8 +190,8 @@ def test_selector_routes_fused_on_proven_tile(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_selector_kill_switch_and_off_tile(monkeypatch: pytest.MonkeyPatch) -> None:
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw as wy_cw
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f as wy_f
+    import lethe.kernels.cute.gdn2_bwd_wy_cw as wy_cw
+    import lethe.kernels.cute.gdn2_bwd_wy_f as wy_f
 
     hit = {"fused": 0, "batched": 0}
     sentinel = tuple(torch.ones(1) for _ in range(5))
@@ -219,7 +219,7 @@ def test_selector_kill_switch_and_off_tile(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_fused_launcher_rejects_off_tile_dims():
     """Dim lock fires before any toolchain use: d_v=96 is off the {64,128} tile set."""
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f as k2f
+    import lethe.kernels.cute.gdn2_bwd_wy_f as k2f
 
     if not k2f.is_available():
         pytest.skip("off-box: the RuntimeError guard fires before the dim lock")

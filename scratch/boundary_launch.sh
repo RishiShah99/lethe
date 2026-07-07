@@ -2,7 +2,7 @@
 # Launch the scan_mode boundary sweep detached -> boundary.log, plus the
 # self-shutdown watcher. Bundled into a synced script because nested quotes do
 # not survive cmd -> gcloud -> plink (HANDOFF caveat).
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 export PATH=$HOME/.local/bin:$PATH
 nohup env CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
     uv run --no-sync python scratch/scan_mode_boundary.py \

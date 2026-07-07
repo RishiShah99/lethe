@@ -15,9 +15,9 @@ import json
 
 import torch
 
-from flash_mamba_rl.kernels.ops._triton_chunk_parallel_fwd import launch_chunk_parallel_scan
-from flash_mamba_rl.kernels.ops._triton_fwd_scan import launch_forward_scan
-from flash_mamba_rl.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
+from lethe.kernels.ops._triton_chunk_parallel_fwd import launch_chunk_parallel_scan
+from lethe.kernels.ops._triton_fwd_scan import launch_forward_scan
+from lethe.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
 
 
 def _draw(batch: int, seq_len: int, d_model: int, n_state: int, seed: int, device: str):  # type: ignore[no-untyped-def]

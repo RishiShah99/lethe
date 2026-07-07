@@ -8,8 +8,8 @@ reward are GPU-only and validated on the box.
 
 from __future__ import annotations
 
-from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec
-from flash_mamba_rl.verifier.candidate_scoring import score_candidate_config
+from lethe.kernels.autotune import KernelConfig, ShapeSpec
+from lethe.verifier.candidate_scoring import score_candidate_config
 
 
 def test_valid_config_passes_contracts_on_cpu() -> None:

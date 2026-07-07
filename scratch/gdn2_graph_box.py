@@ -73,9 +73,9 @@ def main() -> None:
 
     from scratch.gdn2_graph import GraphedBackward
 
-    from flash_mamba_rl.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
-    from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
-    from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+    from lethe.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
+    from lethe.kernels.cute.gdn2_backward import _load_box_kernels_cw
+    from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
     # Capture the cw assembly DIRECTLY, not native_gdn2_backward: the dispatcher's
     # _is_scalar_reducible does torch.allclose (a device->host sync) which is illegal during

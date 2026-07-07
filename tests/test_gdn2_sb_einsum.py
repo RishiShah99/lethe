@@ -12,13 +12,13 @@ import pytest
 import torch
 from torch import Tensor
 
-import flash_mamba_rl.kernels.cute.gdn2_sb_einsum as sbe
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+import lethe.kernels.cute.gdn2_sb_einsum as sbe
+from lethe.kernels.cute.gdn2_assemble import (
     _stage_b_vjp_cw_closed,
     _to_chunks,
     k1_reverse_state_cw_ref,
 )
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import chunkwise_restage_cw
+from lethe.kernels.references.gdn2_chunkwise_cw import chunkwise_restage_cw
 
 
 def test_module_imports_cleanly_off_box() -> None:
@@ -52,13 +52,9 @@ def test_kill_switch_bypasses_sbe_kernel(monkeypatch: pytest.MonkeyPatch) -> Non
         hit["sbe"] += 1
         return (torch.zeros_like(k), torch.zeros_like(k))
 
-    monkeypatch.setattr("flash_mamba_rl.kernels.cute.gdn2_sb_einsum.is_available", lambda: True)
-    monkeypatch.setattr(
-        "flash_mamba_rl.kernels.cute.gdn2_sb_einsum.sbe_dims_ok", lambda c, d_k: True
-    )
-    monkeypatch.setattr(
-        "flash_mamba_rl.kernels.cute.gdn2_sb_einsum.run_sb_einsum", _stub_run_sb_einsum
-    )
+    monkeypatch.setattr("lethe.kernels.cute.gdn2_sb_einsum.is_available", lambda: True)
+    monkeypatch.setattr("lethe.kernels.cute.gdn2_sb_einsum.sbe_dims_ok", lambda c, d_k: True)
+    monkeypatch.setattr("lethe.kernels.cute.gdn2_sb_einsum.run_sb_einsum", _stub_run_sb_einsum)
 
     gen = torch.Generator().manual_seed(42)
     b_, t, h, d_k, d_v, cl = 1, 64, 1, 128, 64, 64
@@ -105,10 +101,8 @@ def test_kill_switch_selector_off_tile(monkeypatch: pytest.MonkeyPatch) -> None:
         hit["sbe"] += 1
         return (torch.zeros_like(k), torch.zeros_like(k))
 
-    monkeypatch.setattr("flash_mamba_rl.kernels.cute.gdn2_sb_einsum.is_available", lambda: True)
-    monkeypatch.setattr(
-        "flash_mamba_rl.kernels.cute.gdn2_sb_einsum.run_sb_einsum", _stub_run_sb_einsum
-    )
+    monkeypatch.setattr("lethe.kernels.cute.gdn2_sb_einsum.is_available", lambda: True)
+    monkeypatch.setattr("lethe.kernels.cute.gdn2_sb_einsum.run_sb_einsum", _stub_run_sb_einsum)
 
     gen = torch.Generator().manual_seed(43)
     b_, t, h, d_k, d_v, cl = 1, 64, 1, 64, 64, 64

@@ -1,7 +1,7 @@
 """Level-2 de-glue box GATE harness — kernels live in src (promoted at burst-3).
 
 The two epilogue-fused tcgen05 kernels + launcher + pure-torch model were promoted to
-``flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2`` after the burst-2 silicon GO
+``lethe.kernels.cute.gdn2_bwd_dhu_l2`` after the burst-2 silicon GO
 (results/k1_l2_epilogue_box.json). This file is the reproducibility layer only:
 ``--desk-check`` (off-box fp64 model gate) and the box CLI grading
 ``run_k1_incB_l2`` against the cw K#1 bundle (+ determinism).
@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2 import (
+from lethe.kernels.cute.gdn2_bwd_dhu_l2 import (
     _modelled_l2,
     run_k1_incB_l2,
 )
@@ -36,7 +36,7 @@ def _l2(x: Tensor) -> Tensor:
 
 
 def desk_check() -> bool:
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     # All d_v=64 (the kernel tile width). nt ∈ {1,2,3} — nt=1 masked blocker 1 before fix.
     shapes = [
@@ -81,7 +81,7 @@ def desk_check() -> bool:
 
 
 def _build_cw_bundle(b: int, h: int, nt: int, c: int, d_k: int, d_v: int) -> dict:
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     t = nt * c
     gen = torch.Generator().manual_seed(42)

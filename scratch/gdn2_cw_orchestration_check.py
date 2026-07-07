@@ -14,18 +14,18 @@ Also asserts the in-file ``*_cw_ref`` specs equal the assembly's closed forms bi
 
 from __future__ import annotations
 
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as k1base
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as k1cw
-import flash_mamba_rl.kernels.cute.gdn2_bwd_wy as k2mod
-import flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw as k2cw
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+import lethe.kernels.cute.gdn2_bwd_dhu as k1base
+import lethe.kernels.cute.gdn2_bwd_dhu_cw as k1cw
+import lethe.kernels.cute.gdn2_bwd_wy as k2mod
+import lethe.kernels.cute.gdn2_bwd_wy_cw as k2cw
+from lethe.kernels.cute.gdn2_assemble import (
     assemble_gdn2_backward_channelwise,
     k1_reverse_state_cw_ref,
     k2_wy_vjp_cw_ref,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 SHAPES = [
     (1, 64, 1, 128, 128, 64),  # crown tile: d_k=d_v=128, C=64, NT=1
@@ -61,7 +61,7 @@ def main() -> None:
     # 1. The in-file specs equal the assembly's closed forms (bit-for-bit on fp64).
     q, k, v, g, bg, wg, do = _inputs(SHAPES[0], seed=1)
     s = SHAPES[0][3] ** -0.5
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     def _l2(x: torch.Tensor) -> torch.Tensor:
         return x / torch.sqrt((x * x).sum(-1, keepdim=True) + 1e-6)

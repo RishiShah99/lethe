@@ -12,9 +12,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as dhu_cw
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2 as l2
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3 as l3
+import lethe.kernels.cute.gdn2_bwd_dhu_cw as dhu_cw
+import lethe.kernels.cute.gdn2_bwd_dhu_l2 as l2
+import lethe.kernels.cute.gdn2_bwd_dhu_l3 as l3
 
 
 def _shape_args(b: int, hv: int, nt: int, c: int, d_k: int, d_v: int) -> list[torch.Tensor]:

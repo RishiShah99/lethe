@@ -12,7 +12,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import (
+from lethe.kernels.ops import (
     backward_selective_scan,
     complex_scan_rope,
     forward_chunked_scan,
@@ -20,23 +20,23 @@ from flash_mamba_rl.kernels.ops import (
     fused_block_forward,
     mimo_backward,
 )
-from flash_mamba_rl.kernels.references import (
+from lethe.kernels.references import (
     reference_backward_selective_scan,
     reference_forward_chunked_scan,
 )
-from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
-from flash_mamba_rl.kernels.references.fused_block_backward import (
+from lethe.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from lethe.kernels.references.fused_block_backward import (
     reference_fused_block_backward,
 )
-from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
-from flash_mamba_rl.kernels.references.mimo_backward import reference_mimo_backward
-from flash_mamba_rl.verifier.contracts import (
+from lethe.kernels.references.fused_block_forward import reference_fused_block_forward
+from lethe.kernels.references.mimo_backward import reference_mimo_backward
+from lethe.verifier.contracts import (
     gate_cmp_01_input_variation,
     gate_ord_03_noncommutative_reduction,
     gate_prc_02_mixed_precision_accumulation,
     run_all_gates,
 )
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.verifier.op_harness import (
     BWD_GRAD_FIELDS,
     FUSED_BWD_GATE_OVERRIDES,
     FUSED_BWD_GRAD_FIELDS,
@@ -805,7 +805,7 @@ def _fp16_state_rope(
     """Cheating rope scan: rotation/discretisation in fp32, running state in fp16."""
     import math
 
-    from flash_mamba_rl.kernels.references.complex_scan_rope import _apply_rope_rotation
+    from lethe.kernels.references.complex_scan_rope import _apply_rope_rotation
 
     xf, bf, cf, dtf, af, angf = (t.float() for t in (x, b_in, c_in, dt, a_head, angle_proj))
     delta_angle = torch.tanh(angf) * dtf.unsqueeze(-1) * math.pi

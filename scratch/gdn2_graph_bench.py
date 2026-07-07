@@ -106,9 +106,9 @@ def main() -> None:
 
     from scratch.gdn2_graph import GraphedBackward
 
-    from flash_mamba_rl.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
-    from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
-    from flash_mamba_rl.verifier.timing import benchmark
+    from lethe.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
+    from lethe.kernels.cute.gdn2_backward import _load_box_kernels_cw
+    from lethe.verifier.timing import benchmark
 
     report["env"] = _env_fingerprint()
     k1_cw, k2_cw = _load_box_kernels_cw()
@@ -217,7 +217,7 @@ def main() -> None:
         # cost explicitly. Replay-only caveat: the captured stash is static, so the
         # graph number is a pure-replay figure (same regime as every arm here).
         try:
-            from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+            from lethe.kernels.references.gdn2_chunkwise_cw import (
                 chunkwise_restage_cw,
             )
 

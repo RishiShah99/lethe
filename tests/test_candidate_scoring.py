@@ -6,17 +6,17 @@ from typing import Any
 
 import pytest
 
-from flash_mamba_rl.rl.prompts import available_ops, build_op_prompt
-from flash_mamba_rl.rl.train import _OP_ENTRY_POINTS
-from flash_mamba_rl.verifier import op_harness
-from flash_mamba_rl.verifier.candidate_scoring import (
+from lethe.rl.prompts import available_ops, build_op_prompt
+from lethe.rl.train import _OP_ENTRY_POINTS
+from lethe.verifier import op_harness
+from lethe.verifier.candidate_scoring import (
     _OP_VERIFIERS,
     OpSpec,
     _score_source_body,
     score_candidate_source,
     scoreable_ops,
 )
-from flash_mamba_rl.verifier.contracts import GateResult
+from lethe.verifier.contracts import GateResult
 
 # A correct eager candidate: mirrors the reference math exactly.
 CORRECT_EAGER = """
@@ -113,7 +113,7 @@ def test_curriculum_registry_consistent() -> None:
 
 def test_forbidden_import_rejected() -> None:
     wrapper = (
-        "from flash_mamba_rl.kernels.references.forward_chunked_scan "
+        "from lethe.kernels.references.forward_chunked_scan "
         "import reference_forward_chunked_scan as forward_chunked_scan\n"
     )
     result = _score_source_body(wrapper, {"op": "forward_chunked_scan"})
@@ -132,7 +132,7 @@ def test_forbidden_import_rejected() -> None:
 # reach it through __builtins__, and bind the reference as the entry point.
 REFERENCE_WRAP_EXPLOIT = (
     'forward_chunked_scan = __builtins__["__im" + "port__"](\n'
-    '    "flash" + "_mamba_rl.kernels.references.forward_chunked_scan",\n'
+    '    "let" + "he.kernels.references.forward_chunked_scan",\n'
     '    fromlist=["reference_forward_chunked_scan"],\n'
     ").reference_forward_chunked_scan\n"
 )
@@ -153,12 +153,12 @@ def test_import_guard_blocks_oracle_reimport() -> None:
     import importlib
     import math
 
-    from flash_mamba_rl.verifier.candidate_scoring import _import_guard
+    from lethe.verifier.candidate_scoring import _import_guard
 
     real = builtins.__import__
     with _import_guard():
         with pytest.raises(ImportError):
-            builtins.__import__("flash_mamba_rl.kernels.references.forward_chunked_scan")
+            builtins.__import__("lethe.kernels.references.forward_chunked_scan")
         assert builtins.__import__("importlib") is importlib  # NOT blocked
         assert builtins.__import__("math") is math
     assert builtins.__import__ is real  # restored on exit
@@ -170,16 +170,16 @@ def test_oracle_import_blocker_covers_importlib_pathway() -> None:
     With the oracle evicted from sys.modules, the re-import re-consults it."""
     import importlib
 
-    from flash_mamba_rl.verifier.candidate_scoring import (
+    from lethe.verifier.candidate_scoring import (
         _hidden_project_modules,
         _oracle_import_blocker,
     )
 
     with _hidden_project_modules(), _oracle_import_blocker():
         with pytest.raises(ImportError):
-            importlib.import_module("flash_mamba_rl.kernels.references.forward_chunked_scan")
+            importlib.import_module("lethe.kernels.references.forward_chunked_scan")
         assert importlib.import_module("math").pi  # non-oracle passes through
-    assert importlib.import_module("flash_mamba_rl.verifier.reward") is not None  # removed on exit
+    assert importlib.import_module("lethe.verifier.reward") is not None  # removed on exit
 
 
 # Bypasses the AST screen (no forbidden Name nodes — __builtins__/__import__/
@@ -192,7 +192,7 @@ ORACLE_GADGET_VIA_FINDER = (
     "imp = b['__import__'] if isinstance(b, dict) else b.__import__\n"
     "il = imp('importlib')\n"
     "forward_chunked_scan = il.import_module(\n"
-    "    'flash' + '_mamba_rl.kernels.references.forward_chunked_scan'\n"
+    "    'let' + 'he.kernels.references.forward_chunked_scan'\n"
     ").reference_forward_chunked_scan\n"
 )
 
@@ -215,7 +215,7 @@ DEFERRED_ORACLE_WRAP = (
     "    b = globals()['__buil' + 'tins__']\n"
     "    imp = b['__imp' + 'ort__'] if isinstance(b, dict) else getattr(b, '__imp' + 'ort__')\n"
     "    mod = imp('imp' + 'ortlib').import_module(\n"
-    "        'flash' + '_mamba_rl.kernels.references.forward_chunked_scan')\n"
+    "        'let' + 'he.kernels.references.forward_chunked_scan')\n"
     "    return mod.reference_forward_chunked_scan(u, *aux, chunk_size=chunk_size)\n"
 )
 
@@ -241,7 +241,7 @@ EARLY_BOUND_ORACLE_WRAP = (
     "imp0 = bi['__imp' + 'ort__'] if isinstance(bi, dict) else getattr(bi, '__imp' + 'ort__')\n"
     "_saved = imp0('imp' + 'ortlib').import_module\n"
     "def forward_chunked_scan(u, *aux, chunk_size=64):\n"
-    "    mod = _saved('flash' + '_mamba_rl.kernels.references.forward_chunked_scan')\n"
+    "    mod = _saved('let' + 'he.kernels.references.forward_chunked_scan')\n"
     "    return mod.reference_forward_chunked_scan(u, *aux, chunk_size=chunk_size)\n"
 )
 
@@ -253,7 +253,7 @@ def test_early_bound_oracle_import_blocked_by_eviction() -> None:
 
 
 def test_ast_screen_passes_clean_candidate() -> None:
-    from flash_mamba_rl.verifier.candidate_scoring import _ast_screen
+    from lethe.verifier.candidate_scoring import _ast_screen
 
     assert _ast_screen(CORRECT_EAGER) == []
     # A syntactically broken source is not a screen hit — exec classifies it.
@@ -263,13 +263,13 @@ def test_ast_screen_passes_clean_candidate() -> None:
 def test_project_modules_hidden_during_candidate_exec() -> None:
     import sys
 
-    from flash_mamba_rl.verifier.candidate_scoring import _hidden_project_modules
+    from lethe.verifier.candidate_scoring import _hidden_project_modules
 
-    before = {k: v for k, v in sys.modules.items() if k.startswith("flash_mamba_rl")}
+    before = {k: v for k, v in sys.modules.items() if k.startswith("lethe")}
     assert before  # the package is imported in this test process
     with _hidden_project_modules():
-        assert not any(k.startswith("flash_mamba_rl") for k in sys.modules)
-    after = {k: v for k, v in sys.modules.items() if k.startswith("flash_mamba_rl")}
+        assert not any(k.startswith("lethe") for k in sys.modules)
+    after = {k: v for k, v in sys.modules.items() if k.startswith("lethe")}
     assert after == before  # identical module objects restored
 
 

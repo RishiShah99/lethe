@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute import (
+from lethe.kernels.cute import (
     gdn2_bwd_dhu,
     gdn2_bwd_dhu_cw,
     gdn2_bwd_dhu_l2,
@@ -28,7 +28,7 @@ from flash_mamba_rl.kernels.cute import (
     gdn2_bwd_wy_f,
     gdn2_sb_einsum,
 )
-from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import graph_capture
+from lethe.kernels.cute.gdn2_bwd_dhu import graph_capture
 
 _RUN_FNS = [
     gdn2_bwd_wy.run_k2_serial,

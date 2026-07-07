@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.rl.gen_pool import GenerationPool, split_counts
+from lethe.rl.gen_pool import GenerationPool, split_counts
 
 
 class StubReplica:
@@ -125,7 +125,7 @@ class TestGenerationPool:
 
 
 def test_train_loop_uses_gen_pool(tmp_path: Any) -> None:
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
+    from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     from .test_train_loop import BAD, GOOD, StubTrainablePolicy
 

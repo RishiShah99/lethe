@@ -15,11 +15,11 @@ import re
 import pytest
 import torch
 
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as dhu
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as dhu_cw
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2 as l2
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3 as l3
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+import lethe.kernels.cute.gdn2_bwd_dhu as dhu
+import lethe.kernels.cute.gdn2_bwd_dhu_cw as dhu_cw
+import lethe.kernels.cute.gdn2_bwd_dhu_l2 as l2
+import lethe.kernels.cute.gdn2_bwd_dhu_l3 as l3
+from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
 
 def _l2norm(x: torch.Tensor) -> torch.Tensor:

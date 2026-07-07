@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.ops import complex_scan_rope
-from flash_mamba_rl.kernels.references.complex_scan_rope import reference_complex_scan_rope
+from lethe.kernels.ops import complex_scan_rope
+from lethe.kernels.references.complex_scan_rope import reference_complex_scan_rope
 
 SHAPES = [
     (1, 8, 2, 4, 8, 3),

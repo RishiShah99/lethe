@@ -21,8 +21,9 @@ Box-only (the cute kernels need sm_100). Imports cleanly off-box.
 from collections.abc import Callable
 
 import torch
-from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import graph_capture
 from torch import Tensor
+
+from lethe.kernels.cute.gdn2_bwd_dhu import graph_capture
 
 
 class GraphedBackward:

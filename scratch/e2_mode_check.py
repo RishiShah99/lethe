@@ -10,8 +10,8 @@ the policy missed, or whether tuned chunk_parallel genuinely wins everywhere.
 
 from __future__ import annotations
 
-from flash_mamba_rl.kernels.autotune import ShapeSpec
-from flash_mamba_rl.rl.config_grpo import score_config_candidate
+from lethe.kernels.autotune import ShapeSpec
+from lethe.rl.config_grpo import score_config_candidate
 
 SHAPE = ShapeSpec(8, 2048, 2048)
 CONFIGS = {

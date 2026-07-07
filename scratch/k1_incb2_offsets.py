@@ -502,8 +502,8 @@ def run_k1_incB2_v2(
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
 
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _incb2_pack_scalar
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw import _incb2_pack_cw
+    from lethe.kernels.cute.gdn2_bwd_dhu import _incb2_pack_scalar
+    from lethe.kernels.cute.gdn2_bwd_dhu_cw import _incb2_pack_cw
 
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
@@ -589,10 +589,10 @@ def _desk_gate() -> bool:
     landing points — m_bdv (G1 TMEM→GMEM epilogue), dv2/b_ga[:,:,C:] (SIMT glue), m_t
     (GA epilogue), b_dhT (carry round-trip) — are only covered by the silicon gate.
     """
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as k1mod
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as k1cw
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    import lethe.kernels.cute.gdn2_bwd_dhu as k1mod
+    import lethe.kernels.cute.gdn2_bwd_dhu_cw as k1cw
+    from lethe.kernels.references.gdn2_chunkwise import build_microgate_bundles
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     TOL = 1e-12
 
@@ -698,8 +698,8 @@ def _compare(name: str, got: Tensor, exp: Tensor, atol: float, rtol: float) -> d
 
 def _build_bundle(mode: str) -> dict[str, Any]:
     """Build an in-process K#1 bundle at the default box shape (b=2,h=2,nt=4,c=64,d_k=128,d_v=64)."""
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise import build_microgate_bundles
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     b, h, nt, c, d_k, d_v = 2, 2, 4, 64, 128, 64
     t = nt * c

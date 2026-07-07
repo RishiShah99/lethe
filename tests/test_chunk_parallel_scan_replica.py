@@ -33,8 +33,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from flash_mamba_rl.kernels.ops.forward_chunked_scan import _auto_chunk_len, _scan_eager
-from flash_mamba_rl.kernels.references.forward_chunked_scan import (
+from lethe.kernels.ops.forward_chunked_scan import _auto_chunk_len, _scan_eager
+from lethe.kernels.references.forward_chunked_scan import (
     reference_forward_chunked_scan,
 )
 

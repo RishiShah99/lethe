@@ -47,8 +47,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from flash_mamba_rl.kernels.ops.forward_chunked_scan import _scan_eager
-from flash_mamba_rl.kernels.references.backward_selective_scan import (
+from lethe.kernels.ops.forward_chunked_scan import _scan_eager
+from lethe.kernels.references.backward_selective_scan import (
     SelectiveScanGrads,
     reference_backward_selective_scan,
 )

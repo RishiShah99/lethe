@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+from lethe.kernels.cute.gdn2_assemble import (
     _stage_b_vjp_cw,
     _stage_b_vjp_cw_closed,
     _to_chunks,
@@ -26,8 +26,8 @@ from flash_mamba_rl.kernels.cute.gdn2_assemble import (
     k1_reverse_state_cw_ref,
     k2_wy_vjp_cw_ref,
 )
-from flash_mamba_rl.kernels.ops.gdn_backward import gdn2_backward
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import chunkwise_forward_cw
+from lethe.kernels.ops.gdn_backward import gdn2_backward
+from lethe.kernels.references.gdn2_chunkwise_cw import chunkwise_forward_cw
 
 torch.manual_seed(0)
 

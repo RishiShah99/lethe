@@ -39,7 +39,7 @@ def main() -> None:
     except Exception as exc:
         print(f"RAISED {type(exc).__name__}: {exc}")
 
-    from flash_mamba_rl.verifier.op_harness import verify_elementwise_op
+    from lethe.verifier.op_harness import verify_elementwise_op
 
     results = verify_elementwise_op(fn, device="cuda")
     for name, r in results.items():

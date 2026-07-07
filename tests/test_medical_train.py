@@ -11,8 +11,8 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from flash_mamba_rl.medical.model import Mamba3Config, Mamba3ECGClassifier
-from flash_mamba_rl.medical.train import (
+from lethe.medical.model import Mamba3Config, Mamba3ECGClassifier
+from lethe.medical.train import (
     MedicalTrainConfig,
     MedicalTrainer,
     macro_auc,

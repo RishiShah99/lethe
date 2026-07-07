@@ -12,13 +12,13 @@ import inspect
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_backward import (
+from lethe.kernels.cute.gdn2_backward import (
     _is_scalar_reducible,
     is_available,
     native_gdn2_backward,
 )
-from flash_mamba_rl.kernels.ops.gdn_backward import gdn2_backward
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.ops.gdn_backward import gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 
 def _inputs(seed: int = 0):
@@ -82,7 +82,7 @@ def test_bmm_tc_rejects_oversize_staging_dims() -> None:
     # _bmm_tc stages M,K into a (D_K,D_K) buffer; dims above D_K must raise a
     # named precondition rather than truncate/pad silently. Runs off-box — the
     # raise precedes any tcgen05 GEMM.
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import D_K, _bmm_tc
+    from lethe.kernels.cute.gdn2_bwd_dhu import D_K, _bmm_tc
 
     with pytest.raises(ValueError, match="stages M,K"):
         _bmm_tc(torch.zeros(2, D_K + 1, 8), torch.zeros(2, 8, 8))
@@ -90,7 +90,7 @@ def test_bmm_tc_rejects_oversize_staging_dims() -> None:
         _bmm_tc(torch.zeros(2, 8, D_K + 1), torch.zeros(2, D_K + 1, 8))
 
     # the unbatched serial twin (_mm_tc in the WY file) shares the staging contract
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import _mm_tc
+    from lethe.kernels.cute.gdn2_bwd_wy import _mm_tc
 
     with pytest.raises(ValueError, match="stages M,K"):
         _mm_tc(torch.zeros(D_K + 1, 8), torch.zeros(8, 8))
@@ -99,7 +99,7 @@ def test_bmm_tc_rejects_oversize_staging_dims() -> None:
 
 
 def test_incb_entry_guards_and_keyed_gemm_cache() -> None:
-    from flash_mamba_rl.kernels.cute import gdn2_bwd_dhu
+    from lethe.kernels.cute import gdn2_bwd_dhu
 
     for fn in (gdn2_bwd_dhu.run_k1_incB_host, gdn2_bwd_dhu.run_k1_incB_batched):
         assert "d_k > D_K" in inspect.getsource(fn)
@@ -127,7 +127,7 @@ class TestCreateGraphFallback:
     def test_native_declines_when_do_requires_grad(self, monkeypatch) -> None:
         """With do.requires_grad=True, native_gdn2_backward returns None (eager fallback)."""
         monkeypatch.setattr(
-            "flash_mamba_rl.kernels.cute.gdn2_backward.is_available", lambda device=None: True
+            "lethe.kernels.cute.gdn2_backward.is_available", lambda device=None: True
         )
         q, k, v, g, b, w, do = self._make_inputs()
         do_grad = do.clone().requires_grad_(True)
@@ -137,7 +137,7 @@ class TestCreateGraphFallback:
 
     def test_native_proceeds_when_do_detached(self, monkeypatch) -> None:
         """With do.requires_grad=False, native_gdn2_backward proceeds (kernel route)."""
-        from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+        from lethe.kernels.cute.gdn2_assemble import (
             k1_reverse_state_cw_ref,
             k1_reverse_state_ref,
             k2_wy_vjp_cw_ref,
@@ -145,14 +145,14 @@ class TestCreateGraphFallback:
         )
 
         monkeypatch.setattr(
-            "flash_mamba_rl.kernels.cute.gdn2_backward.is_available", lambda device=None: True
+            "lethe.kernels.cute.gdn2_backward.is_available", lambda device=None: True
         )
         monkeypatch.setattr(
-            "flash_mamba_rl.kernels.cute.gdn2_backward._load_box_kernels",
+            "lethe.kernels.cute.gdn2_backward._load_box_kernels",
             lambda: (k1_reverse_state_ref, k2_wy_vjp_ref),
         )
         monkeypatch.setattr(
-            "flash_mamba_rl.kernels.cute.gdn2_backward._load_box_kernels_cw",
+            "lethe.kernels.cute.gdn2_backward._load_box_kernels_cw",
             lambda: (k1_reverse_state_cw_ref, k2_wy_vjp_cw_ref),
         )
         q, k, v, g, b, w, do = self._make_inputs()
@@ -163,7 +163,7 @@ class TestCreateGraphFallback:
 
     def test_family_natives_decline_when_do_requires_grad(self, monkeypatch) -> None:
         """All native_*_backward family wrappers decline when do.requires_grad=True."""
-        from flash_mamba_rl.kernels.cute.gdn2_backward import (
+        from lethe.kernels.cute.gdn2_backward import (
             native_gla_backward,
             native_kda_backward,
             native_la_backward,
@@ -171,7 +171,7 @@ class TestCreateGraphFallback:
         )
 
         monkeypatch.setattr(
-            "flash_mamba_rl.kernels.cute.gdn2_backward.is_available", lambda device=None: True
+            "lethe.kernels.cute.gdn2_backward.is_available", lambda device=None: True
         )
         b, t, h, dk, dv = 1, 64, 2, 128, 128
         gen = torch.Generator().manual_seed(42)

@@ -6,7 +6,7 @@
 #   BISECT 0 NT1   → GO   (full fused chunk)
 #   BISECT 0 NT4   → GO   (full + the reverse b_dh carry across 4 unrolled chunks)
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

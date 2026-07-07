@@ -13,9 +13,9 @@ import sys
 import pytest
 import torch
 
-from flash_mamba_rl.verifier.compile import ErrorClass, compile_kernel
-from flash_mamba_rl.verifier.sandbox import run_in_subprocess
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.verifier.compile import ErrorClass, compile_kernel
+from lethe.verifier.sandbox import run_in_subprocess
+from lethe.verifier.timing import benchmark
 
 requires_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_AS is POSIX-only")

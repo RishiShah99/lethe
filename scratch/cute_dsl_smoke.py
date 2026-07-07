@@ -21,10 +21,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-import torch
-
 import cutlass
 import cutlass.cute as cute
+import torch
 from cutlass.cute.nvgpu import tcgen05  # noqa: F401
 from cutlass.cute.runtime import from_dlpack
 
@@ -119,7 +118,7 @@ def _probe_api() -> dict[str, Any]:
             names = [n for n in dir(m) if not n.startswith("_")]
             hit = [n for n in names if "mma" in n.lower() or "tiled" in n.lower()]
             found[mod] = {"present": True, "mma_like": hit[:20], "n_public": len(names)}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             found[mod] = {"present": True, "import_error": f"{type(exc).__name__}: {exc}"}
     out["modules"] = found
 
@@ -134,7 +133,7 @@ def _probe_api() -> dict[str, Any]:
             if "sm100" in low or "blackwell" in low:
                 hits.append(info.name)
         out["sm100_modules"] = hits[:40]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         out["sm100_modules"] = f"{type(exc).__name__}: {exc}"
 
     out["cute_public"] = [n for n in dir(cute) if not n.startswith("_")][:60]
@@ -154,7 +153,7 @@ def main() -> None:
     for name, fn in steps:
         try:
             out[name] = fn()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             out[name] = {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()}
 
     go = (

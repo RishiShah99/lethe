@@ -6,15 +6,15 @@ import json
 import os
 from typing import Any
 
-from flash_mamba_rl.rl.curriculum import (
+from lethe.rl.curriculum import (
     DEFAULT_CURRICULUM,
     CurriculumConfig,
     CurriculumRunner,
     CurriculumSchedule,
 )
-from flash_mamba_rl.rl.prompts import available_ops
-from flash_mamba_rl.rl.train import TrainLoopConfig
-from flash_mamba_rl.verifier.candidate_scoring import scoreable_ops
+from lethe.rl.prompts import available_ops
+from lethe.rl.train import TrainLoopConfig
+from lethe.verifier.candidate_scoring import scoreable_ops
 
 from .test_train_loop import GOOD, StubTrainablePolicy
 

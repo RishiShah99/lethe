@@ -57,7 +57,7 @@ def main() -> None:
         print("no CUDA (desk)")
         return
 
-    from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+    from lethe.kernels.cute.gdn2_assemble import (
         LN2,
         RCP_LN2,
         _stage_b_vjp_cw_closed,
@@ -67,11 +67,11 @@ def main() -> None:
         masked_decay_rel,
         pick_chunk_len,
     )
-    from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
-    from flash_mamba_rl.kernels.cute.gdn2_sb_einsum import (
+    from lethe.kernels.cute.gdn2_backward import _load_box_kernels_cw
+    from lethe.kernels.cute.gdn2_sb_einsum import (
         is_available as sbe_available,
     )
-    from flash_mamba_rl.kernels.cute.gdn2_sb_einsum import (
+    from lethe.kernels.cute.gdn2_sb_einsum import (
         run_sb_einsum,
         sbe_dims_ok,
     )

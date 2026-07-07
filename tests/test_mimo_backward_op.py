@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.ops import mimo_backward
-from flash_mamba_rl.kernels.references.mimo_backward import (
+from lethe.kernels.ops import mimo_backward
+from lethe.kernels.references.mimo_backward import (
     MimoGrads,
     reference_mimo_backward,
     reference_mimo_forward,

@@ -28,8 +28,8 @@ import argparse
 import json
 import sys
 
-from flash_mamba_rl.rl.sft_targets import available_targets, target_source, target_variants
-from flash_mamba_rl.verifier.candidate_scoring import (
+from lethe.rl.sft_targets import available_targets, target_source, target_variants
+from lethe.verifier.candidate_scoring import (
     DEFAULT_EXCLUDE_GATES,
     score_candidate_source,
 )

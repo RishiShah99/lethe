@@ -8,15 +8,15 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.verifier.candidate_scoring import scoreable_ops
-from flash_mamba_rl.verifier.op_bench import (
+from lethe.verifier.candidate_scoring import scoreable_ops
+from lethe.verifier.op_bench import (
     BLACKWELL_BROKEN_OFFICIAL,
     bug_routing_active,
     build_bench_case,
     correct_at_bench_shape,
     measure_speedup,
 )
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.verifier.timing import benchmark
 
 TINY = {"batch": 1, "seq_len": 64, "width": 8}
 
@@ -145,7 +145,7 @@ class TestBenchShapeCorrectness:
         # Correct at the two correctness-check seeds but degenerate on the
         # timed seed range: the timed-input probe must refuse the speedup —
         # the bench never pays for outputs it does not inspect.
-        from flash_mamba_rl.verifier.op_bench import _CORRECTNESS_SEED_BASE
+        from lethe.verifier.op_bench import _CORRECTNESS_SEED_BASE
 
         shape = {"batch": 1, "seq_len": 8, "width": 32}
         calib = {
@@ -176,7 +176,7 @@ class TestBenchShapeCorrectness:
         # this banked a fabricated median. Every timed trial's output is now
         # captured and value-checked, so the no-op'd trials are caught even
         # though the whitelisted seeds pass.
-        from flash_mamba_rl.verifier.op_bench import _BENCH_SEED, _CORRECTNESS_SEED_BASE
+        from lethe.verifier.op_bench import _BENCH_SEED, _CORRECTNESS_SEED_BASE
 
         shape = {"batch": 1, "seq_len": 8, "width": 32}
 
@@ -235,8 +235,8 @@ class TestScoringIntegration:
     ) -> None:
         import math
 
-        from flash_mamba_rl.verifier import op_bench
-        from flash_mamba_rl.verifier.candidate_scoring import _score_source_body
+        from lethe.verifier import op_bench
+        from lethe.verifier.candidate_scoring import _score_source_body
 
         monkeypatch.setattr(
             op_bench,
@@ -261,8 +261,8 @@ class TestScoringIntegration:
     ) -> None:
         import math
 
-        from flash_mamba_rl.verifier import op_bench
-        from flash_mamba_rl.verifier.candidate_scoring import _score_source_body
+        from lethe.verifier import op_bench
+        from lethe.verifier.candidate_scoring import _score_source_body
 
         monkeypatch.setattr(
             op_bench,
@@ -284,8 +284,8 @@ class TestScoringIntegration:
     def test_bench_shape_failure_demotes_to_contract_fail(
         self, monkeypatch: pytest.MonkeyPatch, fake_single_op: dict[str, Any]
     ) -> None:
-        from flash_mamba_rl.verifier import op_bench
-        from flash_mamba_rl.verifier.candidate_scoring import _score_source_body
+        from lethe.verifier import op_bench
+        from lethe.verifier.candidate_scoring import _score_source_body
 
         monkeypatch.setattr(
             op_bench,
@@ -307,7 +307,7 @@ class TestScoringIntegration:
         assert result["gates"]["bench_shape_correctness"]["passed"] is False
 
     def test_no_timing_off_cuda_or_unmeasured(self, fake_single_op: dict[str, Any]) -> None:
-        from flash_mamba_rl.verifier.candidate_scoring import _score_source_body
+        from lethe.verifier.candidate_scoring import _score_source_body
 
         cpu = _score_source_body(
             fake_single_op["source"],
@@ -324,9 +324,9 @@ class TestScoringIntegration:
 
 @pytest.fixture()
 def fake_single_op(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    from flash_mamba_rl.verifier import op_harness
-    from flash_mamba_rl.verifier.candidate_scoring import _OP_VERIFIERS, OpSpec
-    from flash_mamba_rl.verifier.contracts import GateResult
+    from lethe.verifier import op_harness
+    from lethe.verifier.candidate_scoring import _OP_VERIFIERS, OpSpec
+    from lethe.verifier.contracts import GateResult
 
     def verify_fake(fn: Any, *, device: str = "cpu") -> dict[str, GateResult]:
         return {"gate_cmp_01_input_variation": GateResult(passed=True, reason="")}

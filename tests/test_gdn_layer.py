@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops.gdn_layer import gdn2_op
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.ops.gdn_layer import gdn2_op
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 
 def _inputs(seed: int = 0, dtype: torch.dtype = torch.float64):
@@ -106,8 +106,8 @@ def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPat
     mode around the dispatch. Reproduced off-box with the cw refs standing in for
     the box kernels at dispatch-legal dims.
     """
-    import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
-    from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+    import lethe.kernels.cute.gdn2_backward as gdn2_native
+    from lethe.kernels.cute.gdn2_assemble import (
         k1_reverse_state_cw_ref,
         k2_wy_vjp_cw_ref,
     )
@@ -131,7 +131,7 @@ def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPat
     )
     # gdn2_backward guards the native route behind q.is_cuda; route around the
     # device check so the CPU refs exercise the exact Function.backward context.
-    import flash_mamba_rl.kernels.ops.gdn_backward as op_mod
+    import lethe.kernels.ops.gdn_backward as op_mod
 
     real = op_mod.gdn2_backward
 
@@ -140,7 +140,7 @@ def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPat
         assert native is not None
         return native
 
-    import flash_mamba_rl.kernels.ops.gdn_layer as layer_mod
+    import lethe.kernels.ops.gdn_layer as layer_mod
 
     monkeypatch.setattr(layer_mod, "gdn2_backward", _force_native)
     try:

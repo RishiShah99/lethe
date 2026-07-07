@@ -5,7 +5,7 @@
 #           GO ⇒ the launch fault is the in-loop make_* creation; hoisting them fixes inc-B2.
 #           139 ⇒ a view op (local_tile/tma_partition) must hoist too (keep-L-mode) — escalate.
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

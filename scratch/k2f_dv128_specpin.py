@@ -10,10 +10,9 @@ import sys
 import torch
 
 sys.path.insert(0, "tests")
-from test_gdn2_k2_fused import _k2_bundle_inputs  # noqa: E402
-
-from flash_mamba_rl.kernels.cute.gdn2_assemble import k2_wy_vjp_cw_ref  # noqa: E402
-from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw import _run_k2_fused_modelled  # noqa: E402
+from lethe.kernels.cute.gdn2_assemble import k2_wy_vjp_cw_ref
+from lethe.kernels.cute.gdn2_bwd_wy_cw import _run_k2_fused_modelled
+from test_gdn2_k2_fused import _k2_bundle_inputs
 
 CROWN = (2, 128, 2, 128, 128, 64)  # B,T,H,d_k,d_v=128,chunk_len=64  (NT=2, crown tile)
 

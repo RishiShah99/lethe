@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.bench.c2_backward_selective_scan import _time
-from flash_mamba_rl.kernels.ops import _triton_complex_rope
+from lethe.bench.c2_backward_selective_scan import _time
+from lethe.kernels.ops import _triton_complex_rope
 
 SHAPES = [
     (2, 256, 4, 16, 32, 16),  # oracle shape: block 16x32=512, nw4 branch

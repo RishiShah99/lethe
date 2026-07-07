@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.cuda.forward import (
+from lethe.kernels.cuda.forward import (
     cuda_forward_scan,
     cuda_forward_scan_2d,
     cuda_forward_scan_tiled,
 )
-from flash_mamba_rl.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
+from lethe.verifier.timing import benchmark
 
 PARITY_SHAPES = [
     (2, 512, 256, 16),

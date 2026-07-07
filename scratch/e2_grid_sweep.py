@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from flash_mamba_rl.kernels.autotune import (
+from lethe.kernels.autotune import (
     KernelConfig,
     ShapeSpec,
     iter_configs,
@@ -47,8 +47,8 @@ def _shapes(op: str) -> list[tuple[int, int, int]]:
 
 
 def _time_ms(fn: Any, op: str, batch: int, seq_len: int, width: int) -> float:
-    from flash_mamba_rl.verifier import op_bench
-    from flash_mamba_rl.verifier.timing import benchmark
+    from lethe.verifier import op_bench
+    from lethe.verifier.timing import benchmark
 
     template = op_bench.build_bench_case(op, "cuda", batch=batch, seq_len=seq_len, width=width)
     kwargs = template.kwargs

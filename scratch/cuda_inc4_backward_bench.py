@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.autotune import KernelConfig
-from flash_mamba_rl.kernels.cuda.backward import cuda_backward_scan
-from flash_mamba_rl.kernels.ops import backward_selective_scan
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.kernels.autotune import KernelConfig
+from lethe.kernels.cuda.backward import cuda_backward_scan
+from lethe.kernels.ops import backward_selective_scan
+from lethe.verifier.timing import benchmark
 
 SHAPES = [(8, 2048, 4096, 128), (8, 4096, 4096, 128), (2, 16384, 4096, 128)]
 CUDA_CFGS = [(4, 4), (4, 8), (8, 8), (4, 16)]  # (items, block_d); (8,16) over 227KB smem
@@ -35,7 +35,7 @@ def _inputs(b, length, d, n, dev):  # type: ignore[no-untyped-def]
 
 
 def _official(spec, dtype):  # type: ignore[no-untyped-def]
-    from flash_mamba_rl.bench.mamba3_backward_headtohead import (
+    from lethe.bench.mamba3_backward_headtohead import (
         ShapeSpec,
         _bench_official_combined,
     )

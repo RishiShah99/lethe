@@ -38,7 +38,7 @@ jobs:
         run: uv run ruff format --check src tests
 
       - name: Mypy type check
-        run: uv run mypy src/flash_mamba_rl
+        run: uv run mypy src/lethe
 
       - name: Pytest
         run: uv run pytest -v --tb=short

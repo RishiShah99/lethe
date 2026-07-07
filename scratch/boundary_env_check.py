@@ -11,8 +11,8 @@ from __future__ import annotations
 import torch
 import triton
 
-from flash_mamba_rl.kernels.autotune import ShapeSpec
-from flash_mamba_rl.rl.config_grpo import score_config_candidate
+from lethe.kernels.autotune import ShapeSpec
+from lethe.rl.config_grpo import score_config_candidate
 
 print("torch", torch.__version__, "triton", triton.__version__, flush=True)
 print("cuda", torch.cuda.is_available(), torch.cuda.get_device_name(0), flush=True)

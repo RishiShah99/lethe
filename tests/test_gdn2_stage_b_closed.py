@@ -12,8 +12,8 @@ assembly path runs on — field-pinned against ``chunkwise_forward_cw`` — and 
 import pytest
 import torch
 
-import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+import lethe.kernels.cute.gdn2_backward as gdn2_native
+from lethe.kernels.cute.gdn2_assemble import (
     _stage_b_vjp_cw,
     _stage_b_vjp_cw_closed,
     _to_chunks,
@@ -22,11 +22,11 @@ from flash_mamba_rl.kernels.cute.gdn2_assemble import (
     k1_reverse_state_cw_ref,
     k2_wy_vjp_cw_ref,
 )
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import (
+from lethe.kernels.references.gdn2_chunkwise_cw import (
     chunkwise_forward_cw,
     chunkwise_restage_cw,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 # (batch, seq_len, nheads, d_k, d_v, chunk_len)
 SHAPES = [(2, 32, 2, 16, 16, 16), (1, 64, 3, 16, 8, 16), (2, 48, 2, 24, 20, 16)]
@@ -167,7 +167,7 @@ class TestRestage:
         """Lever 2a: one masked_decay_rel build per backward — stash == rebuild bitwise."""
         from dataclasses import replace
 
-        from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
+        from lethe.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
 
         q, k, v, g, b, w, do = _inputs(2, 32, 2, 16, 16)
         cl = 16
@@ -268,8 +268,8 @@ class TestSaveFromForward:
     def test_op_forward_stashes_and_backward_receives(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import flash_mamba_rl.kernels.ops.gdn_layer as layer_mod
-        from flash_mamba_rl.kernels.references.gdn_backward import (
+        import lethe.kernels.ops.gdn_layer as layer_mod
+        from lethe.kernels.references.gdn_backward import (
             Gdn2Grads,
             reference_gdn2_forward,
         )
@@ -286,7 +286,7 @@ class TestSaveFromForward:
 
         monkeypatch.setenv("FMR_SAVE_FWD", "1")
         qq = q.clone().requires_grad_(True)
-        from flash_mamba_rl.kernels.cute.gdn2_assemble import pick_chunk_len
+        from lethe.kernels.cute.gdn2_assemble import pick_chunk_len
 
         o = layer_mod.gdn2_op(qq, k, v, g, b, w)
         rst = chunkwise_restage_cw(

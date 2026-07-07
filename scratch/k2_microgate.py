@@ -50,7 +50,7 @@ def main() -> None:
         payload = torch.load(args.bundle, weights_only=False)
         out["meta"] = payload["meta"]
         try:
-            from flash_mamba_rl.kernels.cute.gdn2_bwd_wy import is_available, run_k2  # noqa: PLC0415
+            from lethe.kernels.cute.gdn2_bwd_wy import is_available, run_k2
         except ImportError:
             out["kernel_available"] = False
             out["note"] = "scratch/gdn2_bwd_wy not authored yet; bundle validated only"
@@ -59,7 +59,7 @@ def main() -> None:
                 for t_ in (*payload["inputs"].values(), *payload["expected"].values())
             )
             out["GO"] = False
-            raise SystemExit(0)  # noqa: TRY301 - clean early exit handled below
+            raise SystemExit(0)
 
         out["kernel_available"] = is_available()
         inp = {k: v.cuda() for k, v in payload["inputs"].items()}
@@ -77,7 +77,7 @@ def main() -> None:
         out["GO"] = all(c["passed"] for c in checks)
     except SystemExit:
         pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"
         out["trace"] = traceback.format_exc()
         out["GO"] = False

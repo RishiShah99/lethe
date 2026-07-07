@@ -2,7 +2,7 @@
 # Wait for the PTB-XL download to finish, then launch the 8-GPU DDP training run.
 # Launch detached: nohup bash scratch/ptbxl_autostart.sh > ptbxl_train.log 2>&1 &
 set -uo pipefail
-cd ~/flash-mamba-rl
+cd ~/lethe
 export PATH="$HOME/.local/bin:$PATH"
 ROOT="$HOME/data/ptbxl"
 

@@ -1,7 +1,7 @@
 """Level-3 fused K#1 box GATE + RUNG-BENCH harness — kernel lives in src (wired at burst-4).
 
 The unrolled fused reverse-scan kernel + launcher were moved to
-``flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3`` after the burst-3 silicon gates
+``lethe.kernels.cute.gdn2_bwd_dhu_l3`` after the burst-3 silicon gates
 (results/k1_incb2_v3_{scalar_nt1,scalar_nt4,cw_nt4,cw_nt8}.json — GO + deterministic,
 worst scale_rel ~6.5e-4; design rationale in the module docstring). This file is the
 reproducibility layer:
@@ -27,7 +27,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3 import run_k1_incB2_v3
+from lethe.kernels.cute.gdn2_bwd_dhu_l3 import run_k1_incB2_v3
 
 # ─── desk gate (CPU, fp64) ────────────────────────────────────────────────────
 
@@ -42,10 +42,10 @@ def _desk_gate() -> bool:
     dv2/b_ga[:,:,C:] (SIMT glue), m_t (GA epilogue), b_dhT (carry round-trip) — are only
     covered by the silicon gate.
     """
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as k1mod
-    import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as k1cw
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    import lethe.kernels.cute.gdn2_bwd_dhu as k1mod
+    import lethe.kernels.cute.gdn2_bwd_dhu_cw as k1cw
+    from lethe.kernels.references.gdn2_chunkwise import build_microgate_bundles
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     TOL = 1e-12
 
@@ -152,8 +152,8 @@ def _compare(name: str, got: Tensor, exp: Tensor) -> dict[str, Any]:
 
 def _build_bundle(mode: str, nt: int = 4, b: int = 2, h: int = 2) -> dict[str, Any]:
     """Build an in-process K#1 bundle at (b,h,nt,c=64,d_k=128,d_v=64); nt is the stage knob."""
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise import build_microgate_bundles
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     c, d_k, d_v = 64, 128, 64
     t = nt * c
@@ -247,11 +247,11 @@ def _run_bench(nt: int, b: int, h: int, trials: int) -> dict[str, Any]:
     against the bundle expected (scale_rel) so a fast-but-wrong rung cannot pass
     silently. Compile walls (L3 bakes nt) land in warmup, outside the timed region.
     """
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw import (
+    from lethe.kernels.cute.gdn2_bwd_dhu_cw import (
         run_k1_incB_batched,
     )
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l2 import run_k1_incB_l2
-    from flash_mamba_rl.verifier.timing import benchmark
+    from lethe.kernels.cute.gdn2_bwd_dhu_l2 import run_k1_incB_l2
+    from lethe.verifier.timing import benchmark
 
     payload = _build_bundle("cw", nt=nt, b=b, h=h)
     inp = {k: v.cuda() for k, v in payload["inputs"].items()}

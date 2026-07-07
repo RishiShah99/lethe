@@ -11,14 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_SCAN_CU = (
-    Path(__file__).resolve().parent.parent
-    / "src"
-    / "flash_mamba_rl"
-    / "kernels"
-    / "cuda"
-    / "scan.cu"
-)
+_SCAN_CU = Path(__file__).resolve().parent.parent / "src" / "lethe" / "kernels" / "cuda" / "scan.cu"
 
 
 def test_scan_cu_uses_int64_offsets_not_long() -> None:

@@ -16,8 +16,8 @@ import math
 
 import torch
 
-from flash_mamba_rl.kernels.ops import _triton_fused_block_bwd as mod
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.kernels.ops import _triton_fused_block_bwd as mod
+from lethe.verifier.timing import benchmark
 
 SHAPES = [
     ("train", 8, 2048, 4096, 128, 4),

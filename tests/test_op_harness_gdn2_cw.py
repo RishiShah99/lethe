@@ -10,8 +10,8 @@ CPU only.
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
+from lethe.verifier.op_harness import (
     GDN2_BWD_GRAD_FIELDS,
     gdn2_bwd_candidate_adapter,
     gdn2_channelwise_reference_adapter,

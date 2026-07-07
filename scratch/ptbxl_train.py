@@ -22,9 +22,9 @@ import time
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
-from flash_mamba_rl.medical.data import PTBXL
-from flash_mamba_rl.medical.model import Mamba3Config, Mamba3ECGClassifier
-from flash_mamba_rl.medical.train import MedicalTrainConfig, MedicalTrainer
+from lethe.medical.data import PTBXL
+from lethe.medical.model import Mamba3Config, Mamba3ECGClassifier
+from lethe.medical.train import MedicalTrainConfig, MedicalTrainer
 
 # B200 bf16 dense peak (FLOP/s), per GPU — MFU denominator. Approximate.
 _PEAK_FLOPS = 2.25e15

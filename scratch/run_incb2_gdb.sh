@@ -2,7 +2,7 @@
 # cuda-gdb backtrace on the minimal inc-B2 repro (bisect=1) — localize the launch SIGSEGV
 # (host vs device, and which frame). memcheck on catches device illegal accesses with a PC.
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 GDB=/usr/local/cuda/bin/cuda-gdb

@@ -17,18 +17,18 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.autotune import ShapeSpec
-from flash_mamba_rl.rl.edit_rl import (
+from lethe.kernels.autotune import ShapeSpec
+from lethe.rl.edit_rl import (
     apply_edits,
     build_edit_scorer,
     extract_edits,
     parse_edits,
     score_edit_candidate,
 )
-from flash_mamba_rl.rl.parallel_scoring import ParallelEditScorer
-from flash_mamba_rl.rl.prompts import build_edit_prompt
-from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
-from flash_mamba_rl.verifier.candidate_scoring import score_candidate_source
+from lethe.rl.parallel_scoring import ParallelEditScorer
+from lethe.rl.prompts import build_edit_prompt
+from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
+from lethe.verifier.candidate_scoring import score_candidate_source
 
 
 def _block(search: str, replace: str) -> str:
@@ -174,7 +174,7 @@ class TestEditPrompt:
 
 class TestScoreCandidateSourceShape:
     def test_shape_arg_does_not_break_cpu_scoring(self) -> None:
-        from flash_mamba_rl.rl.sft_targets import target_source
+        from lethe.rl.sft_targets import target_source
 
         base = target_source("forward_chunked_scan", "eager")
         res = score_candidate_source(

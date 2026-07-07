@@ -19,7 +19,7 @@ import pytest
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.verifier.contracts import (
+from lethe.verifier.contracts import (
     GateResult,
     gate_ord_02_atomic_determinism,
     gate_prc_01_precision_regime,

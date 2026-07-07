@@ -14,16 +14,16 @@ import types
 
 import pytest
 
-from flash_mamba_rl.kernels.autotune import KernelConfig
-from flash_mamba_rl.kernels.ops._resource_meta import max_resource_meta
+from lethe.kernels.autotune import KernelConfig
+from lethe.kernels.ops._resource_meta import max_resource_meta
 
 # The ops package __init__ rebinds ``forward_chunked_scan`` /
 # ``backward_selective_scan`` / ``fused_block_backward`` to the *functions*,
 # shadowing the submodule attributes — reach the real modules through sys.modules.
-ops_pkg = importlib.import_module("flash_mamba_rl.kernels.ops")
-fwd_mod = importlib.import_module("flash_mamba_rl.kernels.ops.forward_chunked_scan")
-bwd_mod = importlib.import_module("flash_mamba_rl.kernels.ops.backward_selective_scan")
-fused_mod = importlib.import_module("flash_mamba_rl.kernels.ops.fused_block_backward")
+ops_pkg = importlib.import_module("lethe.kernels.ops")
+fwd_mod = importlib.import_module("lethe.kernels.ops.forward_chunked_scan")
+bwd_mod = importlib.import_module("lethe.kernels.ops.backward_selective_scan")
+fused_mod = importlib.import_module("lethe.kernels.ops.fused_block_backward")
 
 _SERIAL_META = {"n_regs": 64, "shared_bytes": 2048}
 _CP_META = {"n_regs": 96, "shared_bytes": 1024, "spill_bytes": 32}

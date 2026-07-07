@@ -19,7 +19,7 @@ from pathlib import Path
 
 import torch
 
-from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles
+from lethe.kernels.references.gdn2_chunkwise import build_microgate_bundles
 
 
 def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:

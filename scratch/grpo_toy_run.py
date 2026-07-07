@@ -31,8 +31,8 @@ def main() -> None:
     ap.add_argument("--score-timeout", type=float, default=300.0)
     args = ap.parse_args()
 
-    from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
+    from lethe.rl.hf_policy import HFPolicy, SamplingSettings
+    from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     adapter_path = GRPOTrainingLoop.latest_adapter_path(args.ckpt_dir) if args.resume else None
     policy = HFPolicy.from_pretrained(

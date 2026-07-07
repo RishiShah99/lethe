@@ -14,7 +14,7 @@ import math
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.references import (
+from lethe.kernels.references import (
     MimoGrads,
     reference_complex_scan_rope,
     reference_mimo_backward,

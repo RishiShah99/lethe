@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.rl.prompts import available_ops, build_op_prompt
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.rl.prompts import available_ops, build_op_prompt
+from lethe.verifier.op_harness import (
     elementwise_silu_reference,
     verify_elementwise_op,
 )
@@ -55,7 +55,7 @@ def test_nondeterminism_fails_ord02() -> None:
 
 
 def test_score_candidate_source_end_to_end() -> None:
-    from flash_mamba_rl.verifier.candidate_scoring import score_candidate_source
+    from lethe.verifier.candidate_scoring import score_candidate_source
 
     source = """
 import torch

@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import json
 
-from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec
-from flash_mamba_rl.verifier.candidate_scoring import score_candidate_config
+from lethe.kernels.autotune import KernelConfig, ShapeSpec
+from lethe.verifier.candidate_scoring import score_candidate_config
 
 _OPS = ("backward_selective_scan", "fused_block_backward")
 _SHAPES = [

@@ -11,12 +11,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.references.gdn2_chunkwise import (
+from lethe.kernels.references.gdn2_chunkwise import (
     build_microgate_bundles,
     chunkwise_backward,
     chunkwise_forward,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import (
+from lethe.kernels.references.gdn_backward import (
     reference_gdn2_backward,
     reference_gdn2_forward,
 )

@@ -59,14 +59,14 @@ def main() -> None:
 
     from torch.profiler import ProfilerActivity, profile
 
-    from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+    from lethe.kernels.cute.gdn2_assemble import (
         _stage_b_vjp_cw,
         _to_chunks,
         assembled_channelwise_gdn2_backward,
         chunkwise_forward_cw,
         pick_chunk_len,
     )
-    from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
+    from lethe.kernels.cute.gdn2_backward import _load_box_kernels_cw
 
     k1_cw, k2_cw = _load_box_kernels_cw()
     dev = torch.device("cuda")
@@ -155,7 +155,7 @@ def main() -> None:
     try:
         prof.export_stacks(OUT_STACKS, "self_cuda_time_total")
         print(f"\nwrote foldable stacks -> {OUT_STACKS}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"export_stacks failed: {e!r}")
 
     with open(OUT_JSON, "w") as f:

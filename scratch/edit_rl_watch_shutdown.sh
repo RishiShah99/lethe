@@ -4,7 +4,7 @@
 # can disconnect. The run is one continuous python process across all levels,
 # so "process gone" reliably means done or crashed. Bounded so a hung run still
 # shuts the box down.
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 LOG="${1:-edit_rl_out.log}"
 
 for _ in $(seq 1 1440); do  # up to ~24 h at 60 s/tick

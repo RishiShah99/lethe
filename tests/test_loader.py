@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from flash_mamba_rl.kernels.loader import (
+from lethe.kernels.loader import (
     KernelCandidate,
     discover_candidates,
     import_candidate,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.medical.model import Mamba3Config, Mamba3ECGClassifier
+from lethe.medical.model import Mamba3Config, Mamba3ECGClassifier
 
 
 class TestForward:

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.cuda.forward import cuda_forward_scan
-from flash_mamba_rl.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
+from lethe.kernels.cuda.forward import cuda_forward_scan
+from lethe.kernels.references.forward_chunked_scan import reference_forward_chunked_scan
 
 # (B, L, D, N) — L divisible by 64 for the reference's chunking.
 SHAPES = [

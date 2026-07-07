@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from flash_mamba_rl.kernels.autotune import (
+from lethe.kernels.autotune import (
     KernelConfig,
     ShapeSpec,
     make_configured_op,
@@ -62,7 +62,7 @@ def _configs(op: str) -> list[KernelConfig]:
 def _measure_speed_only(
     op: str, cfg: KernelConfig, batch: int, seq_len: int, width: int
 ) -> dict[str, Any]:
-    from flash_mamba_rl.verifier import op_bench
+    from lethe.verifier import op_bench
 
     fn = make_configured_op(op, cfg)
     try:
@@ -76,7 +76,7 @@ def _measure_speed_only(
 def _measure_full(
     op: str, cfg: KernelConfig, batch: int, seq_len: int, width: int
 ) -> dict[str, Any]:
-    from flash_mamba_rl.verifier.candidate_scoring import score_candidate_config
+    from lethe.verifier.candidate_scoring import score_candidate_config
 
     res = score_candidate_config(
         cfg,

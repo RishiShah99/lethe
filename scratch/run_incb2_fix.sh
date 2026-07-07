@@ -13,7 +13,7 @@
 #   BISECT 6 (NT=1) → GO  ⇒ the full fused chunk (G1+GA+round-trips) clears at NT=1
 #   BISECT 6 (NT=4) → GO  ⇒ the carry across 4 reverse iterations is correct
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

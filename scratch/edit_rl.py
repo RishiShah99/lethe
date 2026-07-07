@@ -85,12 +85,12 @@ def main() -> None:
     ap.add_argument("--no-grad-ckpt", action="store_true")
     args = ap.parse_args()
 
-    from flash_mamba_rl.kernels.autotune import ShapeSpec
-    from flash_mamba_rl.rl.edit_rl import extract_edits
-    from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
-    from flash_mamba_rl.rl.parallel_scoring import ParallelEditScorer
-    from flash_mamba_rl.rl.prompts import build_edit_prompt
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
+    from lethe.kernels.autotune import ShapeSpec
+    from lethe.rl.edit_rl import extract_edits
+    from lethe.rl.hf_policy import HFPolicy, SamplingSettings
+    from lethe.rl.parallel_scoring import ParallelEditScorer
+    from lethe.rl.prompts import build_edit_prompt
+    from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     levels = _parse_levels(args.levels)
     score_gpus = tuple(int(g) for g in args.score_gpus.split(",") if g.strip())

@@ -15,11 +15,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+from lethe.kernels.cute.gdn2_assemble import (
     assemble_gdn2_backward_scalar,
     assembled_channelwise_gdn2_backward,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 # mean per-token log-decay ~-1.7 -> chunk log2 span ~154 > 128: past the old fp32
 # exp2 cliff (and past fp32 gamma underflow at fp64's wider ranges stays exact).

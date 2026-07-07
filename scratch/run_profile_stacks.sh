@@ -3,7 +3,7 @@
 #   nohup bash scratch/run_profile_stacks.sh > ~/profile_stacks.log 2>&1 & echo PID=$!
 #   grep -E 'EXIT_|% of full|call site|gemv|wrote' ~/profile_stacks.log
 set -u
-cd ~/flash-mamba-rl
+cd ~/lethe
 mkdir -p results
 PYTHONPATH=src:. ~/cuteenv/bin/python scratch/gdn2_profile_stacks.py
 echo "EXIT_PROFILE_STACKS=$?"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # inc-B2 bisection round 3 — the two suspect-#3 / relinquish probes that round 2 failed to run.
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

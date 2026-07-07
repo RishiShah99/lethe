@@ -5,7 +5,7 @@
 # run still shuts the box down. Completion is signalled by the driver's final
 # SCAN_MODE_BWD_RIGOR_JSON marker (the log is block-buffered and flushes when
 # the run exits), with a no-process fallback.
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 LOG=rigor_bwd.log
 
 for _ in $(seq 1 240); do  # up to ~120 min

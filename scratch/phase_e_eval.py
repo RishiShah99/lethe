@@ -33,11 +33,11 @@ def main() -> None:
 
     from phase_e_run import SCORE_TIMEOUT_S
 
-    from flash_mamba_rl.rl.curriculum import DEFAULT_CURRICULUM
-    from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
-    from flash_mamba_rl.rl.parallel_scoring import ParallelScorer
-    from flash_mamba_rl.rl.prompts import build_op_prompt
-    from flash_mamba_rl.rl.train import _OP_ENTRY_POINTS, extract_code
+    from lethe.rl.curriculum import DEFAULT_CURRICULUM
+    from lethe.rl.hf_policy import HFPolicy, SamplingSettings
+    from lethe.rl.parallel_scoring import ParallelScorer
+    from lethe.rl.prompts import build_op_prompt
+    from lethe.rl.train import _OP_ENTRY_POINTS, extract_code
 
     ops = tuple(args.ops.split(",")) if args.ops else DEFAULT_CURRICULUM
     gpu_ids = tuple(int(g) for g in args.score_gpus.split(","))

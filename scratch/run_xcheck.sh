@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-healing box runner for the Phase-1 GDN-2 Hopper KILL-GATE.
 # Bootstrap uv -> venv -> torch(cu128) + flash-linear-attention (+ the deps the
-# flash_mamba_rl import chain needs) -> run scratch/gdn2_hopper_xcheck.py.
+# lethe import chain needs) -> run scratch/gdn2_hopper_xcheck.py.
 # All shell operators live here so the fleet-train arg stays operator-free.
 set +e
 export PATH="$HOME/.local/bin:$PATH"
@@ -32,7 +32,7 @@ uv pip install --python "$PY" torch --index-url https://download.pytorch.org/whl
 echo "===== INSTALL FLA (pulls triton, einops, transformers) ====="
 uv pip install --python "$PY" flash-linear-attention 2>&1 | tail -10
 
-echo "===== INSTALL flash_mamba_rl import-chain deps ====="
+echo "===== INSTALL lethe import-chain deps ====="
 uv pip install --python "$PY" numpy einops psutil rich 2>&1 | tail -6
 
 # CUDA toolkit (common-cu image) — harmless if absent; naive path doesn't need it.
@@ -57,7 +57,7 @@ nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>&1 | head -2
 
 echo ""
 echo "===== IMPORT SANITY ====="
-PYTHONPATH="$PWD/src:$PWD" "$PY" -c "import torch, fla, flash_mamba_rl.kernels.references.gdn_backward as m; print('import OK', torch.__version__, torch.cuda.is_available())"
+PYTHONPATH="$PWD/src:$PWD" "$PY" -c "import torch, fla, lethe.kernels.references.gdn_backward as m; print('import OK', torch.__version__, torch.cuda.is_available())"
 
 echo ""
 echo "===== RUN HOPPER KILL-GATE ====="

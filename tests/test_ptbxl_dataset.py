@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 import torch
 
-from flash_mamba_rl.medical.data import _SUPERCLASSES, PTBXL, _parse_scp_codes
+from lethe.medical.data import _SUPERCLASSES, PTBXL, _parse_scp_codes
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -296,7 +296,7 @@ class TestPTBXLLabels:
 
 class TestPTBXLGetItem:
     def test_signal_shape_100hz(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.zeros((1000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=100)
             sig, _ = ds[0]
@@ -304,28 +304,28 @@ class TestPTBXLGetItem:
         assert sig.dtype == torch.float32
 
     def test_signal_shape_500hz(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.zeros((5000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=500)
             sig, _ = ds[0]
         assert sig.shape == (12, 5000)
 
     def test_signal_is_float32(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.ones((1000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=100)
             sig, _ = ds[0]
         assert sig.dtype == torch.float32
 
     def test_label_shape_matches_n_classes(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.zeros((1000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=100, label_set="superclass")
             _, lbl = ds[0]
         assert lbl.shape == (5,)
 
     def test_wfdb_called_with_correct_path(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.zeros((1000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=100, split="test")
             _ = ds[0]
@@ -334,7 +334,7 @@ class TestPTBXLGetItem:
         assert str(ptbxl_root) in call_path
 
     def test_500hz_uses_filename_hr(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.zeros((5000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=500, split="test")
             _ = ds[0]
@@ -346,7 +346,7 @@ class TestPTBXLGetItem:
         # time) — raw mV scales otherwise NaN the deep SSM. Layout stays
         # [lead, t] from the transpose.
         arr = np.arange(12000, dtype=np.float64).reshape(1000, 12)
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (arr, {})
             ds = PTBXL(ptbxl_root, sampling_rate=100, split="test")
             sig, _ = ds[0]
@@ -360,14 +360,14 @@ class TestPTBXLGetItem:
         arr = np.arange(12000, dtype=np.float64).reshape(1000, 12)
         arr[0, 0] = np.nan
         arr[1, 1] = np.inf
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (arr, {})
             ds = PTBXL(ptbxl_root, sampling_rate=100, split="test")
             sig, _ = ds[0]
         assert torch.isfinite(sig).all()
 
     def test_getitem_returns_tuple(self, ptbxl_root: Path) -> None:
-        with patch("flash_mamba_rl.medical.data.wfdb") as mock_wfdb:
+        with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (np.zeros((1000, 12), dtype=np.float64), {})
             ds = PTBXL(ptbxl_root, sampling_rate=100)
             item = ds[0]

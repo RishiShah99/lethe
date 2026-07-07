@@ -17,8 +17,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+import lethe.kernels.cute.gdn2_backward as gdn2_native
+from lethe.kernels.cute.gdn2_assemble import (
     assemble_gdn2_backward_scalar,
     assembled_scalar_gdn2_backward,
     k1_reverse_state_cw_ref,
@@ -26,8 +26,8 @@ from flash_mamba_rl.kernels.cute.gdn2_assemble import (
     k2_wy_vjp_cw_ref,
     k2_wy_vjp_ref,
 )
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.verifier.op_harness import (
     GDN2_REDUCTION_VIEWS,
     verify_gdn2_reduction_op,
     verify_gdn2_reduction_op_all_grads,

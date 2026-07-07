@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from flash_mamba_rl.rl import parallel_scoring
-from flash_mamba_rl.rl.parallel_scoring import ParallelScorer
-from flash_mamba_rl.verifier.sandbox import run_in_subprocess
+from lethe.rl import parallel_scoring
+from lethe.rl.parallel_scoring import ParallelScorer
+from lethe.verifier.sandbox import run_in_subprocess
 
 
 def test_sandbox_extra_env_reaches_child() -> None:
@@ -87,7 +87,7 @@ class TestParallelScorer:
 
 
 def test_train_loop_uses_batch_scorer(tmp_path: Any) -> None:
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
+    from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
     from .test_train_loop import BAD, GOOD, StubTrainablePolicy
 

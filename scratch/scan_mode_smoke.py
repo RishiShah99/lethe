@@ -13,8 +13,8 @@ import json
 
 import torch
 
-from flash_mamba_rl.kernels.autotune import KernelConfig
-from flash_mamba_rl.kernels.ops import forward_chunked_scan
+from lethe.kernels.autotune import KernelConfig
+from lethe.kernels.ops import forward_chunked_scan
 
 
 def _inputs(b: int, l: int, d: int, n: int, seed: int = 0):  # type: ignore[no-untyped-def]

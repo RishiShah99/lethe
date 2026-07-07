@@ -12,7 +12,7 @@ import math
 
 import torch
 
-from flash_mamba_rl.kernels.references import (
+from lethe.kernels.references import (
     reference_forward_chunked_scan,
     reference_forward_trapezoidal_scan,
 )

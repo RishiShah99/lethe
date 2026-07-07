@@ -16,16 +16,16 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.autotune import KernelConfig, ShapeSpec, validate
-from flash_mamba_rl.rl.config_grpo import (
+from lethe.kernels.autotune import KernelConfig, ShapeSpec, validate
+from lethe.rl.config_grpo import (
     build_config_scorer,
     extract_config,
     parse_config,
     score_config_candidate,
     serial_seed_completions,
 )
-from flash_mamba_rl.rl.prompts import build_config_prompt
-from flash_mamba_rl.rl.train import GRPOTrainingLoop, TrainLoopConfig
+from lethe.rl.prompts import build_config_prompt
+from lethe.rl.train import GRPOTrainingLoop, TrainLoopConfig
 
 
 class TestExtractConfig:

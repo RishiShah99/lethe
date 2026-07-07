@@ -31,7 +31,7 @@ import torch
 OUT_DIR = Path(__file__).resolve().parent.parent / "out"
 
 # Evidence patterns. The first three mirror the verifier's C7907 detection
-# (src/flash_mamba_rl/verifier/compile.py) so the repro doubles as a
+# (src/lethe/verifier/compile.py) so the repro doubles as a
 # cross-check that our load-bearing classifier would catch the real thing.
 EVIDENCE_PATTERNS = {
     "c7907": re.compile(r"C7907", re.IGNORECASE),

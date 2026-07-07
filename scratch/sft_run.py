@@ -32,9 +32,9 @@ def main() -> None:
     ap.add_argument("--no-grad-ckpt", action="store_true")
     args = ap.parse_args()
 
-    from flash_mamba_rl.rl.hf_policy import HFPolicy, SamplingSettings
-    from flash_mamba_rl.rl.sft import SFTConfig, SFTTrainingLoop, build_sft_examples
-    from flash_mamba_rl.rl.train import GRPOTrainingLoop
+    from lethe.rl.hf_policy import HFPolicy, SamplingSettings
+    from lethe.rl.sft import SFTConfig, SFTTrainingLoop, build_sft_examples
+    from lethe.rl.train import GRPOTrainingLoop
 
     adapter_path = GRPOTrainingLoop.latest_adapter_path(args.ckpt_dir) if args.resume else None
     print(f"adapter: {adapter_path or 'fresh'}", flush=True)

@@ -11,7 +11,7 @@ All tests run on CPU with float32 tensors.
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.references import (
+from lethe.kernels.references import (
     FusedBlockGrads,
     SelectiveScanGrads,
     reference_backward_selective_scan,

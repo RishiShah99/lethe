@@ -10,10 +10,10 @@ All tests run on CPU only.
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import gdn2_backward
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
-from flash_mamba_rl.verifier.contracts import gate_prc_02_mixed_precision_accumulation
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.ops import gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.verifier.contracts import gate_prc_02_mixed_precision_accumulation
+from lethe.verifier.op_harness import (
     GDN2_BWD_GATE_OVERRIDES,
     GDN2_BWD_GRAD_FIELDS,
     GDN2_HEADDIM,

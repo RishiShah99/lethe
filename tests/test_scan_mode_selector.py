@@ -14,8 +14,8 @@ import json
 from pathlib import Path
 from statistics import geometric_mean
 
-from flash_mamba_rl.kernels.autotune import KernelConfig
-from flash_mamba_rl.kernels.ops.forward_chunked_scan import (
+from lethe.kernels.autotune import KernelConfig
+from lethe.kernels.ops.forward_chunked_scan import (
     _chunk_parallel_bwd_scratch_bytes,
     _default_scan_mode,
     _next_power_of_2,

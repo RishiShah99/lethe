@@ -35,7 +35,7 @@ def _l2(x: Tensor) -> Tensor:
 
 def _build_bundle(nt: int, b: int, h: int, gscale: float, seed: int = 42) -> dict[str, Any]:
     """In-process cw K#2 bundle at (b,h,nt,c=64,d_k=128,d_v=64); gscale drifts the gates."""
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     c, d_k, d_v = 64, 128, 64
     t = nt * c
@@ -73,8 +73,8 @@ def _desk_gate() -> bool:
     trips, fp16 GEMM operands) and the in-kernel fastmath exp2 are only covered by the
     silicon gate.
     """
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw import _run_k2_fused_modelled
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.cute.gdn2_bwd_wy_cw import _run_k2_fused_modelled
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     TOL = 1e-12
     ok = True
@@ -139,7 +139,7 @@ _K2_OUT = ("dk2", "dv", "db", "dw", "dg2")
 
 
 def _run_box(nt: int, b: int, h: int, gscale: float) -> dict[str, Any]:
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
+    from lethe.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
 
     payload = _build_bundle(nt, b, h, gscale)
     inp = {k_: v_.cuda() for k_, v_ in payload["inputs"].items()}
@@ -174,9 +174,9 @@ def _run_box(nt: int, b: int, h: int, gscale: float) -> dict[str, Any]:
 
 
 def _run_bench(nt: int, b: int, h: int, trials: int) -> dict[str, Any]:
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_cw import run_k2_batched, run_k2_serial
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
-    from flash_mamba_rl.verifier.timing import benchmark
+    from lethe.kernels.cute.gdn2_bwd_wy_cw import run_k2_batched, run_k2_serial
+    from lethe.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
+    from lethe.verifier.timing import benchmark
 
     payload = _build_bundle(nt, b, h, 1.0)
     inp = {k_: v_.cuda() for k_, v_ in payload["inputs"].items()}

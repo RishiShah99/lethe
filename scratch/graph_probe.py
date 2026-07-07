@@ -24,7 +24,8 @@ import sys
 import time
 
 import torch
-from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import is_available
+
+from lethe.kernels.cute.gdn2_bwd_dhu import is_available
 
 RESULT: dict[str, object] = {"probe": "graph_capture_safety", "available": is_available()}
 
@@ -42,7 +43,9 @@ if not is_available():
     RESULT["reason"] = "not an sm_100 box"
     _emit_and_exit(False)
 
-from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu import _gemm_batched  # noqa: E402 — guarded; defined only on-box
+from lethe.kernels.cute.gdn2_bwd_dhu import (
+    _gemm_batched,
+)
 
 dev = torch.device("cuda")
 f16 = torch.float16

@@ -22,7 +22,7 @@ echo "== md5 AFTER =="
 find ~/cuteenv/lib/python3.12/site-packages/ -name 'libcute_dsl_runtime.so' -exec md5sum {} \; \
     | tee "$OUTDIR/so_md5_after_cu13.txt"
 
-cd ~/flash-mamba-rl || exit 1
+cd ~/lethe || exit 1
 
 echo "== rerun fault-matrix legs under cu13 =="
 for MODE in straight loop loopfix straight2; do

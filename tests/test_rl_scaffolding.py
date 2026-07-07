@@ -13,7 +13,7 @@ import math
 import pytest
 import torch
 
-from flash_mamba_rl.rl import (
+from lethe.rl import (
     Candidate,
     GRPOConfig,
     GRPOTrainer,

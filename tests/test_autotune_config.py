@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from flash_mamba_rl.kernels.autotune import (
+from lethe.kernels.autotune import (
     KernelConfig,
     ShapeSpec,
     grid_size,

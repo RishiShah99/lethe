@@ -28,14 +28,13 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-import torch
-
 import cutlass
 import cutlass.cute as cute
 import cutlass.pipeline as pipeline
 import cutlass.torch as cutlass_torch
 import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as sm100_utils
+import torch
 from cutlass.cute.nvgpu import tcgen05
 from cutlass.cute.runtime import from_dlpack
 
@@ -182,7 +181,7 @@ def main() -> None:
     out: dict[str, Any] = {"device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}
     try:
         out["gemm"] = _run(mnk_tiler[0], mnk_tiler[1], mnk_tiler[2])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         out["gemm"] = {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()}
     out["GO"] = isinstance(out.get("gemm"), dict) and out["gemm"].get("passed", False)
     dest = Path("results/gdn2_cfa_smoke.json")

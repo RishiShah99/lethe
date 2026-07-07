@@ -21,9 +21,9 @@ from typing import Any
 
 import torch
 
-from flash_mamba_rl.kernels.autotune import KernelConfig
-from flash_mamba_rl.kernels.ops import _triton_chunk_parallel_bwd, backward_selective_scan
-from flash_mamba_rl.verifier.timing import benchmark
+from lethe.kernels.autotune import KernelConfig
+from lethe.kernels.ops import _triton_chunk_parallel_bwd, backward_selective_scan
+from lethe.verifier.timing import benchmark
 
 # (batch, seq_len, d_model, n_state) — Mamba-3 native d_state=128.
 SHAPES = [
@@ -56,7 +56,7 @@ def _inputs(shape: tuple[int, int, int, int], dtype: torch.dtype, seed: int = 0)
 def _resource(mode: str) -> dict[str, int] | None:
     if mode == "chunk_parallel":
         return _triton_chunk_parallel_bwd.resource_meta()
-    from flash_mamba_rl.kernels.ops.backward_selective_scan import triton_bwd_scan_resource_meta
+    from lethe.kernels.ops.backward_selective_scan import triton_bwd_scan_resource_meta
 
     return triton_bwd_scan_resource_meta()
 

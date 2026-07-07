@@ -7,8 +7,8 @@ import math
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops import fused_block_forward
-from flash_mamba_rl.kernels.references import reference_fused_block_forward
+from lethe.kernels.ops import fused_block_forward
+from lethe.kernels.references import reference_fused_block_forward
 
 
 def _fused_inputs(

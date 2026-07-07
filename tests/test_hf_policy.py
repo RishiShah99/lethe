@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.rl.hf_policy import HFPolicy, ReferencePolicyView, SamplingSettings
+from lethe.rl.hf_policy import HFPolicy, ReferencePolicyView, SamplingSettings
 
 VOCAB = 256
 EOS = 0

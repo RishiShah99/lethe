@@ -14,14 +14,15 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flash_mamba_rl.kernels.ops import forward_chunked_scan  # noqa: E402
-from flash_mamba_rl.verifier.contracts import gate_prc_02_mixed_precision_accumulation  # noqa: E402
-from flash_mamba_rl.verifier.op_harness import (  # noqa: E402
+from tests.test_op_harness import _fp16_accumulator_scan
+
+from lethe.kernels.ops import forward_chunked_scan
+from lethe.verifier.contracts import gate_prc_02_mixed_precision_accumulation
+from lethe.verifier.op_harness import (
     SCAN_GATE_OVERRIDES,
     scan_candidate_adapter,
     scan_reference_adapter,
 )
-from tests.test_op_harness import _fp16_accumulator_scan  # noqa: E402
 
 
 def floor_stats(scan_fn, label: str) -> None:

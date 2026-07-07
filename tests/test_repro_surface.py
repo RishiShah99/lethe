@@ -160,14 +160,14 @@ class TestMicrogateHarnessIntegrity:
         for name in ("k1_microgate.py", "k2_microgate.py"):
             text = (root / "scratch" / name).read_text(encoding="utf-8")
             assert "from scratch import" not in text, f"{name} imports a pre-promotion module"
-            assert "flash_mamba_rl.kernels.cute" in text, f"{name} lost the promoted import"
+            assert "lethe.kernels.cute" in text, f"{name} lost the promoted import"
 
     def test_promoted_kernel_modules_import_without_gpu(self) -> None:
         import importlib
 
         for mod in (
-            "flash_mamba_rl.kernels.cute.gdn2_bwd_dhu",
-            "flash_mamba_rl.kernels.cute.gdn2_bwd_wy",
+            "lethe.kernels.cute.gdn2_bwd_dhu",
+            "lethe.kernels.cute.gdn2_bwd_wy",
         ):
             m = importlib.import_module(mod)
             assert hasattr(m, "is_available")

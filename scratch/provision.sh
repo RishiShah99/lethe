@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent GPU-box provisioning for flash-mamba-rl.
+# Idempotent GPU-box provisioning for lethe.
 # Run on the box from the repo root:  bash scratch/provision.sh
 set -euo pipefail
 

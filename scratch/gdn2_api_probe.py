@@ -30,7 +30,6 @@ def sig(fn: object) -> str:
 
 
 def main() -> None:
-    import cutlass
     import cutlass.cute as cute
     import cutlass.utils as utils
     import cutlass.utils.blackwell_helpers as bh

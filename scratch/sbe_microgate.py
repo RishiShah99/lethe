@@ -37,7 +37,7 @@ def _build_inputs(nt: int, b: int, h: int, gscale: float, seed: int = 47) -> dic
 
 
 def _expected(inp: dict[str, Tensor]) -> tuple[Tensor, Tensor]:
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
+    from lethe.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
 
     decay_rel = masked_decay_rel(inp["g2"])
     dq_intra = torch.einsum("...is,...sd,...isd->...id", inp["coef"], inp["k"], decay_rel)
@@ -51,7 +51,7 @@ def _scale_rel(got: Tensor, exp: Tensor) -> float:
 
 
 def _run_box(nt: int, b: int, h: int, gscale: float) -> dict[str, Any]:
-    from flash_mamba_rl.kernels.cute.gdn2_sb_einsum import run_sb_einsum
+    from lethe.kernels.cute.gdn2_sb_einsum import run_sb_einsum
 
     inp = _build_inputs(nt, b, h, gscale)
     exp_dqi, exp_dki = _expected(inp)
@@ -78,9 +78,9 @@ def _run_box(nt: int, b: int, h: int, gscale: float) -> dict[str, Any]:
 
 
 def _run_bench(nt: int, b: int, h: int, trials: int) -> dict[str, Any]:
-    from flash_mamba_rl.kernels.cute.gdn2_sb_einsum import run_sb_einsum
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
-    from flash_mamba_rl.verifier.timing import benchmark
+    from lethe.kernels.cute.gdn2_sb_einsum import run_sb_einsum
+    from lethe.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
+    from lethe.verifier.timing import benchmark
 
     inp = _build_inputs(nt, b, h, 1.0)
     exp_dqi, exp_dki = _expected(inp)

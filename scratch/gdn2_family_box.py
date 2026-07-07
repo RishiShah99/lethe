@@ -72,13 +72,13 @@ def _run_family(
     seed: int,
 ) -> dict[str, Any]:
     # Lazy import AFTER argparse — avoids cutlass import-time argparse collision.
-    from flash_mamba_rl.kernels.cute.gdn2_backward import (
+    from lethe.kernels.cute.gdn2_backward import (
         native_gla_backward,
         native_kda_backward,
         native_la_backward,
         native_ssd_backward,
     )
-    from flash_mamba_rl.kernels.references.family_oracles import (
+    from lethe.kernels.references.family_oracles import (
         reference_gla_backward,
         reference_kda_backward,
         reference_la_backward,

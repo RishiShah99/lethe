@@ -3,7 +3,7 @@
 # Args: LEVELS STEPS K CKPT_DIR [RESUME_FLAG]
 # Bundled into a synced script because nested quotes do not survive
 # cmd -> gcloud -> plink (HANDOFF caveat); --levels carries commas/colons.
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 export PATH=$HOME/.local/bin:$PATH
 LEVELS="$1"
 STEPS="${2:-40}"

@@ -359,7 +359,7 @@ def main() -> None:
 
     fla_version = getattr(fla, "__version__", "unknown")
 
-    from flash_mamba_rl.kernels.references.gdn_backward import (
+    from lethe.kernels.references.gdn_backward import (
         reference_gdn2_backward,
     )
 

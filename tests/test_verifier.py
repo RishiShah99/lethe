@@ -1,4 +1,4 @@
-"""Tests for the flash_mamba_rl verifier scaffolding.
+"""Tests for the lethe verifier scaffolding.
 
 All tests are CPU-safe: no CUDA, no Triton, no GPU required.
 """
@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from flash_mamba_rl.verifier.compile import ErrorClass, compile_kernel
-from flash_mamba_rl.verifier.contracts import (
+from lethe.verifier.compile import ErrorClass, compile_kernel
+from lethe.verifier.contracts import (
     gate_cmp_01_input_variation,
     gate_cmp_02_gradient_correctness,
     gate_cmp_03_shape_polymorphism,
@@ -27,9 +27,9 @@ from flash_mamba_rl.verifier.contracts import (
     gate_res_02_resource_limits,
     run_all_gates,
 )
-from flash_mamba_rl.verifier.reward import compute_reward
-from flash_mamba_rl.verifier.sandbox import run_in_subprocess
-from flash_mamba_rl.verifier.timing import TimingResult, benchmark
+from lethe.verifier.reward import compute_reward
+from lethe.verifier.sandbox import run_in_subprocess
+from lethe.verifier.timing import TimingResult, benchmark
 
 # ---------------------------------------------------------------------------
 # compile.py

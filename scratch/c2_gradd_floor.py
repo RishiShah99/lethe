@@ -19,7 +19,7 @@ import argparse
 
 import torch
 
-from flash_mamba_rl.verifier import op_harness
+from lethe.verifier import op_harness
 
 
 def main() -> None:
@@ -31,8 +31,8 @@ def main() -> None:
     device = args.device
     shape = tuple(int(s) for s in args.shape.split(","))
 
-    from flash_mamba_rl.kernels.ops.backward_selective_scan import backward_selective_scan
-    from flash_mamba_rl.kernels.references.backward_selective_scan import (
+    from lethe.kernels.ops.backward_selective_scan import backward_selective_scan
+    from lethe.kernels.references.backward_selective_scan import (
         reference_backward_selective_scan,
     )
 

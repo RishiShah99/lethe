@@ -3,7 +3,7 @@
 # bisect=1 baseline (known SIGSEGV), 3 = G1 with bh (not arithmetic lid) coord, 4 = relinquish
 # after mainloop. Each a separate process.
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

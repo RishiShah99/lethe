@@ -10,7 +10,7 @@
 #   BISECT 1    → GO/139   (real kernel, G1-only, in-loop handle) — compile must now succeed
 #   BISECT 0 NT1/NT4 → GO/139  (full fused chunk + reverse carry)
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

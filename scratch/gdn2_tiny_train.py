@@ -41,7 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from flash_mamba_rl.kernels.ops.gdn_layer import gdn2_op
+from lethe.kernels.ops.gdn_layer import gdn2_op
 
 # ---------------------------------------------------------------------------
 # Delayed-copy task  (delay=1: target[t] = src[t-1])
@@ -72,8 +72,8 @@ _DISPATCH_COUNTS = {"native": 0, "fallback": 0}
 
 
 def _make_family_op(fam: str) -> Any:
-    import flash_mamba_rl.kernels.cute.gdn2_backward as native
-    from flash_mamba_rl.kernels.references import family_oracles as fo
+    import lethe.kernels.cute.gdn2_backward as native
+    from lethe.kernels.references import family_oracles as fo
 
     fwd = getattr(fo, f"reference_{fam}_forward")
     ref_bwd = getattr(fo, f"reference_{fam}_backward")
@@ -307,7 +307,7 @@ def train(
     # -----------------------------------------------------------------------
     _orig_is_available = None
     if arm == "eager":
-        import flash_mamba_rl.kernels.cute.gdn2_backward as _gdn2_shim
+        import lethe.kernels.cute.gdn2_backward as _gdn2_shim
 
         _orig_is_available = _gdn2_shim.is_available
         _gdn2_shim.is_available = lambda *_a, **_kw: False  # type: ignore[assignment]
@@ -317,8 +317,8 @@ def train(
     # -----------------------------------------------------------------------
     _orig_backward = None
     if arm == "assembly":
-        import flash_mamba_rl.kernels.ops.gdn_layer as _layer
-        from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+        import lethe.kernels.ops.gdn_layer as _layer
+        from lethe.kernels.cute.gdn2_assemble import (
             assembled_channelwise_gdn2_backward,
         )
 
@@ -373,11 +373,11 @@ def train(
 
     finally:
         if _orig_is_available is not None:
-            import flash_mamba_rl.kernels.cute.gdn2_backward as _gdn2_shim2
+            import lethe.kernels.cute.gdn2_backward as _gdn2_shim2
 
             _gdn2_shim2.is_available = _orig_is_available  # type: ignore[assignment]
         if _orig_backward is not None:
-            import flash_mamba_rl.kernels.ops.gdn_layer as _layer2
+            import lethe.kernels.ops.gdn_layer as _layer2
 
             _layer2.gdn2_backward = _orig_backward  # type: ignore[assignment]
 
@@ -437,6 +437,7 @@ def main() -> None:
     p.add_argument("--batch", type=int, default=None)
     p.add_argument("--seqlen", type=int, default=None)
     p.add_argument("--nheads", type=int, default=None)
+    p.add_argument("--dv", type=int, default=64, choices=[64, 128])
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--delay", type=int, default=1)
     p.add_argument("--seed", type=int, default=42)
@@ -448,7 +449,7 @@ def main() -> None:
     if args.arm in ("native", *FAMILY_ARMS) and device.type == "cuda":
         # Enforce the dispatch envelope
         d_k = 128
-        d_v = 64
+        d_v = args.dv
         batch = args.batch if args.batch is not None else 4
         seqlen = args.seqlen if args.seqlen is not None else 256
         nheads = args.nheads if args.nheads is not None else 2

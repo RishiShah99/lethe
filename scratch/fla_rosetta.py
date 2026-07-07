@@ -35,7 +35,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 # ---------------------------------------------------------------------------
 # Inlined fla naive_recurrent_gdn2

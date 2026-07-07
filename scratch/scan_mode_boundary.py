@@ -30,8 +30,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from flash_mamba_rl.kernels.autotune import ShapeSpec
-from flash_mamba_rl.rl.parallel_scoring import ParallelConfigScorer
+from lethe.kernels.autotune import ShapeSpec
+from lethe.rl.parallel_scoring import ParallelConfigScorer
 
 OPS = ("forward_chunked_scan", "backward_selective_scan", "fused_block_backward")
 BATCHES = (1, 2, 8)

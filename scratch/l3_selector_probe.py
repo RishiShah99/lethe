@@ -32,10 +32,11 @@ def main() -> None:
 
     res: dict[str, Any] = {}
     try:
-        import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_l3 as l3
-        from flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw import run_k1_incB
-        from flash_mamba_rl.verifier.timing import benchmark
         from scratch.k1_incb2_v3_unroll import _build_bundle
+
+        import lethe.kernels.cute.gdn2_bwd_dhu_l3 as l3
+        from lethe.kernels.cute.gdn2_bwd_dhu_cw import run_k1_incB
+        from lethe.verifier.timing import benchmark
 
         calls = {"n": 0}
         orig = l3.run_k1_incB2_v3
@@ -65,10 +66,10 @@ def main() -> None:
         # 2 + 3. capture routing + fresh-input replay correctness (assembly, L512 dv=64)
         from scratch.gdn2_graph import GraphedBackward
 
-        from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+        from lethe.kernels.cute.gdn2_assemble import (
             assembled_channelwise_gdn2_backward,
         )
-        from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
+        from lethe.kernels.cute.gdn2_backward import _load_box_kernels_cw
 
         k1_cw, k2_cw = _load_box_kernels_cw()
 

@@ -12,27 +12,26 @@ fires zero times — recorded with the compiled kernel's ptxas resource_meta
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from flash_mamba_rl.kernels.ops import (
+from lethe.kernels.ops import (
     _triton_chunk_parallel_fused_bwd,
     _triton_fused_block,
     _triton_fused_block_bwd,
 )
-import importlib
-
-from flash_mamba_rl.kernels.ops.fused_block_forward import triton_fused_block_resource_meta
+from lethe.kernels.ops.fused_block_forward import triton_fused_block_resource_meta
 
 # kernels.ops.__init__ re-exports the function ``fused_block_forward``, which
 # shadows the submodule name — ``import ...fused_block_forward as m`` binds the
 # function, not the module. importlib.import_module returns the module object
 # whose ``_fused_eager`` global the dispatch resolves at call time.
-fbf_mod = importlib.import_module("flash_mamba_rl.kernels.ops.fused_block_forward")
-from flash_mamba_rl.medical.model import Mamba3Config, Mamba3ECGClassifier
+fbf_mod = importlib.import_module("lethe.kernels.ops.fused_block_forward")
+from lethe.medical.model import Mamba3Config, Mamba3ECGClassifier
 
 OUT = Path("results/dispatch_proof.json")
 

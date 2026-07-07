@@ -14,9 +14,9 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from flash_mamba_rl.kernels.ops import fused_block_forward
-from flash_mamba_rl.kernels.references.fused_block_forward import reference_fused_block_forward
-from flash_mamba_rl.verifier.op_harness import FUSED_CONV_K, SCAN_N_STATE, _fused_aux
+from lethe.kernels.ops import fused_block_forward
+from lethe.kernels.references.fused_block_forward import reference_fused_block_forward
+from lethe.verifier.op_harness import FUSED_CONV_K, SCAN_N_STATE, _fused_aux
 
 PRC02_UNIT_ATOL = 5e-3
 

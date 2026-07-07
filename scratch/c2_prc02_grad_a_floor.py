@@ -23,13 +23,14 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flash_mamba_rl.kernels.ops import backward_selective_scan  # noqa: E402
-from flash_mamba_rl.verifier.op_harness import (  # noqa: E402
+from tests.test_op_harness import _bwd_via_autograd, _fp16_accumulator_scan
+
+from lethe.kernels.ops import backward_selective_scan
+from lethe.verifier.op_harness import (
     SCAN_BWD_GATE_OVERRIDES,
     bwd_scan_candidate_adapter,
     bwd_scan_reference_adapter,
 )
-from tests.test_op_harness import _bwd_via_autograd, _fp16_accumulator_scan  # noqa: E402
 
 SHAPE = SCAN_BWD_GATE_OVERRIDES["grad_A"]["gate_prc_02_mixed_precision_accumulation"]["shape"]
 

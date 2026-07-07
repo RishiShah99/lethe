@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import inspect
 
-from flash_mamba_rl.bench import c1_forward_chunked_scan
+from lethe.bench import c1_forward_chunked_scan
 
 
 def test_c1_parity_uses_scale_normalized_stats() -> None:

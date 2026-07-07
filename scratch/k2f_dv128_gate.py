@@ -27,7 +27,7 @@ def _scale_rel(got: Tensor, exp: Tensor) -> float:
 
 
 def _bundle(nt, b, h, gscale, d_v=128, seed=42):
-    from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+    from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
     c, d_k = 64, 128
     t = nt * c
@@ -57,7 +57,7 @@ def main() -> None:
     if not torch.cuda.is_available():
         print("no CUDA (desk)")
         return
-    from flash_mamba_rl.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
+    from lethe.kernels.cute.gdn2_bwd_wy_f import run_k2_fused
 
     b, h = args.bh
     inp, exp = _bundle(args.nt, b, h, args.gscale)

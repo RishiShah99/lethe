@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.ops import mimo_backward
-from flash_mamba_rl.kernels.ops.mimo_backward import triton_mimo_bwd_resource_meta
-from flash_mamba_rl.kernels.references.mimo_backward import MimoGrads
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.ops import mimo_backward
+from lethe.kernels.ops.mimo_backward import triton_mimo_bwd_resource_meta
+from lethe.kernels.references.mimo_backward import MimoGrads
+from lethe.verifier.op_harness import (
     MIMO_HEADDIM,
     MIMO_N_STATE,
     MIMO_RANK,

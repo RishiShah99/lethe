@@ -75,7 +75,7 @@ def _make_inputs(
 
 def _probe_gla(dev: torch.device) -> dict[str, Any]:
     """Compare reference_gla_forward vs fla chunk_gla across convention combinations."""
-    from flash_mamba_rl.kernels.references.family_oracles import (
+    from lethe.kernels.references.family_oracles import (
         reference_gla_forward,
     )
 
@@ -172,7 +172,7 @@ def _probe_gla(dev: torch.device) -> dict[str, Any]:
 
 def _probe_ssd(dev: torch.device) -> dict[str, Any]:
     """Compare reference_ssd_forward vs fla chunk_simple_gla."""
-    from flash_mamba_rl.kernels.references.family_oracles import (
+    from lethe.kernels.references.family_oracles import (
         reference_ssd_forward,
     )
 
@@ -265,7 +265,7 @@ def _probe_ssd(dev: torch.device) -> dict[str, Any]:
 
 def _probe_kda_fla(dev: torch.device) -> dict[str, Any]:
     """Compare reference_kda_forward vs fla chunk_kda."""
-    from flash_mamba_rl.kernels.references.family_oracles import (
+    from lethe.kernels.references.family_oracles import (
         reference_kda_forward,
     )
 
@@ -364,7 +364,7 @@ def _probe_kda_fla(dev: torch.device) -> dict[str, Any]:
 
 def _probe_kda_cula(dev: torch.device) -> dict[str, Any]:
     """Compare reference_kda_forward vs cuLA chunk_kda (if importable)."""
-    from flash_mamba_rl.kernels.references.family_oracles import (
+    from lethe.kernels.references.family_oracles import (
         reference_kda_forward,
     )
 

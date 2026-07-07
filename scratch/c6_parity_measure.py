@@ -12,8 +12,8 @@ import math
 
 import torch
 
-from flash_mamba_rl.kernels.ops import fused_block_backward
-from flash_mamba_rl.kernels.references.fused_block_backward import (
+from lethe.kernels.ops import fused_block_backward
+from lethe.kernels.references.fused_block_backward import (
     FusedBlockGrads,
     reference_fused_block_backward,
 )

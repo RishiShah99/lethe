@@ -2,7 +2,7 @@
 # inc-B2 launch-SIGSEGV bisection burst. Each variant is a SEPARATE python process so a
 # segfault in one cannot poison the next process's fresh CUDA context. set +e: keep going.
 set +e
-cd ~/flash-mamba-rl || exit 2
+cd ~/lethe || exit 2
 export PYTHONPATH=src:.
 PY=~/cuteenv/bin/python
 

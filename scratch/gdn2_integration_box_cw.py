@@ -27,9 +27,9 @@ from functools import partial
 
 import torch
 
-import flash_mamba_rl.kernels.cute.gdn2_backward as gdn2_native
-from flash_mamba_rl.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
-from flash_mamba_rl.kernels.references.gdn_backward import Gdn2Grads, reference_gdn2_backward
+import lethe.kernels.cute.gdn2_backward as gdn2_native
+from lethe.kernels.cute.gdn2_assemble import assembled_channelwise_gdn2_backward
+from lethe.kernels.references.gdn_backward import Gdn2Grads, reference_gdn2_backward
 
 D_K = 128
 D_V = 128

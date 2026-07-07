@@ -1,6 +1,6 @@
 #!/bin/bash
 # One-shot box health probe (run on the box, so heredoc quoting is local-only).
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 export PATH=$HOME/.local/bin:$PATH
 echo "REPO files=$(ls | wc -l)"
 uv run --no-sync python - <<'PY'

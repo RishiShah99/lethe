@@ -14,13 +14,13 @@ loop, dynamic-chunk TMA, the GMEM round-trip fence) — the GEMM itself is the p
 
 from __future__ import annotations
 
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu as k1mod
-import flash_mamba_rl.kernels.cute.gdn2_bwd_dhu_cw as k1cw
-import flash_mamba_rl.kernels.cute.gdn2_bwd_wy as k2mod
 import torch
 
-from flash_mamba_rl.kernels.references.gdn2_chunkwise import build_microgate_bundles
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+import lethe.kernels.cute.gdn2_bwd_dhu as k1mod
+import lethe.kernels.cute.gdn2_bwd_dhu_cw as k1cw
+import lethe.kernels.cute.gdn2_bwd_wy as k2mod
+from lethe.kernels.references.gdn2_chunkwise import build_microgate_bundles
+from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
 
 # (b, h, nt, c, d_k, d_v) — gentle decays so the fp32 GEMM stand-in stays near the fp64 ref.
 SCALAR_SHAPES = [(1, 1, 1, 64, 128, 64), (2, 2, 4, 64, 128, 64), (1, 1, 8, 64, 128, 64)]

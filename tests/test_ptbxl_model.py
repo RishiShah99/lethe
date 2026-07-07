@@ -7,7 +7,7 @@ import dataclasses
 import torch
 import torch.nn as nn
 
-from flash_mamba_rl.medical.model import Mamba3Config, Mamba3ECGClassifier
+from lethe.medical.model import Mamba3Config, Mamba3ECGClassifier
 
 # ---------------------------------------------------------------------------
 # Helpers

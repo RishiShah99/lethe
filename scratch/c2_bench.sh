@@ -8,7 +8,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 mkdir -p "$HOME/out"
 echo "=== C2 bench: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-uv run python -m flash_mamba_rl.bench.c2_backward_selective_scan --out "$HOME/out/c2_bench.json" "$@"
+uv run python -m lethe.bench.c2_backward_selective_scan --out "$HOME/out/c2_bench.json" "$@"
 status=$?
 echo "=== C2 bench exit: $status ==="
 exit $status

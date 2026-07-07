@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import torch
 
-from flash_mamba_rl.rl.train import (
+from lethe.rl.train import (
     GRPOTrainingLoop,
     TrainLoopConfig,
     extract_code,

@@ -37,11 +37,11 @@ def main() -> None:
 
     from torch.profiler import ProfilerActivity, profile
 
-    from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+    from lethe.kernels.cute.gdn2_assemble import (
         assembled_channelwise_gdn2_backward,
         chunkwise_forward_cw,
     )
-    from flash_mamba_rl.kernels.cute.gdn2_backward import _load_box_kernels_cw
+    from lethe.kernels.cute.gdn2_backward import _load_box_kernels_cw
 
     k1_cw, k2_cw = _load_box_kernels_cw()
     dev = torch.device("cuda")

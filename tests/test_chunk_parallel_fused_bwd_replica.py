@@ -29,8 +29,8 @@ import math
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.ops.fused_block_backward import _fused_bwd_eager
-from flash_mamba_rl.kernels.references.fused_block_backward import FusedBlockGrads
+from lethe.kernels.ops.fused_block_backward import _fused_bwd_eager
+from lethe.kernels.references.fused_block_backward import FusedBlockGrads
 
 from .test_fused_block_bwd_kernel_replica import _norm_bwd_replica
 

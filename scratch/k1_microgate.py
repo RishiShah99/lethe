@@ -1,7 +1,7 @@
 """On-box K#1 micro-gate: load a bundle, run the CuTe kernel, compare dh/dh0/dv2.
 
 Loads the .pt written by ``scratch/gen_k1_bundle.py``, runs the promoted
-``flash_mamba_rl.kernels.cute.gdn2_bwd_dhu`` runner for ``--mode`` on the B200, and
+``lethe.kernels.cute.gdn2_bwd_dhu`` runner for ``--mode`` on the B200, and
 checks the three outputs against the reference's expected values within the
 verifier's bf16 tolerances. Emits ``results/k1_microgate.json``.
 
@@ -59,7 +59,7 @@ def main() -> None:
     }
     try:
         # The kernels were promoted scratch/ -> src at 1c755a0; mirror k2_microgate.
-        from flash_mamba_rl.kernels.cute import gdn2_bwd_dhu as kmod  # noqa: PLC0415
+        from lethe.kernels.cute import gdn2_bwd_dhu as kmod
 
         runner = {
             "incA": kmod.run_k1,
@@ -87,7 +87,7 @@ def main() -> None:
         ]
         out["checks"] = checks
         out["GO"] = all(c["passed"] for c in checks)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"
         out["trace"] = traceback.format_exc()
         out["GO"] = False

@@ -5,7 +5,7 @@
 # rewrites results/scan_mode_boundary.json after every shape, so no marshalling
 # is needed here -- completion is the driver's SCAN_MODE_BOUNDARY_DONE marker,
 # with a no-process fallback.
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 LOG=boundary.log
 
 for _ in $(seq 1 1440); do  # up to ~12 h (bound only; true signal is DONE / process-gone)

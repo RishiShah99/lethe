@@ -3,7 +3,7 @@
 # regularization knobs. Args: CKPT_DIR STEPS EXTRA_ARGS...
 # EXTRA_ARGS is passed through verbatim (e.g. "--config b1 --dropout 0.2
 # --augment --lr-decay"). No spaces inside a single knob value (HANDOFF caveat).
-cd "$HOME/flash-mamba-rl" || exit 1
+cd "$HOME/lethe" || exit 1
 export PATH=$HOME/.local/bin:$PATH
 CKPT="${1:-ptbxl_reg}"
 STEPS="${2:-4000}"

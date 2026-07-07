@@ -5,14 +5,14 @@ CPU, fp16 inputs at (1, L, 32). Prints, per field, honest and cheat max_err
 """
 
 import torch
+from tests.test_op_harness_gdn2 import _bf16_state_gdn2_bwd
 
-from flash_mamba_rl.kernels.ops import gdn2_backward
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.ops import gdn2_backward
+from lethe.verifier.op_harness import (
     GDN2_BWD_GRAD_FIELDS,
     gdn2_bwd_candidate_adapter,
     gdn2_bwd_reference_adapter,
 )
-from tests.test_op_harness_gdn2 import _bf16_state_gdn2_bwd
 
 L = 4096  # the PRC-02 gate stress shape
 DRAWS = 2

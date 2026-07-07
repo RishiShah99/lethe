@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.ops import fused_block_backward
-from flash_mamba_rl.verifier.op_harness import (
+from lethe.kernels.ops import fused_block_backward
+from lethe.verifier.op_harness import (
     FUSED_BWD_GRAD_FIELDS,
     fused_bwd_candidate_adapter,
     fused_bwd_reference_adapter,

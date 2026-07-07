@@ -8,8 +8,8 @@ if it passes, the difference is in the candidate packaging.
 
 from __future__ import annotations
 
-from flash_mamba_rl.kernels.ops.backward_selective_scan import backward_selective_scan
-from flash_mamba_rl.verifier import op_harness
+from lethe.kernels.ops.backward_selective_scan import backward_selective_scan
+from lethe.verifier import op_harness
 
 
 def main() -> None:

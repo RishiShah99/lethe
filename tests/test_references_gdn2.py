@@ -10,7 +10,7 @@ All tests run on CPU only. No GPU markers.
 import torch
 from torch import Tensor
 
-from flash_mamba_rl.kernels.references import (
+from lethe.kernels.references import (
     Gdn2Grads,
     reference_gdn2_backward,
     reference_gdn2_forward,

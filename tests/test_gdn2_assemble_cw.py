@@ -13,15 +13,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flash_mamba_rl.kernels.cute.gdn2_assemble import (
+from lethe.kernels.cute.gdn2_assemble import (
     assemble_gdn2_backward_channelwise,
     assembled_channelwise_gdn2_backward,
     assembled_scalar_gdn2_backward,
     k1_reverse_state_cw_ref,
     k2_wy_vjp_cw_ref,
 )
-from flash_mamba_rl.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_backward
+from lethe.kernels.references.gdn2_chunkwise_cw import build_microgate_bundles_cw
+from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
 SHAPES = [
     (2, 32, 2, 16, 16, 16),  # B, T, H, d_k, d_v, chunk_len  (NT=2)

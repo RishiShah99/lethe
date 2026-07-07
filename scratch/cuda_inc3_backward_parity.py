@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import torch
 
-from flash_mamba_rl.kernels.cuda.backward import cuda_backward_scan
-from flash_mamba_rl.kernels.references.backward_selective_scan import (
+from lethe.kernels.cuda.backward import cuda_backward_scan
+from lethe.kernels.references.backward_selective_scan import (
     reference_backward_selective_scan,
 )
 

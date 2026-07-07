@@ -34,7 +34,7 @@ from typing import Any
 
 import torch
 
-from flash_mamba_rl.kernels.references.gdn_backward import reference_gdn2_forward
+from lethe.kernels.references.gdn_backward import reference_gdn2_forward
 
 
 def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -207,7 +207,7 @@ def main() -> None:
             out[name] = fn(dev)
         except ImportError as exc:
             out[name] = {"available": False, "skipped": f"ImportError: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             out[name] = {"available": False, "error": f"{type(exc).__name__}: {exc}",
                          "trace": traceback.format_exc()}
 
