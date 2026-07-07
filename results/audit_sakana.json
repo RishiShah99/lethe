@@ -1,0 +1,26 @@
+{
+  "corpus": "SakanaAI/AI-CUDA-Engineer-Archive",
+  "population": "Sakana Correct==True",
+  "audited_rows": 214,
+  "compile_artifacts_excluded": 0,
+  "compiled_denominator": 213,
+  "contract_findings": 213,
+  "finding_rate": 1.0,
+  "note": "finding_rate is PRC-dominated (fp32-only kernels); lead with the residual",
+  "finding_rate_excl_precision": 0.2019,
+  "contract_findings_excl_precision": 43,
+  "gate_fail_counts": {
+    "PRC-02": 213,
+    "PRC-01": 175,
+    "CMP-03": 37,
+    "EXC-02": 9,
+    "ORD-02": 4,
+    "CMP-01": 1
+  },
+  "max_diff_median_findings": 0.001,
+  "max_diff_median_passes": null,
+  "status_counts": {
+    "gated": 213,
+    "sandbox_timeout": 1
+  }
+}

@@ -1,0 +1,180 @@
+{
+  "corpus": "hkust-nlp/drkernel-coldstart-8k",
+  "headline_finding_rate": 0.6213,
+  "all": {
+    "label": "all",
+    "denominator": 2759,
+    "per_channel_rows": {
+      "exc01": 911,
+      "cmp03_value": 400,
+      "pre_gate": 67,
+      "ord02": 137,
+      "crash": 18,
+      "cmp03_hard": 72,
+      "aliasing": 25
+    },
+    "strict_floor": {
+      "channels": [
+        "exc01",
+        "ord02",
+        "aliasing",
+        "crash",
+        "pre_gate"
+      ],
+      "rows": 1099,
+      "rate": 0.3983
+    },
+    "floor_with_cmp03_shape_rejection": {
+      "channels": [
+        "exc01",
+        "ord02",
+        "aliasing",
+        "crash",
+        "pre_gate",
+        "cmp03_hard"
+      ],
+      "rows": 1140,
+      "rate": 0.4132
+    },
+    "floor_with_cmp03_any": {
+      "channels": [
+        "exc01",
+        "ord02",
+        "aliasing",
+        "crash",
+        "pre_gate",
+        "cmp03_hard",
+        "cmp03_value"
+      ],
+      "note": "HANDOFF literal channel list; CMP-03 value mismatches carry a tolerance argument",
+      "rows": 1346,
+      "rate": 0.4879
+    },
+    "cmp03_value_only_rows": 206,
+    "per_class_strict": {
+      "attention": {
+        "denominator": 9,
+        "tolerance_free_findings": 3,
+        "rate": 0.3333
+      },
+      "conv": {
+        "denominator": 252,
+        "tolerance_free_findings": 78,
+        "rate": 0.3095
+      },
+      "matmul": {
+        "denominator": 780,
+        "tolerance_free_findings": 265,
+        "rate": 0.3397
+      },
+      "norm": {
+        "denominator": 380,
+        "tolerance_free_findings": 132,
+        "rate": 0.3474
+      },
+      "reduction": {
+        "denominator": 792,
+        "tolerance_free_findings": 472,
+        "rate": 0.596
+      },
+      "scan": {
+        "denominator": 144,
+        "tolerance_free_findings": 41,
+        "rate": 0.2847
+      },
+      "softmax": {
+        "denominator": 402,
+        "tolerance_free_findings": 108,
+        "rate": 0.2687
+      }
+    }
+  },
+  "accepted_only": {
+    "label": "accepted_only",
+    "denominator": 2638,
+    "per_channel_rows": {
+      "exc01": 868,
+      "cmp03_value": 350,
+      "pre_gate": 62,
+      "ord02": 126,
+      "crash": 16,
+      "cmp03_hard": 70,
+      "aliasing": 25
+    },
+    "strict_floor": {
+      "channels": [
+        "exc01",
+        "ord02",
+        "aliasing",
+        "crash",
+        "pre_gate"
+      ],
+      "rows": 1043,
+      "rate": 0.3954
+    },
+    "floor_with_cmp03_shape_rejection": {
+      "channels": [
+        "exc01",
+        "ord02",
+        "aliasing",
+        "crash",
+        "pre_gate",
+        "cmp03_hard"
+      ],
+      "rows": 1083,
+      "rate": 0.4105
+    },
+    "floor_with_cmp03_any": {
+      "channels": [
+        "exc01",
+        "ord02",
+        "aliasing",
+        "crash",
+        "pre_gate",
+        "cmp03_hard",
+        "cmp03_value"
+      ],
+      "note": "HANDOFF literal channel list; CMP-03 value mismatches carry a tolerance argument",
+      "rows": 1263,
+      "rate": 0.4788
+    },
+    "cmp03_value_only_rows": 180,
+    "per_class_strict": {
+      "attention": {
+        "denominator": 8,
+        "tolerance_free_findings": 2,
+        "rate": 0.25
+      },
+      "conv": {
+        "denominator": 239,
+        "tolerance_free_findings": 74,
+        "rate": 0.3096
+      },
+      "matmul": {
+        "denominator": 751,
+        "tolerance_free_findings": 257,
+        "rate": 0.3422
+      },
+      "norm": {
+        "denominator": 352,
+        "tolerance_free_findings": 122,
+        "rate": 0.3466
+      },
+      "reduction": {
+        "denominator": 758,
+        "tolerance_free_findings": 448,
+        "rate": 0.591
+      },
+      "scan": {
+        "denominator": 140,
+        "tolerance_free_findings": 38,
+        "rate": 0.2714
+      },
+      "softmax": {
+        "denominator": 390,
+        "tolerance_free_findings": 102,
+        "rate": 0.2615
+      }
+    }
+  }
+}
