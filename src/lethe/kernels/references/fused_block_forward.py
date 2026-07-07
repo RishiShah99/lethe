@@ -79,12 +79,21 @@ def reference_fused_block_forward(
            L_out = L - (conv_kernel_size - 1).
 
     Raises:
-        ValueError: If dtypes are not float32 or shapes are inconsistent.
+        ValueError: If dtypes are not float32 or shapes are inconsistent,
+            including x's channel dim disagreeing with ``conv_weight``'s.
     """
     if x.dtype != torch.float32:
         raise ValueError(f"Expected float32, got x.dtype={x.dtype}")
 
     _batch, _seq_len, d_model = x.shape
+    # Depthwise (groups=D) conv requires x channels == D. torch would instead
+    # silently reinterpret a mismatch as a grouped conv (upweighting the
+    # channels) — not this block's math — so reject it, matching the
+    # channel-rigid contract the sibling references raise on structurally.
+    if d_model != conv_weight.shape[0]:
+        raise ValueError(
+            f"channel mismatch: x has {d_model} channels, conv_weight has {conv_weight.shape[0]}"
+        )
 
     # --- 1. Causal depthwise conv1d ---
     # F.conv1d expects [B, C, L]; conv_weight is [D, 1, K] for groups=D.

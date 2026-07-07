@@ -107,6 +107,19 @@ class TestFusedBlockForwardCpu:
         with pytest.raises(ValueError, match="disagrees"):
             fused_block_forward(*args, conv_kernel_size=3, chunk_size=8)
 
+    def test_channel_mismatch_rejected_op_and_reference(self) -> None:
+        # The CMP-03 audit variant: primary x's channel dim is halved
+        # (D=16) while the baked conv/scan weights stay at D=32. torch's
+        # groups=D conv silently upweights 16->32; both the op and the
+        # reference must reject instead, so the audit reclassifies this to
+        # na (the reference-inapplicable path) rather than a value mismatch.
+        args = list(_fused_inputs(2, 64, 32, 16, k=4))
+        args[0] = args[0][..., :16].contiguous()  # x -> (2, 67, 16)
+        with pytest.raises(ValueError, match="channel mismatch"):
+            fused_block_forward(*args, chunk_size=8)
+        with pytest.raises(ValueError, match="channel mismatch"):
+            reference_fused_block_forward(*args, chunk_size=8)
+
     def test_fp64_stays_fp64(self) -> None:
         args = tuple(t.to(torch.float64) for t in _fused_inputs(1, 8, 4, 8))
         y = fused_block_forward(*args, chunk_size=8)

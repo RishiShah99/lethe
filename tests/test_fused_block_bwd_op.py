@@ -73,6 +73,14 @@ class TestFusedBlockBackwardCpu:
         with pytest.raises(ValueError, match="disagrees"):
             fused_block_backward(*args, conv_kernel_size=3, chunk_size=8)
 
+    def test_channel_mismatch_rejected(self) -> None:
+        # Family-consistent guard with the C5 forward: x channels must equal
+        # conv_weight's out-channels (a depthwise-conv contract).
+        args = list(_fused_inputs(2, 64, 32, 16, k=4))
+        args[0] = args[0][..., :16].contiguous()  # x -> (2, 67, 16)
+        with pytest.raises(ValueError, match="channel mismatch"):
+            fused_block_backward(*args, chunk_size=8)
+
     def test_fp64_stays_fp64(self) -> None:
         args = tuple(t.to(torch.float64) for t in _fused_inputs(1, 8, 4, 8))
         grads = fused_block_backward(*args, chunk_size=8)

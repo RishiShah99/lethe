@@ -180,13 +180,20 @@ def fused_block_forward(
     Raises:
         ValueError: If ``conv_kernel_size`` disagrees with ``conv_weight``'s
             trailing dim (the reference silently keys on the weight; a
-            mismatch would shift every downstream shape), or if L_out is
-            not divisible by ``chunk_size``.
+            mismatch would shift every downstream shape), if x's channel dim
+            disagrees with ``conv_weight``'s (the Triton path would silently
+            emit x-channel-wide output where the reference upweights), or if
+            L_out is not divisible by ``chunk_size``.
     """
     conv_k = conv_weight.shape[-1]
     if conv_k != conv_kernel_size:
         raise ValueError(
             f"conv_kernel_size={conv_kernel_size} disagrees with conv_weight K={conv_k}"
+        )
+    if x.shape[-1] != conv_weight.shape[0]:
+        raise ValueError(
+            f"channel mismatch: x has {x.shape[-1]} channels, "
+            f"conv_weight has {conv_weight.shape[0]}"
         )
     l_out = x.shape[1] - (conv_k - 1)
     if l_out % chunk_size != 0:
