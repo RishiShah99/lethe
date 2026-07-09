@@ -1,15 +1,15 @@
-"""Family entry wrappers — GLA / LA / SSD-class / KDA modes of the GDN-2 assembly.
+"""Family entry wrappers, GLA / LA / SSD-class / KDA modes of the GDN-2 assembly.
 
 One backward serves the gated linear-recurrence family: each wrapper materializes its
 family's gate settings (``b = 0, w = 1`` for the no-erase members; ``b = w = β·1`` for
 KDA), runs the channel-wise assembly, and maps the six GDN-2 grads onto the family's
 own parameters (discard what the family does not parameterize, channel-sum what it
-holds scalar). Grad bundles are the family oracles' NamedTuples — one contract per
+holds scalar). Grad bundles are the family oracles' NamedTuples, one contract per
 family, shared between oracle and wrapper.
 
 The no-erase members default to the skip-T fast path (``assemble_gdn2_backward_no_erase``:
 T = I exactly, K#2 skipped, K#1 fed exact-zero ``wy``); KDA runs the full WY machinery.
-``k1_fn``/``k2_fn`` inject the compiled tcgen05 kernels on a Blackwell box — the desk
+``k1_fn``/``k2_fn`` inject the compiled tcgen05 kernels on Blackwell hardware; the
 default is the pure-torch channel-wise references.
 
 Mixed-precision contract matches ``assembled_channelwise_gdn2_backward``: half inputs
@@ -149,7 +149,7 @@ def kda_backward(
     k1_fn: K1FnCW | None = None,
     k2_fn: K2FnCW | None = None,
 ) -> KdaGrads:
-    """KDA (per-channel decay, scalar β): ``b = w = β·1`` — the full WY machinery.
+    """KDA (per-channel decay, scalar β): ``b = w = β·1``, the full WY machinery.
 
     ``beta`` [B, L, H] in (0, 1). The scalar gate grad recombines both axes:
     ``grad_beta = db.sum(-1) + dw.sum(-1)``. Returns (dq, dk, dv, dg, dbeta).

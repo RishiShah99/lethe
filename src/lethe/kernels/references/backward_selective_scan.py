@@ -1,7 +1,7 @@
 """Mamba-3 selective scan backward pass via torch.autograd.
 
 Reference oracle for the verifier. Gradients are computed by running
-torch.autograd.grad through the chunked forward reference — no hand-derived
+torch.autograd.grad through the chunked forward reference, no hand-derived
 gradient formulae. This is intentional: the reference must be correct by
 construction; analytical gradient derivation belongs in the optimised Triton
 kernel, not here.

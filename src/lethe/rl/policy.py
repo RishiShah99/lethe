@@ -18,7 +18,7 @@ class PolicyInterface(Protocol):
 
     The verifier-driven trainer treats the policy as a black box that
     can generate candidate completions and report per-token log-probs.
-    The actual model — HF base + LoRA adapter, possibly quantised —
+    The actual model (HF base + LoRA adapter, possibly quantised)
     lives behind this interface.
     """
 

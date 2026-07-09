@@ -1,25 +1,25 @@
-"""C2 — hand-written SISO selective-scan backward (the #904-broken op).
+"""C2, hand-written SISO selective-scan backward (the #904-broken op).
 
 Drop-in for ``reference_backward_selective_scan`` with the same signature
 and semantics, widened to more dtypes and devices:
 
 - CUDA + {fp32, fp16, bf16} with triton installed -> the Triton kernel
   (``_triton_bwd_scan``): analytic adjoint with chunked state recompute,
-  no ``tl.dot`` anywhere, so Triton's eager TMEM-promotion pass — the
+  no ``tl.dot`` anywhere, so Triton's eager TMEM-promotion pass, the
   root cause of the official kernel's num_warps>=4 compile failures on
-  Blackwell — never engages.
+  Blackwell, never engages.
 - everything else (CPU, fp64, missing triton) -> ``torch.autograd.grad``
   through ``_scan_eager``, the differentiable eager path shared with the
   C1 forward op. For fp32 on CPU this replicates the reference oracle's
   gradients; fp64 is the verification dtype (gradcheck) and deliberately
   routes here. When ``dy.requires_grad``, the eager path builds the
-  double-backward graph (``create_graph=True``) — the VJP is linear in
+  double-backward graph (``create_graph=True``), the VJP is linear in
   ``dy``, which is exactly what CMP-02's gradcheck differentiates.
 
 Deviations from the reference: the reference rejects non-fp32 inputs; this
 op defines the mixed-precision contract instead (compute in fp32, round
 once per gradient output). ``chunk_size`` is validated identically but is
-a blocking hint only — gradients do not depend on it, and the Triton
+a blocking hint only, gradients do not depend on it, and the Triton
 kernel picks its own recompute-chunk internally.
 """
 
@@ -44,7 +44,7 @@ from .forward_chunked_scan import (
 def _bwd_eager(
     u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor, dy: Tensor
 ) -> SelectiveScanGrads:
-    """Gradients via autograd through the eager forward — correct by construction."""
+    """Gradients via autograd through the eager forward, correct by construction."""
     create_graph = dy.requires_grad
     with torch.enable_grad():
         leaves = [t.detach().requires_grad_(True) for t in (u, delta, A, B, C, D)]
@@ -111,7 +111,7 @@ def triton_bwd_scan_resource_meta(config: KernelConfig | None = None) -> dict[st
 
     Must match ``backward_selective_scan``'s dispatch: an explicit
     ``scan_mode`` audits exactly that kernel, but when ``scan_mode`` is unset
-    the dispatch resolves the mode by *shape* — either kernel can run — so the
+    the dispatch resolves the mode by *shape*, either kernel can run, so the
     audit returns the max envelope over both, never the serial one alone.
     """
     if not _triton_usable():

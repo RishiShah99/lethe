@@ -1,16 +1,15 @@
-"""Scalar-GDN backward ASSEMBLY — composes the two native kernels into six grads.
+"""Scalar-GDN backward ASSEMBLY, composes the two native kernels into six grads.
 
-Phase 2 integration (PROJECT_PLAN / PHASE2_PLAN §5.4). The two hard kernels are
-validated in isolation by their micro-gates; this module wires them into the full
-backward and exposes it to the verifier. The assembly is a two-stage VJP splice
-over the canonical chunkwise forward (``references/gdn2_chunkwise``):
+The two hard kernels are validated in isolation before assembly; this module wires
+them into the full backward and exposes it to the verifier. The assembly is a
+two-stage VJP splice over the canonical chunkwise forward (``references/gdn2_chunkwise``):
 
-* **Stage A — the B1 map** ``(k, v, beta, g) -> (u, w)``. Its VJP is **K#2**
+* **Stage A, the B1 map** ``(k, v, beta, g) -> (u, w)``. Its VJP is **K#2**
   (WY / triangular-inverse VJP): given ``du`` (= the total ``dv_new``) and ``dw``,
   it returns ``dk2, dv, db, dg2``.
-* **Stage B — everything else** ``(q, k, g, u, w, h0) -> o`` with ``u``/``w`` *cut*
+* **Stage B, everything else** ``(q, k, g, u, w, h0) -> o`` with ``u``/``w`` *cut*
   as leaves. Its VJP gives the supporting grads ``dq, dk_B, dg_B`` plus ``dw`` (fed
-  to K#2) and ``du``/``dh0`` — and ``du``/``dh0`` are exactly what **K#1** (the
+  to K#2) and ``du``/``dh0``, and ``du``/``dh0`` are exactly what **K#1** (the
   reverse inter-chunk state recurrence) computes natively.
 
 K#1 owns ``du`` (= ``dv2``) and ``dh0``; K#2 owns the B1-map VJP. The final grads:
@@ -19,10 +18,10 @@ the erase/write gate grads split from the B1-map VJP (verified against the oracl
 separate ``grad_b``/``grad_w``). A closing L2-norm VJP maps ``dq``/``dk`` from the
 normed query/key the kernels see back to the raw inputs.
 
-The two kernels are injected as callables (``k1_fn``/``k2_fn``); off-box they default
-to the pure-torch references here (the kernels' readable contracts), so the whole
-assembly is exact in fp64 on CPU. On a Blackwell box the caller passes the compiled
-tcgen05 kernels — identical signatures, identical assembly.
+The two kernels are injected as callables (``k1_fn``/``k2_fn``); by default they use
+the pure-torch references here (the kernels' readable contracts), so the whole
+assembly is exact in fp64 on CPU. On Blackwell hardware the caller passes the
+compiled tcgen05 kernels instead, with identical signatures and identical assembly.
 
 Scope = scalar GDN (g scalar per token, ``b = w = beta``). This reduces the GDN-2
 oracle to machine precision (fp64) when ``g`` is channel-constant and ``b``/``w`` are ``beta``
@@ -60,7 +59,7 @@ from lethe.kernels.references.gdn_backward import Gdn2Grads
 RCP_LN2 = 1.0 / math.log(2.0)
 LN2 = math.log(2.0)
 
-# Kernel callables: same signatures as the tcgen05 box kernels (``run_k1_incB`` /
+# Kernel callables: same signatures as the compiled tcgen05 kernels (``run_k1_incB`` /
 # ``run_k2``) and the pure-torch references below.
 K1Fn = Callable[
     [Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor],
@@ -105,7 +104,7 @@ def pick_chunk_len(seqlen: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Pure-torch kernel references (the kernels' readable contracts; off-box default)
+# Pure-torch kernel references (the kernels' readable contracts; the default)
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +118,7 @@ def k1_reverse_state_ref(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """K#1 reference — reverse inter-chunk state scan (B4), kernel statement order.
+    """K#1 reference, reverse inter-chunk state scan (B4), kernel statement order.
 
     All tensors head-major chunked ([B, H, NT, C, ...]); ``g_last`` [B, H, NT].
     ``b_dh`` (natural [d_k, d_v] orientation) holds ``dL/dh_{it+1}`` across the
@@ -154,7 +153,7 @@ def k2_wy_vjp_ref(
     dw: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """K#2 reference — WY / triangular-inverse VJP (B6). Returns ``(dk2, dv, db, dg2)``.
+    """K#2 reference, WY / triangular-inverse VJP (B6). Returns ``(dk2, dv, db, dg2)``.
 
     The two-triangular-GEMM inverse adjoint with ``T`` reused (never re-inverted).
     ``db`` is the combined beta grad; ``dg2`` exits reverse-cumsum in raw-g space.
@@ -331,7 +330,7 @@ def assemble_gdn2_backward_scalar(
 
     Inputs are scalar-regime: ``q``/``k`` [B, T, H, d_k], ``v`` [B, T, H, d_v],
     ``g``/``beta`` [B, T, H]. ``k1_fn``/``k2_fn`` default to the pure-torch references
-    (exact in fp64); pass the compiled tcgen05 kernels on a Blackwell box.
+    (exact in fp64); pass the compiled tcgen05 kernels on Blackwell hardware.
     """
     k1 = k1_fn if k1_fn is not None else k1_reverse_state_ref
     k2 = k2_fn if k2_fn is not None else k2_wy_vjp_ref
@@ -413,14 +412,14 @@ def assembled_scalar_gdn2_backward(
 
     Reduces the channel-wise gate inputs to their scalar representatives
     (``g <- g[..., 0]``, ``beta <- b[..., 0]``; requires ``b == w == beta·1`` and
-    ``g`` channel-constant — the caller guarantees the regime) and expands the scalar
+    ``g`` channel-constant, the caller guarantees the regime) and expands the scalar
     grads back to channel-wise: ``grad_q``/``grad_k``/``grad_v`` are exact, while
     ``grad_g``/``grad_b``/``grad_w`` are spread uniformly so their channel-SUM (the
     only quantity a scalar kernel recovers) equals the oracle's.
 
     Mixed-precision contract (PRC-02): half inputs upcast to fp32 for the forward
     recompute + supporting stages (the kernels still do their f16-operand GEMMs
-    internally), and each grad rounds once at the end — exactly the eager path's
+    internally), and each grad rounds once at the end, exactly the eager path's
     contract. fp64 (the gates' double-backward / gradcheck) runs through unchanged
     with ``create_graph`` following ``do.requires_grad``.
     """
@@ -470,7 +469,7 @@ def assembled_scalar_gdn2_backward(
 
 
 # ===========================================================================
-# Phase 3 — channel-wise (the crown): per-channel decay g, erase b, write w
+# Phase 3, channel-wise: per-channel decay g, erase b, write w
 # ===========================================================================
 
 
@@ -484,7 +483,7 @@ def k1_reverse_state_cw_ref(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Channel-wise K#1 — reverse inter-chunk state scan (B4), kernel statement order.
+    """Channel-wise K#1, reverse inter-chunk state scan (B4), kernel statement order.
 
     The scalar lift with per-channel decay folded *inside* the contractions:
     ``b_dv = (k (.) decay_end) @ b_dh + dv_local`` (decay on the key axis, no longer a
@@ -521,7 +520,7 @@ def k2_wy_vjp_cw_ref(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Channel-wise K#2 — WY/triangular-inverse VJP (B6). Returns ``(dk2, dv, db, dw, dg2)``.
+    """Channel-wise K#2, WY/triangular-inverse VJP (B6). Returns ``(dk2, dv, db, dw, dg2)``.
 
     VJP of the channel-wise B1 map ``(k, v, b, w, g) -> (u = T(w (.) v), wy = T(b (.) gamma (.) k))``,
     ``T = (I + M)^{-1}`` with ``M[i,s] = sum_d (b k)_i[d] k_s[d] exp2(g2_i[d]-g2_s[d])`` (strict
@@ -646,11 +645,11 @@ def _stage_b_vjp_cw_closed(
     *,
     create_graph: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Closed-form channel-wise Stage-B VJP — chunk-local, batched over [B·H·NT].
+    """Closed-form channel-wise Stage-B VJP, chunk-local, batched over [B·H·NT].
 
     Replaces the autograd recurrence of ``_stage_b_vjp_cw``: all cross-chunk gradient
-    flow is already carried by K#1's outputs — ``dh[ci] = dL/d(exit state of chunk ci)``
-    (the output the assembly previously discarded) and ``dv2 = dL/dv_new`` (total) —
+    flow is already carried by K#1's outputs, ``dh[ci] = dL/d(exit state of chunk ci)``
+    (the output the assembly previously discarded) and ``dv2 = dL/dv_new`` (total),
     so every remaining term is per-chunk arithmetic with no sequential dependence:
 
         da_qk = tril(do @ v_new^T, 0)      dq = (do @ h^T) (.) gamma + da_qk q-side
@@ -684,11 +683,11 @@ def _stage_b_vjp_cw_closed(
     da_qk = do_c @ v_new.transpose(-1, -2)
     da_qk = torch.where(lower_incl, da_qk, torch.zeros_like(da_qk))
 
-    # The intra einsums: SIMT kernel with on-the-fly exp2 (no decay_rel materialized;
-    # the squeeze) when on-tile on a DSL box; else the torch einsums over decay_rel —
-    # reusing the restage's stash when available (lever 2a: one build per backward).
-    # The stash is no-grad, so both fast paths are detached-only; create_graph
-    # rebuilds through the live g2. FMR_DISABLE_SBE=1 pins the torch path.
+    # The intra einsums run as a SIMT kernel with on-the-fly exp2 (no decay_rel
+    # materialized) when the compiled kernel is available on CUDA; else the torch
+    # einsums over decay_rel, reusing the forward stash when available (one build
+    # per backward). The stash is no-grad, so both fast paths are detached-only;
+    # create_graph rebuilds through the live g2. FMR_DISABLE_SBE=1 pins the torch path.
     sbe: tuple[Tensor, Tensor] | None = None
     if (
         not create_graph
@@ -733,7 +732,7 @@ class ChannelwiseGdn2Grads:
 
     ``dq``/``dk`` [B,T,H,d_k]; ``dv`` [B,T,H,d_v]; ``dg``/``db`` [B,T,H,d_k] (key axis);
     ``dw`` [B,T,H,d_v] (value axis); ``dh0`` [B,H,d_k,d_v]. Unlike the scalar path nothing
-    is channel-summed — these are the crown's per-channel gradients.
+    is channel-summed, these are the full per-channel gradients.
     """
 
     dq: Tensor
@@ -767,21 +766,21 @@ def assemble_gdn2_backward_channelwise(
 
     Inputs channel-wise: ``q``/``k``/``g``/``b`` [B, T, H, d_k]; ``v``/``w``/``do``
     [B, T, H, d_v]. ``k1_fn``/``k2_fn`` default to the channel-wise pure-torch references
-    (exact in fp64); pass the compiled tcgen05 kernels on a Blackwell box. The two-stage
+    (exact in fp64); pass the compiled tcgen05 kernels on Blackwell hardware. The two-stage
     splice is identical to the scalar path; the erase/write grads come straight from K#2's
     separate ``db``/``dw`` (no beta split), and ``dg`` sums the B1 and stage-B parts.
     ``stage_b_closed`` swaps the autograd Stage B for the chunk-local closed form fed by
-    K#1's ``dh`` (the de-glue lever; fp64-pinned equal). ``fwd_stash`` (lever 2b, the fla
-    move) supplies the chunkwise forward saved at forward time so no restage runs at all —
-    honored on the closed no-graph path only (its tensors carry no graph); it must have
-    been built from the same inputs/scale/chunk decomposition.
+    K#1's ``dh`` (fp64-pinned equal). ``fwd_stash`` supplies the chunkwise forward saved
+    at forward time so no restage runs at all, honored on the closed no-graph path only
+    (its tensors carry no graph); it must have been built from the same
+    inputs/scale/chunk decomposition.
     """
     k1 = k1_fn if k1_fn is not None else k1_reverse_state_cw_ref
     k2 = k2_fn if k2_fn is not None else k2_wy_vjp_cw_ref
 
-    # The closed path takes no grad through the forward, so the saved forward (lever 2b)
-    # or the batched no-grad restage (Level 1b) stands in; the autograd stage B (and
-    # double-backward) still needs the graph-carrying forward.
+    # The closed path takes no grad through the forward, so the saved forward (fwd_stash)
+    # or the batched no-grad restage stands in; the autograd stage B (and double-backward)
+    # still needs the graph-carrying forward.
     if stage_b_closed and not create_graph and fwd_stash is not None:
         fwd = fwd_stash
         cl = fwd.chunk_len
@@ -803,8 +802,8 @@ def assemble_gdn2_backward_channelwise(
     def _det(t: Tensor) -> Tensor:
         return t if create_graph else t.detach()
 
-    # Default path keeps the proven autograd-Stage-B-before-K#1 order (the order the
-    # CUDA-graph lever was verified in); the closed path needs K#1's dh first.
+    # Default path keeps the autograd-Stage-B-before-K#1 order (verified safe for
+    # CUDA-graph capture); the closed path needs K#1's dh first.
     if not stage_b_closed:
         dq_b, dk_b, dg_b, dwy, _du_b, _dh0_b = _stage_b_vjp_cw(fwd, do, create_graph=create_graph)
 
@@ -895,7 +894,7 @@ def assemble_gdn2_backward_no_erase(
     At ``b = 0`` the WY machinery is exactly inert: ``M = 0`` so ``T = I`` (the
     unitriangular solve never touches the diagonal) and ``wy = 0``, hence K#2's
     ``dk2 = dg2 = 0`` and its only live contributions are ``dv = dv2 ⊙ w`` and
-    ``dw = dv2 ⊙ v`` — one elementwise op each. The K#1 contract is unchanged
+    ``dw = dv2 ⊙ v``, one elementwise op each. The K#1 contract is unchanged
     (``wy`` operand fed exact zeros; its GEMM contributes exact zeros), so the
     injected tcgen05 kernel slots in as-is. Grad equality with the full channel-wise
     assembly at ``b = 0`` is pinned by test.
@@ -968,13 +967,13 @@ def assembled_channelwise_gdn2_backward(
     stage_b_closed: bool = False,
     fwd_stash: ChunkwiseForwardCW | None = None,
 ) -> Gdn2Grads:
-    """GDN-2-signature wrapper around the channel-wise assembly (the crown gate entry).
+    """GDN-2-signature wrapper around the channel-wise assembly (the gate entry).
 
     Mixed-precision contract (PRC-02): half inputs upcast to fp32 for the forward recompute
     + supporting stages (the kernels still do their f16-operand GEMMs internally), each grad
     rounds once at the end. fp64 (the gates' double-backward / gradcheck) runs through with
     ``create_graph`` following ``do.requires_grad``. Returns all six per-channel grads
-    (``grad_initial_state`` is None — no initial state is fed at the gate).
+    (``grad_initial_state`` is None, no initial state is fed at the gate).
     """
     in_dtype = q.dtype
     half = in_dtype in (torch.float16, torch.bfloat16)

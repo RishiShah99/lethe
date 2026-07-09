@@ -1,4 +1,4 @@
-"""C4 — hand-written Mamba-3 complex-RoPE selective scan forward.
+"""C4, hand-written Mamba-3 complex-RoPE selective scan forward.
 
 Drop-in for ``reference_complex_scan_rope`` with the same signature and
 semantics, widened to more dtypes and devices:
@@ -6,11 +6,11 @@ semantics, widened to more dtypes and devices:
 - CUDA + {fp32, fp16, bf16} with triton installed -> the fused Triton
   kernel (``_triton_complex_rope``), wrapped in an autograd.Function whose
   backward recomputes through the eager path (first-order only; this op
-  has no hand-written backward in the kernel suite — the training-path
+  has no hand-written backward in the kernel suite, the training-path
   backward is C6's fused block).
 - everything else (CPU, fp64, missing triton) -> the reference itself.
   fp32/fp64 feed it directly (bitwise-equal by construction); half dtypes
-  upcast once and round once at the output (the mixed-precision contract —
+  upcast once and round once at the output (the mixed-precision contract,
   the reference rejects half).
 """
 
@@ -39,7 +39,7 @@ def _rope_eager(
 class _ComplexRopeCuda(torch.autograd.Function):
     """Triton forward; backward recomputes the VJP through the eager path.
 
-    First-order only — the recomputed graph is built per backward call and
+    First-order only, the recomputed graph is built per backward call and
     freed; double-backward routes through the eager path (CPU or fp64).
     """
 

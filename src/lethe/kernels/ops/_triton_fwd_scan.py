@@ -1,7 +1,7 @@
 """Triton kernel for the SISO selective-scan forward (C1).
 
 Import this module only when ``triton`` is installed and a CUDA device is
-the target — the public dispatcher in ``forward_chunked_scan.py`` guards
+the target, the public dispatcher in ``forward_chunked_scan.py`` guards
 both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
 
     u, delta, y : [B, L, D]   row-major
@@ -11,7 +11,7 @@ both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
 
 Parallelisation: one program per (batch, D-block). The program carries the
 hidden state ``h`` as a [BLOCK_D, BLOCK_N] fp32 register block and walks the
-sequence serially — the recurrence over t matches the reference oracle's
+sequence serially, the recurrence over t matches the reference oracle's
 accumulation order. All arithmetic is fp32 regardless of input dtype
 (fp16/bf16 inputs are upcast at load, output rounds once at store), which is
 the contract PRC-02 measures.
@@ -91,7 +91,7 @@ def _fwd_scan_kernel(  # type: ignore[no-untyped-def]
 
         # libdevice.exp (full-precision expf), not tl.exp (ex2.approx):
         # the approx path flushes subnormal outputs, and exp(dbar * a)
-        # reaches the subnormal range for saturated dbar — a flushed 0
+        # reaches the subnormal range for saturated dbar, a flushed 0
         # turns Inf*subnormal into Inf*0=NaN and splits the EXC-01
         # NaN/Inf masks against the torch reference.
         dbar = tl.where(dlt > _SOFTPLUS_THRESHOLD, dlt, libdevice.log1p(libdevice.exp(dlt)))
@@ -127,7 +127,7 @@ def launch_forward_scan(
     num_stages); a None config or None field keeps the shipped heuristic, so
     the default path is byte-for-byte the pre-autotune launch. BLOCK_N is
     pinned to the full state dim (the program holds the whole state in
-    registers) — a correctness constraint, never a knob.
+    registers), a correctness constraint, never a knob.
     """
     batch, seq_len, d_model = u.shape
     n_state = a.shape[1]
@@ -181,7 +181,7 @@ def resource_meta() -> dict[str, int] | None:
     """Resource envelope across all compiled specialisations of the kernel.
 
     Max ``n_regs`` / ``spill_bytes`` / ``shared_bytes`` over every cached
-    compilation — see ``_resource_meta.collect_resource_meta`` for the
+    compilation, see ``_resource_meta.collect_resource_meta`` for the
     envelope semantics and cache-layout caveats.
     """
     return collect_resource_meta(_fwd_scan_kernel)

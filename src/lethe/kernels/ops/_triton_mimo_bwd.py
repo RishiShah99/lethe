@@ -2,31 +2,31 @@
 
 No open implementation of this op exists anywhere (the official repo ships
 only forward + decode-step kernels for MIMO; its TileLang backward is the
-#904-family sibling). Same structural rules as C2: no ``tl.dot`` — the
+#904-family sibling). Same structural rules as C2: no ``tl.dot``, the
 recurrence and every contraction are elementwise FMAs + ``tl.sum``, so
 Triton's eager TMEM-promotion pass (the #904 root cause on sm_100) never
-engages — and no atomics: cross-program sums go through per-program
+engages, and no atomics: cross-program sums go through per-program
 partial buffers reduced by deterministic ``torch.sum`` in the launcher
 (ORD-02 by construction). The op has no transcendentals (``dt``/``alpha``
 arrive precomputed), so C2's softplus/denormal hazards are absent.
 
 Key structural fact the kernel exploits: ``alpha`` is rank-independent and
 the readout distributes identically over ranks, so the backward state
-gradient is the same for every rank — one carry ``g[p, n]``, and the
+gradient is the same for every rank, one carry ``g[p, n]``, and the
 aggregated state itself obeys ``h_agg_t = alpha_t * h_agg_{t-1} +
 sum_r (dt_t * B_t^r) * x_r_t^r``. The kernel carries only ``h_agg``, never
 per-rank states. This deviates from autograd's per-rank dataflow
 algebraically-equally. NaN/Inf mask caveat: with an Inf in ``g``, the
 aggregated ``g * sum_r h^r`` and autograd's ``sum_r (g * h^r)`` can
 disagree (Inf vs NaN) when the per-rank Inf products mix signs but the
-aggregate's do not — that requires every kernel-side Inf product
+aggregate's do not, that requires every kernel-side Inf product
 same-signed, vanishingly unlikely under the gates' random-sign aux; the
 EXC views passing on B200 pin the practical claim. Gradient expressions
 otherwise mirror autograd's grouping exactly (e.g.
-``grad_B = (sum_p g*x_r) * dt``, never ``sum_p g*(dt*x_r)`` — Inf*0 mints
+``grad_B = (sum_p g*x_r) * dt``, never ``sum_p g*(dt*x_r)``, Inf*0 mints
 NaN in whichever factoring you pick, EXC-01 compares the masks).
 
-Parallelisation: one program per (batch, head, N-block) — the recurrence
+Parallelisation: one program per (batch, head, N-block), the recurrence
 is independent per state column. Each program owns the full headdim P, so
 ``grad_B``/``grad_C`` (sum over p) store directly; the n-split sums
 (``grad_x``, ``grad_dt``, ``grad_alpha``, ``grad_mimo_x``, ``grad_mimo_o``)
@@ -37,7 +37,7 @@ into an L2-resident scratch, then a reverse sweep walks the chunk. The
 recurrence is never inverted (dividing by alpha underflows at saturated
 decay).
 
-Import only with triton installed and CUDA the target — the dispatcher in
+Import only with triton installed and CUDA the target, the dispatcher in
 ``mimo_backward.py`` guards both. Layout (enforced via ``.contiguous()``):
 
     x, dy, grad_x              : [B, L, H, P]   row-major
@@ -64,7 +64,7 @@ MAX_BLOCK_N = 64
 
 # Recompute-chunk cap, same L2-residency argument as C2: the in-chunk
 # scratch working set is n_programs * K * BLOCK_P * BLOCK_N fp32; K=16 at
-# (B=8, H=64, P=64, N=128, BLOCK_N=64) is ~268 MB — above B200's 126 MB L2,
+# (B=8, H=64, P=64, N=128, BLOCK_N=64) is ~268 MB, above B200's 126 MB L2,
 # so K (and BLOCK_N) are v2 autotuning levers; correctness never depends on K.
 MAX_CHUNK_K = 16
 
@@ -199,7 +199,7 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
             h_tm1 = tl.load(hbuf_prog + j * BLOCK_P * BLOCK_N)
 
             # g_t = dL/dh_agg_t (rank-uniform). dy in padded lanes loads as
-            # 0, but Inf*0 across broadcasts mints NaN in padded lanes — mask.
+            # 0, but Inf*0 across broadcasts mints NaN in padded lanes, mask.
             gsum = tl.zeros((BLOCK_P, BLOCK_N), dtype=tl.float32)
             for r in tl.static_range(R):
                 c_r = tl.load(c_ptr + boff + r * b_rstride, mask=mask_n, other=0.0).to(tl.float32)
@@ -243,8 +243,8 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
                 )
                 # Unmasked sums here and at galpha_t below are safe only
                 # because g, gt1_r and h_tm1 are zeroed at padded lanes
-                # upstream (g at its tl.where, h via the recompute mask) —
-                # re-check if any of those producers change.
+                # upstream (g at its tl.where, h via the recompute mask).
+                # Re-check if any of those producers change.
                 gdt_t += tl.sum(gt1_r * b_r)
                 gxr_r = tl.sum(tl.where(mask_pn, g * tmp1_r[None, :], 0.0), axis=1)
                 gx_t += gxr_r * mx_r
@@ -289,7 +289,7 @@ def launch_mimo_backward(
     """Launch the Triton MIMO backward on CUDA tensors.
 
     Dispatch keys on ``x`` (device, dtype); the kernel upcasts every load to
-    fp32 and each gradient stores in its own input's dtype — mixed-dtype
+    fp32 and each gradient stores in its own input's dtype, mixed-dtype
     inputs are tolerated identically to the eager path, not validated.
     Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
     grad_mimo_o)`` in the corresponding input dtypes. ``config`` overrides the
@@ -353,16 +353,16 @@ def launch_mimo_backward(
         n_n_blocks, batch, nheads, rank, headdim, dtype=torch.float32, device=dev
     )
     n_programs = batch * nheads * n_n_blocks
-    # ckpt is HBM-resident O(B*H*nNb*(L/CHUNK_K)*BLOCK_P*BLOCK_N) fp32 — ~2 GB
+    # ckpt is HBM-resident O(B*H*nNb*(L/CHUNK_K)*BLOCK_P*BLOCK_N) fp32, ~2 GB
     # at (B8, L4096, H32, P64, N128); only hbuf's in-chunk slice is L2-hot.
     ckpt = torch.empty(n_programs * n_chunks * block_p * block_n, dtype=torch.float32, device=dev)
     hbuf = torch.empty(n_programs * chunk_k * block_p * block_n, dtype=torch.float32, device=dev)
 
     grid = (batch, nheads, n_n_blocks)
-    # B200 resource envelope sits at the 255-reg ceiling with <=194 B spill
-    # (results/c3_bench_b200.json resource_meta) — zero headroom: anything
-    # that adds register pressure (wider MAX_RANK unroll, larger BLOCK_P)
-    # must re-check RES-02 and the spill column in the bench sweep.
+    # B200 resource envelope sits at the 255-reg ceiling with <=194 B spill,
+    # zero headroom: anything that adds register pressure (wider MAX_RANK
+    # unroll, larger BLOCK_P) must re-check RES-02 and the spill column in
+    # the bench sweep.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     if config is not None and config.num_warps is not None:
         warps = config.num_warps

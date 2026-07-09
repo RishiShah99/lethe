@@ -1,11 +1,11 @@
 """Data-parallel generation pool: K candidates across N policy replicas.
 
-The GRPO bottleneck at 32B is generation, not scoring — one device samples
+The GRPO bottleneck at 32B is generation, not scoring: one device samples
 K completions serially while the rest idle. vLLM (the usual fix) has no
-wheel for the box's torch-2.12/cu130 + pinned-Triton stack, so this pool
+wheel for this repo's torch-2.12/cu130 + pinned-Triton stack, so this pool
 parallelises generation within plain PyTorch instead: one inference-only
 ``HFPolicy`` replica per generation GPU, the K prompts split across them,
-``generate`` run concurrently (threads — HF generate releases the GIL in
+``generate`` run concurrently (threads: HF generate releases the GIL in
 its CUDA kernels, and each replica samples on its own device whose CUDA
 RNG is independent, so concurrent sampling neither races nor correlates).
 
@@ -13,7 +13,7 @@ The trainer keeps the single optimizer-bearing policy on its own GPU and
 computes the log-prob streams + update there; only sampling is pooled.
 Each step the pool's LoRA tensors are refreshed from the trainer policy
 BEFORE generating, so the sampled completions come from the current
-behaviour distribution — the GRPO importance ratio the trainer then
+behaviour distribution. The GRPO importance ratio the trainer then
 computes on those same strings stays consistent (the step-0 identity is
 unaffected: refresh makes replica LoRA == trainer LoRA at sample time).
 

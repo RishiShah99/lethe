@@ -1,4 +1,4 @@
-"""C3 — hand-written MIMO selective-scan backward (Mamba-3, Eqs. 12-14).
+"""C3, hand-written MIMO selective-scan backward (Mamba-3, Eqs. 12-14).
 
 Drop-in for ``reference_mimo_backward`` with the same signature and
 semantics, widened to more dtypes and devices:
@@ -7,11 +7,11 @@ semantics, widened to more dtypes and devices:
   (``_triton_mimo_bwd``): analytic adjoint, no ``tl.dot``, no atomics.
 - everything else (CPU, fp64, missing triton) -> autograd through
   ``reference_mimo_forward``. For fp32/fp64 the leaves feed the reference
-  directly — gradients bitwise-equal to the oracle. The reference rejects
+  directly, gradients bitwise-equal to the oracle. The reference rejects
   half dtypes, so half inputs upcast to fp32 at the leaves and each
   gradient rounds once at the end (the mixed-precision contract). When
   ``dy.requires_grad`` the eager path builds the double-backward graph
-  (``create_graph``) — the VJP is linear in ``dy``, which is what CMP-02's
+  (``create_graph``), the VJP is linear in ``dy``, which is what CMP-02's
   gradcheck differentiates.
 """
 

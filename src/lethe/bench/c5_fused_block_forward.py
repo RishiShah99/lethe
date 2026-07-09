@@ -1,29 +1,29 @@
 """C5 benchmark: the fused block vs unfused compositions of the same math.
 
-Unlike C3/C4 this op has real comparators — the same conv1d + SiLU +
+Unlike C3/C4 this op has real comparators: the same conv1d + SiLU +
 selective scan + RMSNorm pipeline can be composed from parts, so the bench
 measures exactly what the fusion buys:
 
-- ``ours_triton``          — the fused path (conv+SiLU+scan in one kernel,
+- ``ours_triton``: the fused path (conv+SiLU+scan in one kernel,
   fp32 staging, deterministic RMSNorm kernel)
-- ``composed_ours_scan``   — torch conv1d/SiLU + our C1 Triton scan +
+- ``composed_ours_scan``: torch conv1d/SiLU + our C1 Triton scan +
   torch RMSNorm: the fusion-benefit control (same scan engine, staged
   activations)
-- ``composed_official``    — official ``causal_conv1d`` (fused conv+SiLU
+- ``composed_official``: official ``causal_conv1d`` (fused conv+SiLU
   CUDA kernel, internal zero-pad == our zero pre-pad) + official
   ``selective_scan_fn`` + torch RMSNorm, when installed; falls back to
   torch conv with a recorded skip. The official *fused block*
   (``mamba_inner_fn``) computes a different composition (z-gating, in-proj
-  fused, no post-scan RMSNorm) — recorded as the skip reason, the
+  fused, no post-scan RMSNorm), recorded as the skip reason, the
   composed path is the honest official anchor.
-- ``reference_loop``       — the Python-loop oracle (small shapes)
+- ``reference_loop``: the Python-loop oracle (small shapes)
 
 Plus the #904-contrast artifact carried over from C2-C4:
 ``num_warps_sweep`` compiles and times the conv-scan kernel at num_warps
-2/4/8 with per-specialisation ptxas resources — no ``tl.dot``, so the
+2/4/8 with per-specialisation ptxas resources: no ``tl.dot``, so the
 sweep succeeding on sm_100 is the claim, recorded with evidence.
 
-Usage (on the box): ``uv run python -m
+Usage: ``uv run python -m
 lethe.bench.c5_fused_block_forward --out ~/out/c5_bench.json``
 (add ``--quick`` for a fast smoke pass).
 """
@@ -62,14 +62,14 @@ try:
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
     _HAS_MAMBA = True
-except ImportError:  # pragma: no cover - box-only dependency
+except ImportError:  # pragma: no cover - optional dependency
     _HAS_MAMBA = False
 
 try:
     from causal_conv1d import causal_conv1d_fn
 
     _HAS_CAUSAL_CONV = True
-except ImportError:  # pragma: no cover - box-only dependency
+except ImportError:  # pragma: no cover - optional dependency
     _HAS_CAUSAL_CONV = False
 
 
@@ -91,7 +91,7 @@ SHAPES = [
     ShapeSpec(2, 256, 256, 16, 4),  # oracle shape: every comparator runs
     ShapeSpec(8, 2048, 4096, 128, 4),  # training shape
     ShapeSpec(8, 4096, 4096, 128, 4),
-    ShapeSpec(2, 16384, 4096, 128, 4),  # long-sequence story
+    ShapeSpec(2, 16384, 4096, 128, 4),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 256, 256, 16, 4), ShapeSpec(4, 2048, 1024, 128, 4)]
 

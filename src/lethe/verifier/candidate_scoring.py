@@ -8,16 +8,16 @@ through the staged reward table.
 Reward boundary semantics under Triton's lazy PTX compile: a module that
 fails to exec (syntax/import errors) is *not compiled* (reward 0.0); a
 module that execs but whose kernel dies at first launch inside the gates
-(ptxas errors surface there) has JIT-registered — it scores as a contract
+(ptxas errors surface there) has JIT-registered, so it scores as a contract
 failure (0.1), matching ``compile.py``'s ``__warmup__`` rationale.
 
 Backward ops are graded one gradient view at a time (the op-harness
 per-view drivers); the contract verdict is ALL views passing. Views run
-in field order with fail-fast: the first failing view ends the battery —
-bad candidates (the common case) pay for one view, near-passing ones pay
+in field order with fail-fast: the first failing view ends the battery,
+so bad candidates (the common case) pay for one view, near-passing ones pay
 for all. Optional ``view_fraction`` shaping redistributes the
 contract-fail band as 0.1 + 0.35 * views_passed/views_total, strictly
-below the 0.5 full-pass floor — the speedup term still pays only after
+below the 0.5 full-pass floor; the speedup term still pays only after
 every view passes. Shaping disables fail-fast: a prefix count would
 zero the signal for improving later views whenever an early one fails.
 
@@ -29,10 +29,10 @@ wrap needs, are blocked by three layers (see ``_ast_screen`` / ``_import_guard``
 ``sys.meta_path`` finder, and sys.modules eviction of the oracle block it across
 every import pathway, armed both during module exec AND around each
 candidate-entry-point call (the gates and the speedup bench invoke the entry point
-*after* exec, so a wrap deferred — or an import callable captured — into the body
+*after* exec, so a wrap deferred, or an import callable captured, into the body
 must be caught there too; the eviction forces a cache miss so even a captured-real
 ``import_module`` re-resolves into the finder). Wrapping the reference or the
-hand-written ops would otherwise pass every gate without writing a kernel — the
+hand-written ops would otherwise pass every gate without writing a kernel, the
 0.5-reward fixed point the policy must not be able to reach.
 
 CMP-02 (gradcheck) is excluded by default for generated kernels: forward
@@ -85,21 +85,21 @@ DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 
 # Candidate sources may not reach the oracle. The realistic RL reward-hack is
 # wrapping the reference (or the official kernels) so every gate passes without
-# a kernel — the 0.5 fixed point. Three layers stop it. (1) An AST screen rejects
+# a kernel, the 0.5 fixed point. Three layers stop it. (1) An AST screen rejects
 # the package imports, the dynamic-import machinery (importlib/__import__), and
 # the builtins reflection a wrap needs: a name built at runtime
 # (``"let"+"he"``, ``__builtins__["__im"+"port__"]``) still leaves an
 # ``__import__``/``__builtins__``/``importlib`` reference in the parse tree,
-# which substring scanning could not see — and substring scanning also
-# false-matched ``eval(`` inside ``retrieval(``, so it is gone. (2) A
+# which substring scanning could not see (and substring scanning also
+# false-matched ``eval(`` inside ``retrieval(``, so it is gone). (2) A
 # ``builtins.__import__`` guard active during candidate exec blocks the oracle
 # packages by resolved root name, catching the direct-import path at the point
 # it resolves. (3) An ``_OracleImportBlocker`` on ``sys.meta_path`` blocks the
-# same roots through EVERY import pathway — ``importlib.import_module`` and
+# same roots through EVERY import pathway: ``importlib.import_module`` and
 # ``_gcd_import`` bypass ``builtins.__import__``, so the guard alone could not
 # see them; the finder is also why importlib is no longer guard-blocked (doing
 # so scored every real Triton kernel as a non-compile, since Triton pulls in
-# importlib transitively at jit time — the finder closes the importlib-as-gadget
+# importlib transitively at jit time; the finder closes the importlib-as-gadget
 # path without the false positive). At exec, project modules are additionally
 # hidden from sys.modules (see ``_hidden_project_modules``) so a candidate import
 # re-consults the finder rather than hitting a cached oracle. The guards span two
@@ -108,13 +108,13 @@ DEFAULT_EXCLUDE_GATES: tuple[str, ...] = ("gate_cmp_02_gradient_correctness",)
 # what (1)-(3) would otherwise miss): module exec uses all three layers; each
 # candidate-entry-point call pairs the finder with sys.modules eviction of a
 # bounded, pre-scanned oracle key set (4) (see ``_oracle_cache_evicted``).
-# Eviction is load-bearing — a candidate that saved the *real* ``import_module``
+# Eviction is load-bearing: a candidate that saved the *real* ``import_module``
 # before the guards installed bypasses any live-attribute patch, but the forced
 # cache miss still routes its import through the finder; the key set is scanned
 # once so the cost stays out of the timed region (a full per-call scan dragged
 # parity kernels to ~0.7x). Object-graph gadget chains (gc-walking to the
 # already-imported reference object directly, no import at all) stay possible by
-# construction — a documented arms-race boundary, not a contract.
+# construction; a documented arms-race boundary, not a contract.
 _FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset(
     {
         "lethe",
@@ -135,7 +135,7 @@ _FORBIDDEN_NAMES: frozenset[str] = frozenset(
 # Resolved-root oracle packages, blocked at every import pathway: the
 # ``builtins.__import__`` guard for the direct path and ``_OracleImportBlocker``
 # (a meta-path finder) for ``importlib.import_module`` / ``_gcd_import``.
-# importlib is deliberately NOT a member — a real Triton candidate pulls it in
+# importlib is deliberately NOT a member: a real Triton candidate pulls it in
 # transitively at jit time, so guard-blocking it scored every kernel as a
 # non-compile; the finder closes the importlib-as-gadget path instead. sys and
 # builtins are always cached, so a fresh re-import is a no-op (the AST screen
@@ -148,7 +148,7 @@ _GUARDED_IMPORT_ROOTS: frozenset[str] = frozenset(
 def _ast_screen(source: str) -> list[str]:
     """Forbidden import / reflection constructs in *source*, parse-tree level.
 
-    A syntactically invalid source returns no violations — exec surfaces the
+    A syntactically invalid source returns no violations; exec surfaces the
     SyntaxError and it scores as a non-compile (0.0), not a screen rejection.
     """
     try:
@@ -204,18 +204,18 @@ def _import_guard() -> Iterator[None]:
 def _oracle_cache_evicted(keys: list[str]) -> Iterator[None]:
     """Evict a precomputed set of oracle module keys from sys.modules.
 
-    Forces any oracle import during the window — including one driven by a real
+    Forces any oracle import during the window, including one driven by a real
     ``import_module`` / ``__import__`` reference the candidate *captured at exec*,
-    before any live-attribute patch was installed — to miss the sys.modules cache
+    before any live-attribute patch was installed, to miss the sys.modules cache
     and re-resolve through ``sys.meta_path``, where ``_OracleImportBlocker``
     rejects it. Late-binding patches alone could not stop an early-bound
     reference; the cache miss is what closes it.
 
     ``keys`` is scanned once per scoring (see ``_gate_and_reward``), so the
-    per-call cost is O(oracle modules) — not the O(sys.modules) full scan that
+    per-call cost is O(oracle modules), not the O(sys.modules) full scan that
     landed inside the speedup timing and dragged parity kernels to ~0.7x.
     op_harness holds direct references to the reference functions, so evicting
-    their sys.modules entries does not break the gates' own oracle calls — only a
+    their sys.modules entries does not break the gates' own oracle calls; only a
     fresh candidate import re-resolves and meets the finder.
     """
     saved = {name: sys.modules.pop(name) for name in keys if name in sys.modules}
@@ -232,7 +232,7 @@ class _OracleImportBlocker:
     ``builtins.__import__``; ``importlib.import_module`` and
     ``importlib._bootstrap._gcd_import`` bypass it. Every import pathway,
     those included, consults ``sys.meta_path``, so a finder that raises for the
-    oracle roots is the pathway-complete block — and the reason importlib need
+    oracle roots is the pathway-complete block, and the reason importlib need
     not be guard-blocked (which broke real Triton candidates). With
     ``_hidden_project_modules`` evicting the oracle from sys.modules, a candidate
     import re-consults the finders and is rejected regardless of how it is
@@ -302,7 +302,7 @@ def _trunc(obj: Any, limit: int = 300) -> str:
 def score_source_worker(source: str, config: dict[str, Any]) -> dict[str, Any]:
     """Subprocess body: import *source*, gate it, return a picklable score dict.
 
-    stdout is swapped to stderr for the duration — the sandbox marshals the
+    stdout is swapped to stderr for the duration; the sandbox marshals the
     return value as pickled stdout and candidate prints would corrupt it.
     """
     real_stdout = sys.stdout
@@ -338,7 +338,7 @@ def _score_source_body(source: str, config: dict[str, Any]) -> dict[str, Any]:
     fail_fast = bool(config.get("fail_fast", True))
     reward_shaping = str(config.get("reward_shaping", "none"))
     # Under fail-fast, views_passed is the longest passing prefix, not the
-    # pass count — shaping over a prefix would zero the gradient signal for
+    # pass count; shaping over a prefix would zero the gradient signal for
     # improving later views whenever an early one fails. Shaping therefore
     # always runs the full battery.
     if reward_shaping == "view_fraction":
@@ -398,17 +398,17 @@ def _gate_and_reward(
 
     reward_shaping = str(config.get("reward_shaping", "none"))
 
-    # The entry point is invoked HERE (gates + speedup bench), after exec — the
-    # exec-time guards are down. A candidate that deferred the oracle wrap into
+    # The entry point is invoked HERE (gates + speedup bench), after exec, when
+    # the exec-time guards are down. A candidate that deferred the oracle wrap into
     # its body, or captured a real import_module/__import__ at exec, would reach
     # the reference at call time (the 0.5 fixed point). Wrap every candidate call
     # in a cache-eviction (forces a miss) + the meta-path finder, so the import
     # re-resolves into the finder regardless of how the callable was bound. The
     # oracle key set is scanned once, now that op_harness (references) and the
-    # hand-written ops are loaded — per-call cost is O(oracle modules), keeping
+    # hand-written ops are loaded; per-call cost is O(oracle modules), keeping
     # the eviction out of the timed region. The config-scoring path passes
     # trusted=True: its callable IS an in-repo kernel (no generated source), so
-    # the eviction must NOT run — it would hide the very modules the trusted op
+    # the eviction must NOT run; it would hide the very modules the trusted op
     # imports, breaking the call it is meant to protect.
     if trusted:
         fn = raw_fn
@@ -430,7 +430,7 @@ def _gate_and_reward(
         required = [name for name in results if name not in exclude]
         # bool(required): an exclude set that covers every returned gate leaves
         # required=[] and all([])==True would unlock the speedup reward with zero
-        # checks — a vacuous pass on the "speedup pays only after contracts" invariant.
+        # checks: a vacuous pass on the "speedup pays only after contracts" invariant.
         contracts_passed = bool(required) and all(results[name].passed for name in required)
         gates = {
             name: {"passed": r.passed, "reason": "" if r.passed else _trunc(r.reason, 200)}
@@ -483,7 +483,7 @@ def _gate_and_reward(
             bug_routing = op_bench.bug_routing_active(op_name, device)
         else:
             # Value-incorrect at the bench width the gates don't reach (they cap
-            # d_model at 64): a real correctness failure, not "not faster" — demote
+            # d_model at 64): a real correctness failure, not "not faster", demote
             # to the contract-fail reward so no speedup credit is paid.
             contracts_passed = False
             first_failed_view = "bench_shape_correctness"
@@ -537,9 +537,9 @@ def score_candidate_source(
     """Score one candidate source in an isolated subprocess (parent-side API).
 
     Sandbox-level failures (hangs, segfaults, CUDA context kills) normalize
-    to reward 0.0 — a kernel that takes the process down cannot earn the
+    to reward 0.0: a kernel that takes the process down cannot earn the
     contract-failure floor. ``shape`` (batch, seq_len, width) pins the speedup
-    bench shape — the lever the edit-RL track is rewarded on, since the shipped
+    bench shape, the lever the edit-RL track is rewarded on, since the shipped
     default is optimal only near the training shape; ``None`` keeps op_bench's
     default shape. ``extra_env`` pins the sandbox (e.g. ``CUDA_VISIBLE_DEVICES``)
     for multi-GPU scoring workers.
@@ -614,7 +614,7 @@ def score_config_worker(
 ) -> dict[str, Any]:
     """Subprocess body for config scoring: build the configured trusted op, gate it, score it.
 
-    stdout is swapped to stderr for the duration — the sandbox marshals the
+    stdout is swapped to stderr for the duration; the sandbox marshals the
     return value as pickled stdout and a kernel printf would corrupt it (the
     ``score_source_worker`` convention).
     """
@@ -641,16 +641,16 @@ def score_candidate_config(
 ) -> dict[str, Any]:
     """Score one ``KernelConfig`` applied to the trusted in-repo op, in a subprocess.
 
-    Unlike :func:`score_candidate_source`, there is no generated source — the
+    Unlike :func:`score_candidate_source`, there is no generated source: the
     config is bound into the already-correct kernel via
-    :func:`lethe.kernels.autotune.make_configured_op` — so the
+    :func:`lethe.kernels.autotune.make_configured_op`, so the
     AST/oracle screens do not run (nothing to game). The subprocess still
     isolates OOM / ptxas-ICE / timeout, which normalise to reward 0.0; an
     out-of-grid or shape-incompatible config scores the ``invalid_config`` 0.0.
-    ``shape`` (a ``ShapeSpec``) sets the speedup bench shape — this is the lever
+    ``shape`` (a ``ShapeSpec``) sets the speedup bench shape, this is the lever
     the autotuner is rewarded on, since the shipped default is optimal only near
     the training shape; ``None`` uses op_bench's default shape. Only
-    ``(batch, seq_len, width)`` reach the bench — ``ShapeSpec.n_state`` is NOT
+    ``(batch, seq_len, width)`` reach the bench, ``ShapeSpec.n_state`` is NOT
     consumed here (each op's state dim is fixed by its harness aux builder), so a
     non-None ``n_state`` is silently ignored by scoring.
     """

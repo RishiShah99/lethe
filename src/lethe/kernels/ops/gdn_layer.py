@@ -1,4 +1,4 @@
-"""GDN-2 autograd Function and public op — bridge between nn.Module and the native backward.
+"""GDN-2 autograd Function and public op, the bridge between nn.Module and the native backward.
 
 Dispatch contract: forward runs ``reference_gdn2_forward`` (token-serial oracle, no
 gradient tracking on the forward side); backward calls ``gdn2_backward``, which routes
@@ -8,7 +8,7 @@ ctx fields.
 
 Public surface: ``gdn2_op(q, k, v, g, b, w, ...)`` -> ``o`` [B, L, H, d_v].  Shape
 conventions mirror ``reference_gdn2_forward``; supported dtypes are fp32, fp64, fp16, bf16
-(half dtypes are accepted — the backward op handles upcasting).
+(half dtypes are accepted, the backward op handles upcasting).
 """
 
 from __future__ import annotations
@@ -36,16 +36,16 @@ class _GDN2Function(torch.autograd.Function):
         scale: float | None,
         use_qk_l2norm: bool,
     ) -> Tensor:
-        # Forward must not participate in the backward graph — evaluate in fp32/fp64
+        # Forward must not participate in the backward graph, evaluate in fp32/fp64
         # so the forward implementations (which reject half) can run; save originals.
         compute_dtype = torch.float64 if q.dtype == torch.float64 else torch.float32
         ctx.fwd_stash = None
         with torch.no_grad():
             if os.environ.get("FMR_SAVE_FWD"):
-                # Lever 2b (the fla move): run the chunkwise forward and keep its
-                # chunk-local intermediates so the backward skips the restage. The
-                # 1.07 GB decay_rel stash is dropped — holding it across fwd->bwd
-                # costs more than the one rebuild the closed stage B does.
+                # Run the chunkwise forward and keep its chunk-local intermediates
+                # so the backward skips the restage. The decay_rel stash is dropped
+                # afterward, holding it across fwd->bwd costs more than the one
+                # rebuild the closed stage B does.
                 from lethe.kernels.cute.gdn2_assemble import pick_chunk_len
                 from lethe.kernels.references.gdn2_chunkwise_cw import (
                     chunkwise_restage_cw,
@@ -86,7 +86,7 @@ class _GDN2Function(torch.autograd.Function):
         q, k, v, g, b, w = ctx.saved_tensors
         # Function.backward runs with grad mode disabled; the native assembly's
         # supporting stages take autograd VJPs internally (stage B, L2-norm), so
-        # they need grad mode on — the eager path enables it itself, the native
+        # they need grad mode on. The eager path enables it itself, the native
         # path must inherit it from here.
         with torch.enable_grad():
             grads = gdn2_backward(
@@ -129,13 +129,13 @@ def gdn2_op(
 
     Args
     ----
-    q, k, g, b : (batch, seqlen, nheads, d_k)  — query, key, log-decay, erase gate
-    v, w       : (batch, seqlen, nheads, d_v)  — value, write gate
+    q, k, g, b : (batch, seqlen, nheads, d_k), query, key, log-decay, erase gate
+    v, w       : (batch, seqlen, nheads, d_v), value, write gate
     scale      : query scale (defaults to ``d_k ** -0.5``)
     use_qk_l2norm : whether to L2-normalise q/k before the scan
 
     Returns
     -------
-    o : (batch, seqlen, nheads, d_v) — same dtype as inputs
+    o : (batch, seqlen, nheads, d_v), same dtype as inputs
     """
     return cast(Tensor, _GDN2Function.apply(q, k, v, g, b, w, scale, use_qk_l2norm))  # type: ignore[no-untyped-call]

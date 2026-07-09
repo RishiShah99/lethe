@@ -6,18 +6,18 @@ the standalone ``angle_dt`` cumsum; the full-sequence training path runs
 through the compiled TileLang artifact with the fused MIMO semantics.
 The comparator set is therefore:
 
-- ``ours_triton``       — this repo's fused rotary scan (C4): angle
+- ``ours_triton``: this repo's fused rotary scan (C4): angle
   accumulation + rotation + decay scan in one kernel, nothing staged
   through HBM
-- ``reference_loop``    — the Python-loop oracle (small shapes; the only
+- ``reference_loop``: the Python-loop oracle (small shapes; the only
   other implementation of this op anywhere)
 
 Plus the #904-contrast artifact carried over from C2/C3:
 ``num_warps_sweep`` compiles and times the kernel at num_warps 2/4/8 with
-per-specialisation ptxas resources — no ``tl.dot``, so the sweep
+per-specialisation ptxas resources: no ``tl.dot``, so the sweep
 succeeding on sm_100 is the claim, recorded with evidence.
 
-Usage (on the box): ``uv run python -m
+Usage: ``uv run python -m
 lethe.bench.c4_complex_scan_rope --out ~/out/c4_bench.json``
 (add ``--quick`` for a fast smoke pass).
 """
@@ -71,7 +71,7 @@ SHAPES = [
     ShapeSpec(8, 2048, 32, 64, 128, 64),  # training shape, full rotary
     ShapeSpec(8, 2048, 32, 64, 128, 16),  # partial rotary (32 of 128 lanes)
     ShapeSpec(8, 4096, 32, 64, 128, 64),
-    ShapeSpec(2, 16384, 32, 64, 128, 64),  # long-sequence story
+    ShapeSpec(2, 16384, 32, 64, 128, 64),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 256, 4, 16, 32, 16), ShapeSpec(4, 2048, 16, 64, 128, 64)]
 

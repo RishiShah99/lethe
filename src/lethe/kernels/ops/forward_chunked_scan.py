@@ -1,4 +1,4 @@
-"""C1 — hand-written SISO selective-scan forward.
+"""C1, hand-written SISO selective-scan forward.
 
 Drop-in for ``reference_forward_chunked_scan`` with the same signature and
 semantics, widened to more dtypes and devices:
@@ -16,7 +16,7 @@ semantics, widened to more dtypes and devices:
 Deviations from the reference: the reference rejects non-fp32 inputs; this
 op defines the mixed-precision contract instead (compute in fp32, round
 once on store). ``chunk_size`` is validated identically but is a blocking
-hint only — the scan result does not depend on it.
+hint only, the scan result does not depend on it.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _chunk_parallel_bwd_scratch_bytes(
     all chunks at once. This mirrors the default block sizing in
     _triton_chunk_parallel_bwd and _triton_chunk_parallel_fused_bwd; a
     config.block_d override or the fused launcher's narrower block_d can pad
-    the true allocation by at most one block_d remainder per d-block — exact
+    the true allocation by at most one block_d remainder per d-block, exact
     for every width where block_d divides d_model.
     """
     block_n = _next_power_of_2(n_state)
@@ -106,11 +106,11 @@ def _default_scan_mode(
 ) -> str:
     """Launch-default scan mode for a shape, consulted only when scan_mode is unset.
 
-    Calibrated to the broad boundary sweep (``results/scan_mode_boundary.json``,
-    178 shapes x 3 SISO ops, best-tuned-vs-best-tuned through the verifier):
-    chunk_parallel is the global optimum (geomean ~2.2x over the serial default)
-    EXCEPT in the saturated short-sequence corner, where the O(seq_len/chunk_len)
-    carry cannot amortise against an already SM-saturated device. Serial there,
+    Calibrated to a broad boundary sweep (178 shapes x 3 SISO ops,
+    best-tuned-vs-best-tuned through the verifier): chunk_parallel is the
+    global optimum (geomean ~2.2x over the serial default) EXCEPT in the
+    saturated short-sequence corner, where the O(seq_len/chunk_len) carry
+    cannot amortise against an already SM-saturated device. Serial there,
     chunk_parallel otherwise; an explicit ``config.scan_mode`` overrides this so
     the autotuner/config-RL still drives the choice. ``is_forward`` adds the
     forward op's extra serial preference at every short L (the forward kernel is
@@ -123,7 +123,7 @@ def _default_scan_mode(
     checks whether the chunk-parallel backward scratch buffer would exceed 70%
     of GPU memory on ``device`` (the same bound the guard uses) and whether
     ``n_state`` exceeds the launchers' hard block cap. Either way it falls back
-    to serial — routing to a mode whose guard would raise is a bug (CMP-05).
+    to serial, routing to a mode whose guard would raise is a bug (CMP-05).
     """
     if is_forward and seq_len <= 512:
         return "serial"
@@ -195,7 +195,7 @@ class _ForwardScanCuda(torch.autograd.Function):
 
     First-order only: the Triton backward returns plain tensors with no
     graph, so double-backward (HVPs, gradient penalties) through the CUDA
-    path is unsupported — route through the eager path (CPU or fp64) when
+    path is unsupported, route through the eager path (CPU or fp64) when
     higher-order gradients are needed.
     """
 
@@ -295,8 +295,8 @@ def triton_scan_resource_meta(config: KernelConfig | None = None) -> dict[str, i
 
     Must match ``_ForwardScanCuda.forward``'s dispatch: an explicit
     ``scan_mode`` audits exactly that kernel, but when ``scan_mode`` is unset the
-    dispatch resolves the mode by *shape* (``_resolve_scan_mode``) — either kernel
-    can run — so the audit returns the max envelope over both, never the serial one
+    dispatch resolves the mode by *shape* (``_resolve_scan_mode``), either kernel
+    can run, so the audit returns the max envelope over both, never the serial one
     alone. Mirrors ``backward_selective_scan.triton_bwd_scan_resource_meta``.
     """
     if not _triton_usable():

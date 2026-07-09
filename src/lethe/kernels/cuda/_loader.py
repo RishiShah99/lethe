@@ -4,7 +4,7 @@ Centralises two things every kernel here needs: the CCCL include path that
 CUDA 13 relocated (``<cuda>/include/cccl``; nvcc does not add it to the default
 search path, so ``#include <cub/...>`` fails without an explicit ``-I``), and a
 single cached compile so repeated launches reuse one ``.so``. The compile
-itself is deferred to first call — importing this module never needs nvcc, so
+itself is deferred to first call, importing this module never needs nvcc, so
 the package imports cleanly on a CPU-only dev box (the quality gates run there).
 """
 
@@ -43,7 +43,7 @@ def load_scan_extension() -> Any:
         # No --use_fast_math: it flushes denormals (-ftz) and swaps in
         # approximate exp, which splits the EXC-01 NaN/Inf masks the verifier
         # checks (the C1 libdevice-vs-ex2.approx lesson). Optimisation (exp2,
-        # float4) is applied explicitly per-kernel at Inc 4, not blanket.
+        # float4) is applied explicitly per-kernel, not blanket.
         extra_cuda_cflags=["-O3", *_cccl_include_flags()],
         verbose=False,
     )

@@ -1,11 +1,10 @@
 """Audit harness: foreign KernelBench-convention kernel pairs through the contract gates.
 
-The rigor-gap audit (PLAN.md "Phase C-parallel") runs kernels released by
-public RL kernel-generation systems through the same contract gates that
-score this project's own kernels. Corpus rows follow the KernelBench
-convention: a reference module ``Model`` with ``get_inputs()`` /
-``get_init_inputs()``, and a candidate module ``ModelNew`` with the same
-constructor and forward signature.
+The rigor-gap audit runs kernels released by public RL kernel-generation
+systems through the same contract gates that score this project's own
+kernels. Corpus rows follow the KernelBench convention: a reference module
+``Model`` with ``get_inputs()`` / ``get_init_inputs()``, and a candidate
+module ``ModelNew`` with the same constructor and forward signature.
 
 Fairness rules (these decide what counts as a finding, so they are the
 load-bearing part of this module):
@@ -13,7 +12,7 @@ load-bearing part of this module):
 - **Reference applicability.** Every gate input is consumed by the reference
   first. If the *reference* cannot run an input (a shape variant a
   fixed-weight task cannot accept, a dtype torch refuses), the check is
-  not-applicable — never a candidate failure. The reference adapter
+  not-applicable, never a candidate failure. The reference adapter
   surfaces any reference-side exception with a marker token the status
   classifier partitions on.
 - **Claimed-scope split.** CMP-02 (gradcheck) and RES-02 (resource metadata)
@@ -26,7 +25,7 @@ load-bearing part of this module):
 - **Mixed-precision convention** (the op-harness contract, applied
   generically): for half-dtype *inputs* (PRC-01) the reference stays fp32
   but consumes parameters and auxiliary inputs round-tripped through the
-  half dtype, and rounds its output once — the candidate is charged only
+  half dtype, and rounds its output once; the candidate is charged only
   for its own compute precision. PRC-02's fp32 reference call consumes
   pristine fp32 operands by gate design; its 2e-2·scale budget sits >20x
   above the fp16 parameter-rounding floor, which covers the asymmetry.
@@ -65,9 +64,9 @@ AUDIT_SEED = 1337
 # Reference-inapplicable sentinel: prepended by the reference adapter (and only
 # there) when the *reference* cannot consume an input, so that failure is scored
 # as skipped coverage, not a candidate failure. The trailing nonce makes the
-# token collision/forgery-resistant — a foreign candidate cannot get its own real
-# failure reclassified as "skipped" by emitting the marker substring in its
-# exception text (H4 hardening). The audit aggregation is unchanged: the token is
+# token collision/forgery-resistant, so a foreign candidate cannot get its own
+# real failure reclassified as "skipped" by emitting the marker substring in
+# its exception text. The audit aggregation is unchanged: the token is
 # still produced only at the single site below and matched the same way.
 _RI_MARKER = "[ref-inapplicable::fmr-ri-9e3779b97f4a7c15]"
 
@@ -111,7 +110,7 @@ def _trunc(obj: Any, limit: int = 300) -> str:
 
 def _exec_source(source: str, required: str) -> dict[str, Any]:
     # @triton.jit refuses functions without a real source file (inspect-based
-    # tracing), and the lazy PTX compile re-reads it during gating — so the
+    # tracing), and the lazy PTX compile re-reads it during gating, so the
     # source goes to a temp .py imported by path and the file stays alive for
     # the worker's lifetime (one short-lived sandbox subprocess per row).
     fd, path = tempfile.mkstemp(suffix=".py", prefix=f"audit_{required.lower()}_")
@@ -272,7 +271,7 @@ def _gate_status(name: str, result: GateResult, n_checks: int | None) -> dict[st
 
     The reference adapter runs before the candidate inside every gate check,
     so a failure entry carrying the marker means the *reference* could not
-    consume that input — skipped coverage, not a candidate failure. A gate
+    consume that input, skipped coverage, not a candidate failure. A gate
     whose every check was skipped is "na"; one with surviving real failures
     is "fail"; otherwise the remaining checks passed.
     """
@@ -326,7 +325,7 @@ def audit_worker(ref_source: str, cand_source: str, config: dict[str, Any]) -> d
 
     The sandbox marshals this function's return value as pickled stdout, so
     candidate prints (exec-time banners, autotune chatter) would corrupt the
-    channel — stdout is swapped to stderr for the body's duration.
+    channel, so stdout is swapped to stderr for the body's duration.
     """
     real_stdout = sys.stdout
     sys.stdout = sys.stderr

@@ -3,17 +3,17 @@
 // The SSM recurrence h_t = a_t * h_{t-1} + b_t is a linear (first-order)
 // recurrence, so it scans under the monoid op((a0,b0),(a1,b1)) =
 // (a1*a0, a1*b0 + b1) with (a1,b1) the newer element. cub::BlockScan runs
-// that scan across the L axis as an O(log L) warp-shuffle prefix scan — the
+// that scan across the L axis as an O(log L) warp-shuffle prefix scan, the
 // engine the fast official Mamba-1 backward uses, and the reason this beats a
 // serial-L walk. No tl.dot / mma / tensor cores anywhere: cub::BlockScan is
 // pure __shfl, so this is #904-safe by construction.
 //
-// Inc 1 (this file's forward): correct first. One block per (batch, d_model);
-// the block owns the L axis (chunked over blockDim, a running prefix carried
-// in shared memory per state index n) and loops the d_state axis n serially.
-// That serial-n loop is the N=128 bottleneck the 2-D decomposition (Inc 2)
-// removes; here it is the simplest correct structure to de-risk the build,
-// the scan primitive, and parity vs reference_forward_chunked_scan.
+// The basic forward below prioritises correctness: one block per (batch,
+// d_model); the block owns the L axis (chunked over blockDim, a running
+// prefix carried in shared memory per state index n) and loops the d_state
+// axis n serially. That serial-n loop is the N=128 bottleneck the 2-D
+// decomposition below removes; here it is the simplest correct structure to
+// validate the scan primitive and parity vs reference_forward_chunked_scan.
 //
 // All math is fp32. softplus and exp match the references (softplus identity
 // above 20; plain expf, no fast-math approximation) so the verifier's
@@ -108,16 +108,16 @@ __global__ void forward_scan_kernel(const float *__restrict__ u,      // [B,L,D]
   }
 }
 
-// ---- Inc 2: the 2-D decomposition (the N=128 win) -------------------------
+// ---- The 2-D decomposition (the N=128 win) ---------------------------------
 //
-// Inc 1 loops d_state serially, so its cost scales with N — fine at N=16,
-// the bottleneck at Mamba-3's N=128. Here the block is (32, W): the 32 lanes
-// own a 32-step L-chunk (warp-shuffle scan, carry across chunks per state),
-// and the W warps split the d_state axis (warp w owns n = w, w+W, ...). The
-// y_t = sum_n h_t[n]*C_t[n] contraction becomes a cross-warp reduction over
-// the W warps for each lane. Parallel over BOTH L and d_state — neither the
-// Mamba-1 CUDA backward (serial d_state) nor the Triton kernels (serial L) do
-// this; it is the genuine contribution. Still pure __shfl: #904-safe.
+// The basic forward above loops d_state serially, so its cost scales with N,
+// fine at N=16, the bottleneck at Mamba-3's N=128. Here the block is (32, W):
+// the 32 lanes own a 32-step L-chunk (warp-shuffle scan, carry across chunks
+// per state), and the W warps split the d_state axis (warp w owns n = w,
+// w+W, ...). The y_t = sum_n h_t[n]*C_t[n] contraction becomes a cross-warp
+// reduction over the W warps for each lane. Parallel over BOTH L and
+// d_state: neither the Mamba-1 CUDA backward (serial d_state) nor the Triton
+// kernels (serial L) do this. Still pure __shfl: #904-safe.
 
 __device__ __forceinline__ float warp_inclusive_ssm(float a, float b, float2 &carry, int lane) {
   // Inclusive Kogge-Stone scan of (a,b) across the 32 lanes under the SSM
@@ -200,16 +200,17 @@ __global__ void forward_scan_2d_kernel(const float *__restrict__ u,      // [B,L
   }
 }
 
-// ---- Inc 2b: the efficient forward (d-major layout, kNItems time-tiling) --
+// ---- The efficient forward (d-major layout, kNItems time-tiling) ----------
 //
-// Measurement (Inc 1/2) showed the N=128 cost is NOT d_state serialisation but
-// (a) the [B,L,D] layout — a d-fixed L-scan reads u/delta strided by D — and
-// (b) one timestep per thread (too many block-scans + syncs). This kernel is
-// the official structure, owned line-by-line: inputs are d-major [B,D,L] /
-// [B,N,L] (the launcher transposes), so loads coalesce; each thread owns
-// kNItems consecutive timesteps via cub::BlockLoad (WARP_TRANSPOSE), does a
-// thread-local serial scan, and a single block-scan over the per-thread
-// aggregates carries the prefix — so the block-scan count drops by kNItems.
+// Measurement of the two kernels above showed the N=128 cost is NOT d_state
+// serialisation but (a) the [B,L,D] layout, a d-fixed L-scan reads u/delta
+// strided by D, and (b) one timestep per thread (too many block-scans +
+// syncs). This kernel is the official structure, owned line-by-line: inputs
+// are d-major [B,D,L] / [B,N,L] (the launcher transposes), so loads
+// coalesce; each thread owns kNItems consecutive timesteps via
+// cub::BlockLoad (WARP_TRANSPOSE), does a thread-local serial scan, and a
+// single block-scan over the per-thread aggregates carries the prefix, so
+// the block-scan count drops by kNItems.
 // d_state stays serial (the official does too, and it is not the bottleneck).
 // Still no tl.dot / mma: cub scan is pure __shfl. #904-safe.
 
@@ -308,18 +309,19 @@ __global__ void forward_scan_tiled_kernel(const float *__restrict__ u,      // [
   }
 }
 
-// ---- Inc 3: the backward (the target) ------------------------------------
+// ---- The backward -----------------------------------------------------------
 //
 // Six grads (u, delta, A, B, C, D) from the forward state h (fwd scan) and the
-// adjoint g (reverse scan), fused so h is never materialised over all of L (the
-// 34 GB hbuf the plan forbids). Structure, owned line-by-line, informed by the
-// official Mamba-1 backward + the Triton kernel _triton_bwd_scan.py:
+// adjoint g (reverse scan), fused so h is never materialised over all of L
+// (a full materialisation would cost ~34 GB of hbuf). Structure, owned
+// line-by-line, informed by the official Mamba-1 backward + the Triton
+// kernel _triton_bwd_scan.py:
 //
 //   * One block per (batch, d_block of kBlockD rows). grad_B/grad_C sum over D,
-//     so d MUST be tiled — atomics are forbidden (ORD-02) and per-single-d
+//     so d MUST be tiled: atomics are forbidden (ORD-02) and per-single-d
 //     partials would be terabytes; the kBlockD rows reduce in-block and the
 //     [B, D/kBlockD, N, L] partials reduce by a deterministic torch.sum.
-//   * L is parallelised (kNItems time-tiling) — the point over the serial-L
+//   * L is parallelised (kNItems time-tiling), the point over the serial-L
 //     Triton kernel. Forward recompute is an inclusive cub scan; the adjoint
 //     g_t = dy_t*C_t + abar_{t+1} g_{t+1} is a REVERSE scan, done as a cub
 //     ExclusiveScan over shared-reversed thread aggregates (the custom reverse
@@ -370,7 +372,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
   __shared__ float2 ag_carry[kBlockD * kMaxN];  // phase-2 reverse carry per (row,n)
   __shared__ float ga_sh[kBlockD * kMaxN];      // grad_A accum per (row,n)
   __shared__ float gd_sh[kBlockD];              // grad_D accum per row
-  // grad_u / grad_delta accumulators (sum over n) are kBlockD*kChunk each — too
+  // grad_u / grad_delta accumulators (sum over n) are kBlockD*kChunk each, too
   // large for the 48 KB static limit, so they live in opt-in dynamic shared
   // (the launcher raises MaxDynamicSharedMemorySize and passes the byte count).
   extern __shared__ float dyn_smem[];

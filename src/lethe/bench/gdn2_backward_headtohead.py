@@ -1,34 +1,33 @@
-"""Phase 4 bench: the native channel-wise GDN-2 backward vs fla / cuLA Triton on B200.
+"""Bench: the native channel-wise GDN-2 backward vs fla / cuLA Triton on B200.
 
 Honest wall-clock of OUR native channel-wise GDN-2 training backward against the
 existing open kernels, at matched ``(B, L, H)`` with d_k = d_v = 128, C = 64.
 
 What each side measures (read before quoting a ratio):
 
-- ``ours_native_cw`` — ``native_gdn2_backward`` in the channel-wise regime: the assembled
+- ``ours_native_cw``: ``native_gdn2_backward`` in the channel-wise regime: the assembled
   tcgen05 K#1 + K#2 producing all six per-channel grads. This is the **host-orchestrated**
   form (a Python per-chunk loop launching the proven (128,64,128) GEMMs, each followed by a
-  ``cuda.synchronize``); it is launch-bound, NOT a fused kernel. inc-B2/inc-C (the in-kernel
-  fused reverse loop + TMEM residency) are the fusion levers that close the gap — this bench
-  is the pre-fusion baseline that quantifies it. ours also re-stages the chunkwise forward
-  inside the call (conservative against us), whereas the fla/cuLA backward reuses its
-  forward-saved activations.
-- ``fla_scalar`` — fla ``chunk_gated_delta_rule`` backward via ``autograd.grad`` (forward run
-  once outside the timed region). This is the closest existing FUSED Triton kernel — its
+  ``cuda.synchronize``); it is launch-bound, NOT a fused kernel. An in-kernel fused reverse
+  loop with TMEM residency would close the gap; this bench is the pre-fusion baseline that
+  quantifies it. ours also re-stages the chunkwise forward inside the call (conservative
+  against us), whereas the fla/cuLA backward reuses its forward-saved activations.
+- ``fla_scalar``: fla ``chunk_gated_delta_rule`` backward via ``autograd.grad`` (forward run
+  once outside the timed region). This is the closest existing FUSED Triton kernel, its
   reverse-state ``dhu`` kernel is exactly the one our K#1 replaces. It runs the **scalar**
   gate (g per token, b = w = beta), so it does materially LESS work than our channel-wise op;
   the comparison is "our channel-wise native backward vs the fla scalar fused backward at the
-  same shape", not a FLOP-matched race. The claim of this project is correctness + a native
-  channel-wise backward where none existed, NOT fastest (PROJECT_PLAN §0).
-- ``cula`` — best-effort: cuLA's chunked gated-delta backward if importable on the box
-  (a mostly-native B200 backward). Recorded as a skip when absent, never fabricated.
+  same shape", not a FLOP-matched race. The claim here is correctness plus a native
+  channel-wise backward where none existed, not fastest.
+- ``cula``: best-effort: cuLA's chunked gated-delta backward if importable in the
+  environment (a mostly-native B200 backward). Recorded as a skip when absent, never
+  fabricated.
 
-CUDA-event timed, median over trials (``verifier.timing.benchmark``). Off-box / without the
-kernels every GPU row is a recorded skip; ``--ref-candidate`` times the eager channel-wise
-refs (harness/shape sanity on CPU, NOT a meaningful number).
+CUDA-event timed, median over trials (``verifier.timing.benchmark``). Without CUDA or
+without the kernels installed, every GPU row is a recorded skip; ``--ref-candidate``
+times the eager channel-wise refs (harness/shape sanity on CPU, not a meaningful number).
 
-    PYTHONPATH=$PWD/src:$PWD ~/cuteenv/bin/python -m lethe.bench.gdn2_backward_headtohead \
-        --out results/gdn2_bench_cw.json
+Usage: ``uv run python -m lethe.bench.gdn2_backward_headtohead``
 """
 
 from __future__ import annotations
@@ -63,7 +62,7 @@ class ShapeSpec:
         return f"B{self.batch}xL{self.seq_len}xH{self.nheads}xD{D_K}"
 
 
-# d_k = d_v = 128 (crown), seq_len % 64 == 0. ours is host-orchestrated (launch-bound), so the
+# d_k = d_v = 128, seq_len % 64 == 0. ours is host-orchestrated (launch-bound), so the
 # headline shapes stay modest; the long-L row shows the per-chunk-loop scaling.
 SHAPES = [
     ShapeSpec(1, 512, 4),
@@ -121,7 +120,7 @@ def _bench_ours(
         return out
 
     # ours is host-orchestrated (tens of seconds/pass): the first call JITs the cutlass kernels,
-    # so one warmup post-JIT is enough and trials stay low (std is sub-1% — see results JSON).
+    # so one warmup post-JIT is enough and trials stay low (std is sub-1%).
     run()  # sanity / JIT / warm
     res: dict[str, Any] = _time(run, warmup=1, trials=trials)
     res["note"] = "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
@@ -212,7 +211,7 @@ def _run_shape(
     skipped: dict[str, str] = row["skipped"]
 
     # ours is host-orchestrated and costs tens of seconds/pass (it scales with NT = seq_len/chunk),
-    # so by default time it only on the small shapes — the pre-fusion gap is identical in kind at every
+    # so by default time it only on the small shapes; the pre-fusion gap is identical in kind at every
     # size; the fla reference curve still runs on all shapes. Raise --ours-max-seqlen to time them all.
     if spec.seq_len <= ours_max_seqlen:
         try:
@@ -265,7 +264,7 @@ def main() -> None:
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _orig_is_available = gdn2_native.is_available
     if dev.type == "cuda" and not cli.ref_candidate:
-        gdn2_native.is_available = lambda device=None: True  # lift the box gate for this run
+        gdn2_native.is_available = lambda device=None: True  # lift the hardware-availability gate
     try:
         dtype = torch.bfloat16 if dev.type == "cuda" and not cli.ref_candidate else torch.float32
 
@@ -308,8 +307,8 @@ def main() -> None:
                     cli.ours_max_seqlen,
                 )
             )
-            # write after every shape: ours is host-orchestrated (slow) and the box is spot,
-            # so a partial artifact must survive a preemption or an early stop.
+            # write after every shape: ours is host-orchestrated (slow) and the GPU may be
+            # a spot instance, so a partial artifact must survive a preemption or an early stop.
             cli.out.write_text(json.dumps(report, indent=2))
             if dev.type == "cuda":
                 torch.cuda.empty_cache()

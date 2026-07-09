@@ -1,9 +1,9 @@
-"""Python entry point for the CUDA forward selective scan (Inc 1).
+"""Python entry points for the CUDA forward selective scan.
 
 Mirrors ``reference_forward_chunked_scan`` semantics for fp32 CUDA tensors;
 the extension is compiled on first call (see ``_loader``). Mixed precision and
-the public-op dispatch wiring come with the later increments — this entry is
-the parity-checkable de-risk of the scan primitive + build + wrapper.
+the public-op dispatch wiring are not wired up yet; these entries are the
+parity-checkable scan primitive plus its build and wrapper.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def cuda_forward_scan_2d(
     """2-D forward scan (warps split d_state). fp32 CUDA inputs only.
 
     Same semantics as :func:`cuda_forward_scan`; ``warps`` (4/8/16/32) is the
-    d_state-parallelism knob benched at Inc 2.
+    d_state-parallelism knob.
     """
     if not u.is_cuda:
         raise ValueError("cuda_forward_scan_2d requires CUDA tensors")

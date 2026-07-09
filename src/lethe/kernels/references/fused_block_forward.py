@@ -6,7 +6,7 @@ Implements the full Mamba block as a composition of:
   3. Selective SSM scan  (reuses reference_forward_chunked_scan)
   4. RMSNorm
 
-No fusion, no Triton — correctness oracle only.
+No fusion, no Triton; correctness oracle only.
 
 Reference: Mamba-3 (Lahoti, Li, et al., ICLR 2026), building on
 Mamba-1 (Gu & Dao, ICLR 2024, arXiv:2312.00752).
@@ -49,7 +49,7 @@ def reference_fused_block_forward(
     Pipeline
     --------
     1. Causal depthwise conv1d over the sequence dimension (groups = D,
-       kernel ``conv_kernel_size``, no padding inserted here — caller must
+       kernel ``conv_kernel_size``, no padding inserted here; caller must
        pre-pad or pass ``x`` with causal left-padding of
        ``conv_kernel_size - 1`` zeros along L).
     2. SiLU activation applied element-wise.
@@ -59,7 +59,7 @@ def reference_fused_block_forward(
     Args:
         x:               Input, shape [B, L, D], float32.  Should carry
                          ``conv_kernel_size - 1`` left-padding in L if causal
-                         masking is needed — this function does NOT pad.
+                         masking is needed; this function does NOT pad.
         conv_weight:     Depthwise conv kernel, shape [D, 1, conv_kernel_size],
                          float32.
         conv_bias:       Depthwise conv bias, shape [D], float32.
@@ -88,7 +88,7 @@ def reference_fused_block_forward(
     _batch, _seq_len, d_model = x.shape
     # Depthwise (groups=D) conv requires x channels == D. torch would instead
     # silently reinterpret a mismatch as a grouped conv (upweighting the
-    # channels) — not this block's math — so reject it, matching the
+    # channels), not this block's math, so reject it, matching the
     # channel-rigid contract the sibling references raise on structurally.
     if d_model != conv_weight.shape[0]:
         raise ValueError(

@@ -4,12 +4,12 @@ A GRPO step produces K candidate sources that are independent to score;
 this farms them across a set of scoring GPUs. Each worker thread leases
 one GPU id from a queue, runs the regular sandboxed
 ``score_candidate_source`` with ``CUDA_VISIBLE_DEVICES`` overridden to
-that id (absolute — the override replaces any parent mask), and returns
+that id (absolute: the override replaces any parent mask), and returns
 the id to the pool. Inside the sandbox the device is therefore always
 ``cuda:0`` regardless of which physical GPU it landed on, so ``device``
 stays ``"cuda"``.
 
-Threads only marshal subprocess I/O — the GIL is irrelevant; concurrency
+Threads only marshal subprocess I/O: the GIL is irrelevant; concurrency
 equals ``len(gpu_ids) * workers_per_gpu``. ``workers_per_gpu`` defaults
 to 1: a scoring sandbox owns its GPU's memory while a candidate runs,
 and two candidates sharing a device would perturb each other's timings
@@ -88,11 +88,11 @@ class ParallelScorer:
 
 @dataclass
 class ParallelConfigScorer:
-    """Batch scorer over scoring GPUs for the E2.c config track.
+    """Batch scorer over scoring GPUs for the config-emission track.
 
     Mirrors :class:`ParallelScorer`, but each candidate is a ``KernelConfig``
     JSON applied to the trusted kernel (:func:`score_config_candidate`) and
-    timed at a fixed target ``shape`` — the field the source path lacks. Config
+    timed at a fixed target ``shape``, the field the source path lacks. Config
     generation is tiny, so scoring (a full gate battery + the speedup bench per
     candidate) is the step's bottleneck; this farms the K configs across GPUs.
     """
@@ -149,7 +149,7 @@ class ParallelConfigScorer:
 
 @dataclass
 class ParallelEditScorer:
-    """Batch scorer over scoring GPUs for the E2.f edit track.
+    """Batch scorer over scoring GPUs for the edit-emission track.
 
     Mirrors :class:`ParallelConfigScorer`, but each candidate is a SEARCH/REPLACE
     edit applied to the ``base_variant`` kernel source and graded through the

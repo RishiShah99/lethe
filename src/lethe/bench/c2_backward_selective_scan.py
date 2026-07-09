@@ -3,29 +3,28 @@
 Comparators per (shape, dtype), each skipped with a recorded reason when
 infeasible:
 
-- ``ours_triton``       — this repo's hand-written backward kernel (C2)
-- ``official_cuda_bwd`` — VJP through ``mamba_ssm`` ``selective_scan_fn``
-  (the Mamba-1 CUDA backward — healthy on Blackwell, unlike the Mamba-3
+- ``ours_triton``: this repo's hand-written backward kernel (C2)
+- ``official_cuda_bwd``: VJP through ``mamba_ssm`` ``selective_scan_fn``
+  (the Mamba-1 CUDA backward, healthy on Blackwell, unlike the Mamba-3
   Triton backward this op replaces; timed via ``torch.autograd.grad`` with
   ``retain_graph``, so the number includes autograd dispatch like ours
   includes launcher reductions). The comparison is conservative against
   us: the official forward runs once outside the timed region, so its
   timed backward reuses forward-saved activations, while every timed call
-  of ours pays the full Phase-1 forward recompute in-kernel — the price
-  of an activation-free backward.
-- ``official_eager_bwd`` — VJP through ``selective_scan_ref`` (vectorised
+  of ours pays the full forward recompute in-kernel, the price of an
+  activation-free backward.
+- ``official_eager_bwd``: VJP through ``selective_scan_ref`` (vectorised
   torch eager; materialises [B, D, L, N] *and* its graph, so memory-gated)
-- ``reference_loop_bwd`` — our Python-loop oracle's autograd (small shapes)
+- ``reference_loop_bwd``: our Python-loop oracle's autograd (small shapes)
 
 Plus the #904 contrast artifact: ``num_warps_sweep`` compiles and times our
 kernel at num_warps 2/4/8 and records per-specialisation ptxas resources
 (regs/spills/smem). The official Mamba-3 Triton backward fails to compile
-at every num_warps >= 4 config on sm_100 (TMEM budget, see
-docs/904_reproducer.md and results/repro_904_report.json); ours has no
+at every num_warps >= 4 config on sm_100 (TMEM budget); ours has no
 tl.dot for the TMEM-promotion pass to touch, so the sweep succeeding *is*
 the claim, recorded with the evidence.
 
-Usage (on the box): ``uv run python -m
+Usage: ``uv run python -m
 lethe.bench.c2_backward_selective_scan --out ~/out/c2_bench.json``
 (add ``--quick`` for a fast smoke pass).
 """
@@ -89,7 +88,7 @@ SHAPES = [
     ShapeSpec(8, 2048, 4096, 16),  # Mamba-1.4B-ish layer at training length
     ShapeSpec(8, 4096, 4096, 16),
     ShapeSpec(4, 8192, 4096, 16),
-    ShapeSpec(2, 16384, 4096, 16),  # long-sequence story
+    ShapeSpec(2, 16384, 4096, 16),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 512, 1024, 16), ShapeSpec(4, 2048, 2048, 16)]
 
@@ -148,7 +147,7 @@ def _parity_stats(got: Tensor, want: Tensor) -> dict[str, float]:
 
     grad_A magnitudes grow superlinearly with L in the near-integrator
     regime, so a bare max_err reads as divergence when it is reorder noise
-    riding a large output — scale_rel (max_err / |want|_inf) is the
+    riding a large output, scale_rel (max_err / |want|_inf) is the
     comparable number across shapes.
     """
     diff = (got.float() - want.float()).abs()
@@ -259,7 +258,7 @@ def _specialization_table() -> list[dict[str, Any]]:
     """Per-compiled-specialisation resources from the kernel cache.
 
     Unlike the max-envelope ``resource_meta()``, this keeps one row per
-    cached CompiledKernel with its launch config — the per-num_warps
+    cached CompiledKernel with its launch config, the per-num_warps
     evidence the #904 contrast needs. Attribute layout is triton-version
     dependent; missing fields record as None rather than guessing.
     """

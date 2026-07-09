@@ -1,12 +1,8 @@
-"""K#2 — native Blackwell (sm_100) WY / triangular-inverse VJP (GDN backward, B6).
+"""K#2, native Blackwell (sm_100) WY / triangular-inverse VJP (GDN backward, B6).
 
-Box bring-up file (-> ``src/lethe/kernels/cute/gdn2_bwd_wy.py`` at integration).
-cuLA ships a *scalar* CuTe version (``chunk_wy_dqkg_sm100.py``); ours matches it for
-Phase 2, Phase 3 extends to GDN-2 channel-wise. Built on the proven single-tile GEMM
-in ``scratch/tcgen05_gemm_smoke.py`` (reused via ``gdn2_bwd_dhu._gemm_aa``).
-
-Contract (``docs/gdn2_phase2_refs.md`` §B6; ground truth = ``references/gdn2_chunkwise.py``
-via ``scratch/gen_k2_bundle.py``). One CTA owns one ``(b, hv, chunk)`` — the WY-VJP is
+cuLA ships a *scalar* CuTe version (``chunk_wy_dqkg_sm100.py``); this matches it for
+Phase 2, and Phase 3 extends it to GDN-2 channel-wise. Ground truth =
+``references/gdn2_chunkwise.py``. One CTA owns one ``(b, hv, chunk)``: the WY-VJP is
 per-chunk independent (no cross-chunk carry, unlike K#1). The map differentiated, per
 chunk (CxC; k [C,d_k], v [C,d_v]):
 
@@ -22,27 +18,21 @@ VJP, given du(=dv2 from B4) and dw(from B5):
     dg2 = ln2*(rowsum(dR*R) - colsum(dR*R)) + ln2*gamma*beta*(dbgk.k) ;  dR = dM*beta*KK
     dg_tok = RCP_LN2 * reverse_cumsum(dg2)                 # dg exits reverse-cumsum
 
-Two desk findings (load-bearing, retire the K#1-class box surprises before spend):
-  * MATH — ``scratch/k2_wy_desk_check.py`` reproduces the bundle's autograd dk2/dv/db/dg2
-    to fp64 roundoff (scale_rel ~1e-7) on 2 shapes. The two-triangular-GEMM inverse
-    adjoint with T reused is correct; never re-invert T.
-  * NUMERICS — fp16 I/O + fp32 accum + fp32 decay scalings passes the 2e-2 gate with
-    ~30x margin (worst scale_rel 6e-4; bf16 5e-3), with NO decay-factoring. The 44% of
-    ``bgk`` and 22% of ``T`` entries that underflow fp16 are the small-gamma late-row ones
-    whose contribution is negligible — the decay that shrinks them also makes them
-    unimportant. So GEMM operands go straight to fp16; decay/ratio scalings stay fp32.
+Correctness: the two-triangular-GEMM inverse adjoint with ``T`` reused reproduces the
+oracle's autograd dk2/dv/db/dg2 to fp64 roundoff (scale_rel ~1e-7); never re-invert T.
+Numerics: fp16 I/O + fp32 accumulate + fp32 decay scalings passes the 2e-2 gate with
+~30x margin (worst scale_rel 6e-4; bf16 5e-3), with no decay-factoring. The ~44% of
+``bgk`` and ~22% of ``T`` entries that underflow fp16 are the small-gamma late-row ones
+whose contribution is negligible, so GEMM operands go straight to fp16 while
+decay/ratio scalings stay fp32.
 
-Bring-up ladder (each micro-gated):
-  step 1 (THIS): ``run_k2`` host-orchestrated — the 7 GEMMs/chunk routed through inc-A's
-     proven (128,64,128) config (M-pad to 128, N split into 64-tiles, K-pad to 128);
-     scalings/masks/reductions in fp32 torch. De-risks the GEMM routing on silicon.
-  step 2: fused per-chunk kernel (all 7 GEMMs + TMEM in-kernel). The per-chunk
-     independence makes a 1-CTA-per-(b,hv,chunk) grid trivial — no reverse carry.
-
-Numerics: fp16 I/O, fp32 accumulate; exp2 on g pre-scaled by RCP_LN2; deterministic, no
-atomics. Off-box this imports cleanly and compiles nothing.
+``run_k2_serial`` routes the 7 GEMMs/chunk through inc-A's (128,64,128) config (M-pad
+to 128, N split into 64-tiles, K-pad to 128), with scalings/masks/reductions in fp32
+torch; ``run_k2_batched`` (the default) batches all chunks into one GEMM per
+matmul-step instead of one launch per chunk. exp2 on g is pre-scaled by RCP_LN2;
+deterministic, no atomics.
 """
-# NB: no `from __future__ import annotations` — keep consistent with the DSL kernel files.
+# NB: no `from __future__ import annotations`, keep consistent with the DSL kernel files.
 
 import math
 
@@ -69,8 +59,8 @@ def run_k2_ref(
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Validated pure-torch WY-VJP (the spec/oracle the kernel transcribes).
 
-    Device/dtype-agnostic; in fp64 it reproduces the bundle to roundoff (see
-    ``scratch/k2_wy_desk_check.py``). Returns ``(dk2, dv, db, dg2)`` head-major chunked.
+    Device/dtype-agnostic; in fp64 it reproduces the bundle to roundoff.
+    Returns ``(dk2, dv, db, dg2)`` head-major chunked.
     """
     b, h, nt, c, _ = k.shape
 
@@ -112,10 +102,10 @@ def run_k2_ref(
 
 
 def _mm_tc(x: Tensor, y: Tensor) -> Tensor:
-    """``x[M,K] @ y[K,N]`` via inc-A's proven (128,64,128) ``a@b^T`` GEMM, fp32 out.
+    """``x[M,K] @ y[K,N]`` via inc-A's (128,64,128) ``a@b^T`` GEMM, fp32 out.
 
-    M-pad to 128, K-pad to 128, N split into 64-wide tiles — every K#2 matmul lands on
-    the ONE proven config. fp16 operands / fp32 accumulate (the verified numeric path).
+    M-pad to 128, K-pad to 128, N split into 64-wide tiles: every K#2 matmul lands on
+    the one shared config. fp16 operands, fp32 accumulate.
     """
     m, kk = x.shape
     if m > D_K or kk > D_K:
@@ -144,13 +134,13 @@ def _mm_tc(x: Tensor, y: Tensor) -> Tensor:
 def run_k2_serial(
     k: Tensor, v: Tensor, beta: Tensor, g2: Tensor, t_mat: Tensor, dw: Tensor, du: Tensor
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """K#2 step 1 — host-orchestrated WY-VJP; the 7 GEMMs/chunk on tcgen05, glue in fp32.
+    """K#2, host-orchestrated WY-VJP: the 7 GEMMs/chunk on tcgen05, glue in fp32.
 
-    The proven per-chunk fallback (silicon-verified). Mirrors
-    ``gdn2_bwd_dhu.run_k1_incB_host``: every matmul routes through the proven (128,64,128)
-    GEMM via :func:`_mm_tc`; decay/ratio scalings, masks and the reverse-cumsum stay fp32
-    torch (the verified numeric split). Returns ``(dk2, dv, db, dg2)`` head-major chunked.
-    Lever B's :func:`run_k2_batched` is the default; this stays for fallback/debug.
+    The per-chunk fallback. Mirrors ``gdn2_bwd_dhu.run_k1_incB_host``: every matmul
+    routes through the (128,64,128) GEMM via :func:`_mm_tc`; decay/ratio scalings,
+    masks and the reverse-cumsum stay fp32 torch. Returns ``(dk2, dv, db, dg2)``
+    head-major chunked. :func:`run_k2_batched` is the default; this stays for
+    fallback/debug.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -210,13 +200,13 @@ def run_k2_serial(
 def run_k2_batched(
     k: Tensor, v: Tensor, beta: Tensor, g2: Tensor, t_mat: Tensor, dw: Tensor, du: Tensor
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Lever B — WY-VJP with all n_idx=b*h*nt chunks batched into one GEMM per matmul-step.
+    """Lever B, WY-VJP with all n_idx=b*h*nt chunks batched into one GEMM per matmul-step.
 
     The WY-VJP is per-chunk independent (no carry), so this is :func:`run_k2_ref`'s structure
     verbatim with each ``@`` replaced by ONE batched tcgen05 GEMM (:func:`_bmm_tc`) over all
     chunks; the glue (ratio/masks/reductions/reverse-cumsum) is already batched in the ref and
-    stays fp32 torch. Collapses ~7·n_idx single-CTA launches into ~one batched launch per
-    matmul-step — the biggest, lowest-risk lever-B win. Returns ``(dk2, dv, db, dg2)``.
+    stays fp32 torch. Collapses ~7*n_idx single-CTA launches into one batched launch per
+    matmul-step. Returns ``(dk2, dv, db, dg2)``.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")

@@ -1,11 +1,11 @@
-"""Channel-wise GDN-2 chunkwise backward reference — the Phase-3 crown ground truth.
+"""Channel-wise GDN-2 chunkwise backward reference: the channel-wise ground truth.
 
-The Phase-3 native kernels (channel-wise B4 reverse inter-chunk state scan, channel-wise
-B6 WY/triangular-inverse VJP) are validated against the intermediates this module exposes.
+The channel-wise native kernels (K#1, the reverse inter-chunk state scan; K#2, the
+WY/triangular-inverse VJP) are validated against the intermediates this module exposes.
 It is the strict generalization of ``gdn2_chunkwise`` (scalar GDN) to GDN-2's full gating:
 
 * decay ``g`` is **per key-channel** (``[d_k]``), so the within-chunk cumulative decay
-  ``gamma`` is ``[C, d_k]`` — the decay no longer factors out of the key-key inner product;
+  ``gamma`` is ``[C, d_k]``, so the decay no longer factors out of the key-key inner product;
 * erase gate ``b in [0,1]^{d_k}`` on the key axis (was the scalar ``beta``);
 * write gate ``w in [0,1]^{d_v}`` on the value axis (was the scalar ``beta``).
 
@@ -27,8 +27,8 @@ the scalar form, so this reference reproduces ``gdn2_chunkwise`` to machine prec
 
 Conventions match ``gdn2_chunkwise``: decays carried in log2 (``exp2`` with ``g`` pre-scaled
 by ``RCP_LN2``); ``T`` solved once and reused (its adjoint = autograd through the inverse);
-fp32/fp64 only; ``q`` is the pre-scaled, pre-L2-normed query the kernel sees (B8 is external).
-Every backward quantity is taken via ``torch.autograd`` through the explicit forward
+fp32/fp64 only; ``q`` is the pre-scaled, pre-L2-normed query the kernel sees (the L2-norm
+VJP is external). Every backward quantity is taken via ``torch.autograd`` through the explicit forward
 (autograd-VJP == the hand-VJP the kernels implement).
 
 The WY representation matrix is named ``wy`` here (not ``w``) to free ``w`` for the write gate.
@@ -159,7 +159,7 @@ def chunkwise_forward_cw(
     leaves and intermediates.
 
     ``skip_erase`` is the ``b = 0`` (GLA/LA/SSD-class) fast path: with the erase gate
-    off, ``M = 0`` so ``T = I`` and ``wy = 0`` exactly — the M-einsum, the triangular
+    off, ``M = 0`` so ``T = I`` and ``wy = 0`` exactly, so the M-einsum, the triangular
     solve, and the ``wy @ h`` GEMM are skipped, ``u = w ⊙ v``, ``v_new = u``. Output
     equality with the full path at ``b = 0`` is pinned by test (the b path leaves the
     graph, so ``chunkwise_backward_cw`` rejects a skip-erase forward).
@@ -304,11 +304,11 @@ def chunkwise_restage_cw(
     initial_state: Tensor | None = None,
     use_qk_l2norm: bool = False,
 ) -> ChunkwiseForwardCW:
-    """Batched no-grad restage of the channel-wise forward — the de-glue hot path.
+    """Batched no-grad restage of the channel-wise forward: the de-glue hot path.
 
     Same math as :func:`chunkwise_forward_cw` with the per-chunk loop batched over NT:
     M/T/u/wy/A_qk are chunk-local, so each is one batched op; only the h carry stays
-    sequential (``v_new = u - wy @ h`` and the state update — two GEMMs per chunk).
+    sequential (``v_new = u - wy @ h`` and the state update, two GEMMs per chunk).
     Builds no autograd graph (the closed stage-B VJP + kernels supply every grad), so
     ``leaves`` is empty and the result is NOT valid for :func:`chunkwise_backward_cw`.
     Field equality with ``chunkwise_forward_cw`` is pinned by test (fp64, machine
@@ -415,18 +415,18 @@ class ChunkwiseBackwardCW:
     Final grads (w.r.t. the pre-normed leaves; ``dh0`` is None without an initial state):
       dq, dk [B,T,H,d_k]; dv [B,T,H,d_v]; dg, db [B,T,H,d_k]; dw [B,T,H,d_v]; dh0.
 
-    K#1 (B4) — checks (chunked, head-major):
+    K#1 checks (chunked, head-major):
       dh   [B,H,NT,d_k,d_v]   dh[c] = dL/dh_{c+1} (chunk-exit state grad)
       dh0  [B,H,d_k,d_v]      = dL/dh_0
       dv2  [B,H,NT,C,d_v]     = total dL/dv_new (= du fed to K#2)
-    K#1 — input to feed the kernel:
+    K#1 input to feed the kernel:
       dv_local [B,H,NT,C,d_v] intra-only grad of v_new = tril(A_qk,0)^T @ do
 
-    K#2 (B6) — checks:
+    K#2 checks:
       dk2 [B,H,NT,C,d_k], dv_final [B,H,NT,C,d_v], db_wy [B,H,NT,C,d_k],
       dw_wy [B,H,NT,C,d_v], dg2 [B,H,NT,C,d_k]
-    K#2 — input to feed the kernel:
-      dwy [B,H,NT,C,d_k] = dL/dwy (from B5)
+    K#2 input to feed the kernel:
+      dwy [B,H,NT,C,d_k] = dL/dwy
     """
 
     dq: Tensor
@@ -453,8 +453,8 @@ def chunkwise_backward_cw(fwd: ChunkwiseForwardCW, do: Tensor) -> ChunkwiseBackw
 
     ``do`` matches ``o`` [B, T, H, d_v]. All quantities are autograd grads through the
     explicit channel-wise forward (final grads w.r.t. the leaves; intermediates w.r.t.
-    the retained chunk tensors), plus the B1 sub-map VJP for the WY-VJP partial grads,
-    plus the closed-form B3 ``dv_local``.
+    the retained chunk tensors), plus the WY sub-map VJP for the WY-VJP partial grads,
+    plus the closed-form ``dv_local``.
     """
     if fwd.skip_erase:
         raise ValueError("chunkwise_backward_cw needs the full graph; rebuild without skip_erase")
@@ -504,12 +504,12 @@ def chunkwise_backward_cw(fwd: ChunkwiseForwardCW, do: Tensor) -> ChunkwiseBackw
 def _b1_submap_vjp_cw(
     fwd: ChunkwiseForwardCW, du: Tensor, dwy: Tensor
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """VJP of the channel-wise B1 map (k, v, b, w, g) -> (u, wy) per chunk.
+    """VJP of the channel-wise WY sub-map (k, v, b, w, g) -> (u, wy) per chunk.
 
     ``u = T(w (.) v)``, ``wy = T(b (.) gamma (.) k)``, ``T = (I + M)^{-1}`` with M the
     channel-decayed erase-gated key-key matrix. Differentiating through T's construction
     reproduces the inverse adjoint the kernel does via two triangular GEMMs. Returns
-    (dk2, dv_final, db_wy, dw_wy, dg2) — the channel-wise WY-VJP partial grads.
+    (dk2, dv_final, db_wy, dw_wy, dg2), the channel-wise WY-VJP partial grads.
     """
     b, h, nt, c, _ = fwd.k.shape
     dtype, dev = fwd.k.dtype, fwd.k.device
@@ -587,7 +587,7 @@ def build_microgate_bundles_cw(
     initial_state: Tensor | None = None,
     use_qk_l2norm: bool = False,
 ) -> dict[str, MicroGateBundleCW]:
-    """Build the channel-wise K#1 (B4) and K#2 (B6) micro-gate bundles from one pass.
+    """Build the channel-wise K#1 and K#2 micro-gate bundles from one pass.
 
     Inputs match :func:`chunkwise_forward_cw`. Returns ``{"k1": ..., "k2": ...}``. K#1 is
     fed ``dht = 0`` (no final-state grad); its expected ``dh`` is under that same assumption.

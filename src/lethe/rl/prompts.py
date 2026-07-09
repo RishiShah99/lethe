@@ -1,11 +1,11 @@
 """Per-op prompt templates for kernel-generation policies.
 
-One prompt per target op, consumed by the Phase D bakeoff (single-shot
-base-model eval) and the GRPO trainer alike. The prompt states the exact
-contract the verifier enforces — signature, math, and the gate battery —
-so a policy is graded only on what it was told. The math sections restate
-the reference docstrings (kernels/references/*) verbatim in substance;
-they are the single source of truth.
+One prompt per target op, consumed by the single-shot base-model eval and
+the GRPO trainer alike. The prompt states the exact contract the verifier
+enforces: signature, math, and the gate battery, so a policy is graded only
+on what it was told. The math sections restate the reference docstrings
+(kernels/references/*) verbatim in substance; they are the single source
+of truth.
 """
 
 from __future__ import annotations
@@ -512,7 +512,7 @@ def available_ops() -> tuple[str, ...]:
     return tuple(_OP_PROMPTS)
 
 
-# E2.c — the config-emission action space. The knob set and legal values are
+# The config-emission action space. The knob set and legal values are
 # read from SEARCH_GRID so the prompt can never drift from what the verifier
 # accepts; a knob the policy invents or sets out of range is an illegal action
 # scored 0.0 (autotune.validate is the legality oracle).
@@ -577,8 +577,8 @@ def build_config_prompt(op_name: str, shape: ShapeSpec) -> str:
     )
 
 
-# E2.f — the edit-emission action space. Unlike config emission, the action can
-# change the kernel SOURCE, so it can discover structural wins — but the edited
+# The edit-emission action space. Unlike config emission, the action can
+# change the kernel SOURCE, so it can discover structural wins, but the edited
 # source is re-graded by the full untrusted gate battery, so it stays
 # reference-faithful by verification, not by construction.
 _EDIT_PROMPT_TEMPLATE = """\
@@ -621,7 +621,7 @@ def build_edit_prompt(op_name: str, shape: ShapeSpec, *, base_variant: str = "tr
     """Edit-emission prompt for *op_name* at *shape* (KeyError if unknown).
 
     Embeds the self-contained ``base_variant`` SFT target as the source to edit;
-    ``"triton"`` is the kernel optimised on the box, ``"eager"`` the CPU base.
+    ``"triton"`` is the GPU-run kernel, ``"eager"`` the CPU base.
     """
     base = target_source(op_name, base_variant)
     return _EDIT_PROMPT_TEMPLATE.format(

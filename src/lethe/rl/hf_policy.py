@@ -9,14 +9,14 @@ Design constraints this module encodes:
   ``generate``, forward logits, ``device``), which lets CPU tests drive the
   full logic with stubs.
 - ``apply_chat_template(..., return_dict=True)`` returns a ``BatchEncoding``
-  on the box's transformers — ``input_ids`` and ``attention_mask`` are
+  on the pinned transformers version: ``input_ids`` and ``attention_mask`` are
   extracted and passed to ``generate`` explicitly.
 - GRPO needs new/old/ref per-token log-probs over the *same* token
   sequence. Completions round-trip through strings (the verifier consumes
   source text), so all three streams retokenize identically via
-  :meth:`HFPolicy.completion_log_probs` — at the first optimizer step
+  :meth:`HFPolicy.completion_log_probs`: at the first optimizer step
   new == old exactly and the importance ratio starts at 1. Retokenization
-  may drift from the sampled token ids (non-canonical BPE splits) —
+  may drift from the sampled token ids (non-canonical BPE splits);
   accepted by convention since all streams drift together.
 - Log-probs are computed under the *sampling* distribution: logits are
   divided by the sampling temperature before the softmax (the behaviour
@@ -29,17 +29,17 @@ Design constraints this module encodes:
   policy toward stopping at the truncation point.
 - The KL reference policy is the base model with the LoRA adapter
   disabled (``peft``'s ``disable_adapter``), exposed as
-  :class:`ReferencePolicyView` — one set of base weights in memory, two
+  :class:`ReferencePolicyView`: one set of base weights in memory, two
   ``PolicyInterface`` objects.
 - The differentiable log-prob pass stores activations for the whole
   K x (P + T) batch; at 32B that exceeds a single B200 without gradient
   checkpointing (measured: OOM at 177 GiB). ``gradient_checkpointing=True``
-  enables HF non-reentrant checkpointing — which only engages in train
+  enables HF non-reentrant checkpointing, which only engages in train
   mode, so :meth:`completion_log_probs` toggles ``train()`` around the
   grad-enabled forward only. Every dropout in the stack is 0.0 (LoRA
   dropout off by policy default, Qwen2.5 attention dropout 0.0), so the
   train-mode forward stays deterministic and the step-0 ratio identity
-  holds. Scoring forwards always pass ``use_cache=False`` — a KV cache
+  holds. Scoring forwards always pass ``use_cache=False``: a KV cache
   is pure waste on a full-sequence pass and incompatible with
   checkpointing.
 """
@@ -65,7 +65,7 @@ DEFAULT_LORA_TARGET_MODULES: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class SamplingSettings:
-    """Generation hyperparameters (defaults match the Phase D bakeoff)."""
+    """Generation hyperparameters (defaults match the single-shot base-model eval)."""
 
     temperature: float = 0.8
     top_p: float = 0.95
@@ -108,7 +108,7 @@ class HFPolicy:
         lora_r: int = 16,
         lora_alpha: int = 32,
         # Dropout breaks GRPO's step-0 ratio identity (sampled vs scored
-        # log-probs diverge under different dropout masks) — default off.
+        # log-probs diverge under different dropout masks); default off.
         lora_dropout: float = 0.0,
         lora_target_modules: tuple[str, ...] = DEFAULT_LORA_TARGET_MODULES,
         adapter_path: str | None = None,
@@ -122,7 +122,7 @@ class HFPolicy:
         Requires the ``rl`` extra (transformers, peft). ``adapter_path``
         resumes a saved adapter; otherwise a fresh adapter is attached when
         ``lora=True``. ``gradient_checkpointing`` trades ~30% step time for
-        the activation memory of the differentiable log-prob pass —
+        the activation memory of the differentiable log-prob pass,
         required for 32B-class models on a single device.
         """
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -166,7 +166,7 @@ class HFPolicy:
         """Sample ``n`` completions of ``prompt`` (chat-templated, batched).
 
         Sets ``self.last_terminated`` (one bool per completion): True iff
-        the sequence emitted EOS before ``max_new_tokens`` — early-finished
+        the sequence emitted EOS before ``max_new_tokens``. Early-finished
         sequences are padded with EOS by ``generate``, so any EOS in the
         generated tail means natural termination.
         """
@@ -229,12 +229,12 @@ class HFPolicy:
         before the softmax; ``None`` (the GRPO default) uses the sampling
         temperature, so these are the *behaviour* policy's log-probs. SFT
         passes ``temperature=1.0`` to get standard cross-entropy regardless
-        of the policy's sampling setting — minimizing ``-log softmax(logits)``,
+        of the policy's sampling setting: minimizing ``-log softmax(logits)``,
         not a tempered surrogate. Differentiable: wrap in ``torch.no_grad()``
         for old/ref streams. ``use_adapter=False`` computes under the frozen
         base model via peft's ``disable_adapter``. ``append_eos`` (scalar or
         one bool per completion, e.g. ``last_terminated`` from ``generate``)
-        controls whether the stop decision is part of the scored trajectory —
+        controls whether the stop decision is part of the scored trajectory;
         pass the same value to every stream.
         """
         if not completions:

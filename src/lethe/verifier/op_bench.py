@@ -1,9 +1,9 @@
 """Post-contract speedup measurement: candidate vs the hand-written op.
 
 The reward table's speedup term (``t_handwritten / t_candidate``) is
-measured here, only after every contract gate has passed — the staged
+measured here, only after every contract gate has passed; the staged
 reward never pays performance for incorrect kernels. Inputs come from
-the op-harness aux builders (deterministic, saturation-free — saturated
+the op-harness aux builders (deterministic, saturation-free; saturated
 softplus entries probe value correctness, not throughput) at a fixed
 training-ish bench shape; the baseline is the op's public hand-written
 entry point, which dispatches to the Phase C Triton kernel on CUDA.
@@ -19,12 +19,12 @@ gates top out at d_model=64; a candidate correct there but no-op / wrong
 at the bench width (1024) would otherwise earn an unbounded fake speedup.
 ``measure_speedup`` first checks candidate-vs-baseline output equality at
 the bench shape (scale-aware tolerance) and refuses to pay speedup on a
-mismatch — the scoring bridge demotes such a candidate to the
+mismatch; the scoring bridge demotes such a candidate to the
 contract-failure reward.
 
 Bug routing: the official Mamba-3 Triton backward is the #904 casualty
 on sm_100 (TMEM overflow at num_warps >= 4), so the backward-scan op
-class carries the routing bonus on Blackwell — a contract-passing
+class carries the routing bonus on Blackwell; a contract-passing
 candidate that also beats the hand-written kernel there demonstrated a
 working route around the broken upstream op (reward 2.0 + log speedup,
 per ``reward.py``).
@@ -196,7 +196,7 @@ def correct_at_bench_shape(
 
     The contract gates cap d_model at 64; this re-checks value correctness
     at the bench width (1024) the speedup is measured at, so a shape-keyed
-    no-op cannot bank a fake speedup. The tolerance is loose on purpose —
+    no-op cannot bank a fake speedup. The tolerance is loose on purpose:
     fine numerics are the gates' job at small shapes; this only has to
     separate "actually computing the op" (error ~ eps*sqrt(L)*scale) from a
     gross divergence (no-op / wrong scale ~ full output magnitude), so an
@@ -236,7 +236,7 @@ def measure_speedup(
     in-place mutation cannot fabricate the ratio; candidate and baseline see
     the identical per-trial inputs for a fair comparison. The candidate's
     output on every timed trial is captured (``output_sink``) and value-checked
-    against the baseline afterwards, outside the timed window — the actual
+    against the baseline afterwards, outside the timed window; the actual
     timed calls are verified, not a separate probe, so a candidate cannot no-op
     the trials the ratio is built from while computing correctly only for the
     inputs it can tell are being inspected (whether it fingerprints them by
@@ -275,7 +275,7 @@ def measure_speedup(
 
     # Verify the candidate's actual timed outputs against the baseline on the
     # identical per-trial inputs. Any timed trial the candidate no-op'd (to
-    # collapse the median) produced a captured output that fails here — there
+    # collapse the median) produced a captured output that fails here, there
     # is no probe it can be correct at while cheating the trials that are timed.
     for i, out in enumerate(cand_outputs):
         try:

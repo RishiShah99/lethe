@@ -49,7 +49,7 @@ def compute_group_advantages(
         Numerical floor added to the standard deviation before division to
         prevent divide-by-zero on degenerate groups.  Default ``1e-4``
         matches practical GRPO implementations and is larger than the
-        ``1e-8`` sometimes used in other normalisation contexts — the wider
+        ``1e-8`` sometimes used in other normalisation contexts; the wider
         floor keeps gradients stable when rewards are nearly identical.
 
     Returns
@@ -106,7 +106,7 @@ def compute_grpo_loss(
         ``loss.backward()`` to produce gradients.
     old_log_probs : torch.Tensor
         Shape ``(K, T)`` per-token log-probabilities under the *behaviour*
-        (sampling) policy.  Detached inside this function — gradients must
+        (sampling) policy.  Detached inside this function; gradients must
         not flow through this argument.
     ref_log_probs : torch.Tensor
         Shape ``(K, T)`` per-token log-probabilities under the frozen
@@ -155,7 +155,7 @@ def compute_grpo_loss(
     (clamped to a minimum of 1) so that short completions are not
     artificially down-weighted relative to long ones.
     """
-    # Defensive detach — gradient must flow only through new_log_probs.
+    # Defensive detach: gradient must flow only through new_log_probs.
     old_lp = old_log_probs.detach()
     ref_lp = ref_log_probs.detach()
 

@@ -1,8 +1,8 @@
-"""Six-level curriculum over the Phase C op suite with promotion gates.
+"""Six-level curriculum over the six-op kernel suite with promotion gates.
 
 Level order is forward ops first (single gate view, densest reward
-signal), then backward ops by view count — the dependency structure of
-the kernels themselves, not their Phase C build order.
+signal), then backward ops by view count: the dependency structure of
+the kernels themselves, not the order they were built in.
 
 Promotion: the group's contract-pass rate >= ``promote_contract_rate``
 for ``promote_window`` consecutive steps. The gate deliberately reads
@@ -13,10 +13,10 @@ same number means >60% full passes on a forward level. A level that
 exhausts ``max_steps_per_level`` without promotion advances anyway with
 ``promoted=False`` recorded: the kill criterion is evaluated per-op over
 the whole run, and a stuck level must not starve later levels of
-training signal — the honest negative stays in the level record.
+training signal: the honest negative stays in the level record.
 
 ``CurriculumSchedule`` is pure bookkeeping (no torch); ``CurriculumRunner``
-drives one ``GRPOTrainingLoop`` per level over a shared policy — LoRA
+drives one ``GRPOTrainingLoop`` per level over a shared policy: LoRA
 weights carry across levels, the optimizer restarts fresh per level
 (stale Adam moments from one task are noise for the next). Schedule
 state is written atomically to ``curriculum_state.json`` after every
@@ -148,7 +148,7 @@ class CurriculumRunner:
     batch_scorer_factory: Any = None
     gen_pool: Any = None
     # Called with the op name as each level opens (incl. on resume), before its
-    # loop is built — the hook retunes per-level generation (e.g. longer
+    # loop is built: the hook retunes per-level generation (e.g. longer
     # max_new_tokens for the backward ops, whose targets run thousands of tokens).
     on_level_start: Any = None
 
@@ -209,7 +209,7 @@ class CurriculumRunner:
             idx = self.schedule.level_idx
             level = self.schedule.current_level
             # A restored state can point at an already-closed level (e.g.
-            # the op list changed between resumes) — advance instead of
+            # the op list changed between resumes): advance instead of
             # spinning on a level whose inner loop can never run.
             if level.closed:
                 self.schedule.level_idx += 1
@@ -240,7 +240,7 @@ class CurriculumRunner:
                     break
             if not level.closed:
                 # Trainer hit total_steps without the schedule closing the
-                # level (resume drift) — close it as unpromoted.
+                # level (resume drift): close it as unpromoted.
                 level.closed = True
                 self.schedule.level_idx += 1
                 self._write_state()

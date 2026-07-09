@@ -9,16 +9,16 @@ Correctness over speed: float32 throughout, plain Python loop per chunk.
 
 DISCRETISATION SCOPE (Mamba-3 trapezoidal vs ZOH)
 -------------------------------------------------
-``reference_forward_chunked_scan`` is the zero-order-hold (ZOH / Euler) rule —
+``reference_forward_chunked_scan`` is the zero-order-hold (ZOH / Euler) rule,
 the Mamba-1/2/SSD base case, which is exactly the lambda=1 limit of the Mamba-3
 exponential-trapezoidal discretisation. The six verifier-graded kernels (C1-C6)
 all implement this ZOH form, so it is the oracle they are graded against.
 
 ``reference_forward_trapezoidal_scan`` implements the full data-dependent
 trapezoidal discretisation Mamba-3 introduces (paper Prop. 3.2.2, with
-lambda = sigmoid(trap) confirmed from official ``mamba3.py::_preprocess``;
-sourcing in ``docs/mamba3_math_resolution.md``). It is NOT wired into kernel
-grading: the kernels implement lambda=1, so grading them against the trapezoidal
+lambda = sigmoid(trap) confirmed from official ``mamba3.py::_preprocess``).
+It is NOT wired into kernel grading: the kernels implement lambda=1, so
+grading them against the trapezoidal
 oracle would require pushing the trap term into all six kernels first (a scoped
 kernel extension, not an oracle change). It is provided + pinned here as the
 resolved Mamba-3 math at the oracle level; ``test_trapezoidal_scan_reference``
@@ -52,7 +52,7 @@ def reference_forward_chunked_scan(
         y_t = (h_t * C_t).sum(-1) + D * u_t
 
     Chunks are processed sequentially; within each chunk the recurrence runs
-    step-by-step in Python (no parallelism — this is the oracle, not the kernel).
+    step-by-step in Python (no parallelism; this is the oracle, not the kernel).
 
     Args:
         u:          Input tensor, shape [B, L, D], float32.
@@ -122,7 +122,7 @@ def reference_forward_trapezoidal_scan(
     over Mamba-2's ZOH. Resolved entirely from sources (no invented math):
     arXiv:2603.15569 Prop. 3.2.2 for the alpha/beta/gamma split, and official
     ``mamba_ssm/modules/mamba3.py::_preprocess`` (``trap = torch.sigmoid(...)``)
-    for the lambda gating. Full sourcing: ``docs/mamba3_math_resolution.md``.
+    for the lambda gating.
 
     Per step (Delta_t = softplus(delta_t), A negative log-magnitude):
         alpha_t  = exp(Delta_t * A)                       [= a_bar, per (D, N)]
@@ -138,7 +138,7 @@ def reference_forward_trapezoidal_scan(
     At lambda=1 (beta=0, gamma=Delta_t) this is byte-identical to the ZOH oracle
     (pinned by ``test_trapezoidal_reduces_to_zoh_at_lambda_one``). The beta term
     is the only structural addition: a contribution from the previous token's
-    B*u, scaled by the current step's decay alpha_t — exactly the trapezoidal
+    B*u, scaled by the current step's decay alpha_t, exactly the trapezoidal
     (vs rectangular/ZOH) integration of the input over [t-1, t].
 
     Args:

@@ -13,14 +13,14 @@ Reward schedule:
 The contracts-passed region is continuous and monotone in speedup: the old
 table paid a flat 0.5 for any speedup ≤ 1 and jumped to 1.0+ above it, so
 0.9x and 0.99x scored identically and a candidate hovering at parity landed
-on either side of a 0.5-wide cliff by timing noise — no gradient pulled the
+on either side of a 0.5-wide cliff by timing noise; no gradient pulled the
 policy *toward* faster from below. Anchoring on log(speedup) through the
 contract floor removes the cliff (parity scores 1.0, approached smoothly)
 and gives a gradient across the whole sub-parity band down to the 0.5 floor.
 
 The floor stays at 0.5, so contracts-passed always beats contracts-failed
 (0.1) by a clear margin and the speedup term still only ever *adds* above a
-correct kernel — speedup is paid strictly after contracts pass, never before
+correct kernel; speedup is paid strictly after contracts pass, never before
 (a project invariant; the s>1 branch and the bug-routing bonus are unchanged
 from the prior table, so recorded faster-than-parity rewards are unaffected).
 """

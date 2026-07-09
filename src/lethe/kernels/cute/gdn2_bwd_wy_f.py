@@ -1,23 +1,23 @@
-"""Fused K#2 channel-wise — ONE grid-z-batched tcgen05 kernel for the whole WY-VJP.
+"""Fused K#2 channel-wise, ONE grid-z-batched tcgen05 kernel for the whole WY-VJP.
 
-The campaign's big rock: today's ``run_k2_batched`` costs ~17 ms @B2/L2048/H8, almost all
-of it glue — the 1.07 GB fp32 ``masked_decay_rel`` materialization plus six einsum reads
-over it. This kernel deletes that: the six GEMM sites land in TMEM and the decay pushes
-are computed SIMT in-kernel with ON-THE-FLY ``exp2(g2_i - g2_s)`` on the strict-lower
-triangle ONLY (the loop range IS the mask — arguments are structurally <= 0, so the
-factored-overflow NaN class (c707201) cannot occur; never rewrite as 2^Gi * 2^-Gs).
+``run_k2_batched`` costs ~17 ms @B2/L2048/H8, almost all of it glue: the 1.07 GB fp32
+``masked_decay_rel`` materialization plus six einsum reads over it. This kernel deletes
+that: the six GEMM sites land in TMEM and the decay pushes are computed SIMT in-kernel
+with on-the-fly ``exp2(g2_i - g2_s)`` on the strict-lower triangle only (the loop range
+is the mask, so arguments are structurally <= 0 and the factored-overflow NaN class
+cannot occur; never rewrite as 2^Gi * 2^-Gs).
 
 K#2 is chunk-local (no inter-chunk carry), so the grid is one CTA per chunk over
-Z = B*H*NT — the Level-2 batching idiom, NOT L3's unroll: no compile wall, nt not baked,
-one executable per shape class, and Z=512 CTAs @L2048 ~ 3.5 waves on 148 SMs is genuinely
+Z = B*H*NT: the Level-2 batching layout, not L3's unroll. No compile wall, nt not baked,
+one executable per shape class, and Z=512 CTAs @L2048 is ~3.5 waves on 148 SMs, genuinely
 throughput-parallel (unlike K#1's n_bh-bound 16 CTAs).
 
-Seven sequential mainloop+epilogue pairs (the silicon-proven L3-at-nt=3 shape), all on the
-proven a@b^T (128,64,128) tiler, single K-tile each (operands K-pad to 128):
+Seven sequential mainloop+epilogue pairs, all on the a@b^T (128,64,128) tiler, single
+K-tile each (operands K-pad to 128):
 
   G1  dp     = T^T @ du            A=a_tt   B=b_du     -> fp32 land s_dp32
-      (d_v=128 crown: a second G1b mainloop over b_du's 2nd N=64 tile lands
-       s_dp32 cols 64..127, reusing the dp accumulator+pipe — the G2a/G2b idiom)
+      (d_v=128: a second G1b mainloop over b_du's 2nd N=64 tile lands s_dp32
+       cols 64..127, reusing the dp accumulator+pipe)
   G2a dq_wy[:, :64]  = T^T @ dwy   A=a_tt   B=b_dwy N0 -> fp32 land s_dq32 N0
   G2b dq_wy[:, 64:]                A=a_tt   B=b_dwy N1 -> fp32 land s_dq32 N1
   G3  dT    += du @ pwv^T          A=a_du   B=b_pwv    }  ONE shared accumulator,
@@ -27,36 +27,35 @@ proven a@b^T (128,64,128) tiler, single K-tile each (operands K-pad to 128):
                                                           into s_x (B-shaped X^T)
   G6  dM_raw = T^T @ X             A=a_tt   B=s_x      -> fp32 land s_dm32
 
-The two chained landings (dT feeding G5, X^T feeding G6) use the L3-proven round trip:
-SIMT/autovec stores -> fence_proxy("async.global") -> barrier -> TMA re-read. The G6
-strict-lower mask + negate folds into the SIMT tail's reads (``-s_dm32[i,s]`` for s<i,
-dead entries never read). The tail computes the two decay einsums (two passes, serial
-per-thread fp32 accumulation — deterministic), dg2 via the rowsum/colsum identities
+The two chained landings (dT feeding G5, X^T feeding G6) use the same round trip as the
+L3 kernel: SIMT/autovec stores -> fence_proxy("async.global") -> barrier -> TMA re-read.
+The G6 strict-lower mask + negate folds into the SIMT tail's reads (``-s_dm32[i,s]`` for
+s<i, dead entries never read). The tail computes the two decay einsums (two passes,
+serial per-thread fp32 accumulation, deterministic), dg2 via the rowsum/colsum identities
 (E never built), the finals, and the reverse-cumsum over C (one key-channel per thread).
 
 TMEM column budget (fp32 accs, M-padded to 128; make_tmem_copy trips on M=64):
   dp 0..63 | dqwy_n0 64..127 | dqwy_n1 128..191 | dT 192..255 | X 256..319 | dM 320..383
-  total 384 -> ONE tmem.allocate(512) (power-of-2), static offsets, ONE relinquish + free
-  at the end. No TMEM-staged operands. d_v=128 (crown) reuses the dp accumulator for a
-  2nd N-tile (the dv/dw SIMT tail reads full d_v from gmem), so TMEM stays at 384 — the
-  N-tiling costs a second dp mainloop, not more columns (:func:`k2f_dims_ok` d_v in {64,128}).
+  total 384, so ONE tmem.allocate(512) (power-of-2), static offsets, ONE relinquish + free
+  at the end. No TMEM-staged operands. d_v=128 reuses the dp accumulator for a 2nd N-tile
+  (the dv/dw SIMT tail reads full d_v from gmem), so TMEM stays at 384: the N-tiling
+  costs a second dp mainloop, not more columns (:func:`k2f_dims_ok` d_v in {64,128}).
 
-Discipline carried from the banked silicon lessons, x7 mainloops:
+Constraints carried across all seven mainloops:
   - gmem K coordinate literal 0 (ab_e.count grows monotonically across the 7 mainloops);
-  - executor call tuple = the 32 marked cute.Tensors + CUstream ONLY (Constexprs baked+
-    dropped; re-passing shifts pointer slots -> SIGSEGV);
+  - executor call tuple = the 32 marked cute.Tensors + CUstream ONLY (Constexprs baked
+    and dropped; re-passing shifts pointer slots and crashes at launch);
   - all copy atoms hoisted once, consumed in straight-line context (no scf region);
   - fresh output/scratch tensors every call (no caller aliasing).
 
 Kernel spec = ``gdn2_bwd_wy_cw._run_k2_fused_modelled`` (fp64-pinned vs k2_wy_vjp_cw_ref
-by tests/test_gdn2_k2_fused.py). Box gate harness: ``scratch/k2f_microgate.py``.
-Fallback ladder if silicon misbehaves: (1) ``FMR_K2F_PRED_TAIL=1`` swaps the einsum
-passes' triangular loops (data-dependent inner bounds — the one reviewed no-precedent
-shape) for the wheel-proven mamba2_ssd SegSum idiom (constexpr unroll + runtime -inf
-exponent mask pre-exp2); (2) the 2-kernel split (A: G1/G2/G3+G4; B: G5->G6 + tail),
-each grid-z batched — kernel B is then isomorphic to one L3 chunk body.
+by tests/test_gdn2_k2_fused.py). Fallback ladder if the triangular-loop path misbehaves
+on a given toolchain: (1) ``FMR_K2F_PRED_TAIL=1`` swaps the einsum passes' triangular
+loops (data-dependent inner bounds) for the mamba2_ssd SegSum idiom (constexpr unroll +
+runtime -inf exponent mask pre-exp2); (2) the 2-kernel split (A: G1/G2/G3+G4; B: G5->G6
++ tail), each grid-z batched, with kernel B then isomorphic to one L3 chunk body.
 """
-# NB: no `from __future__ import annotations` — PEP 563 stringizes @cute.struct fields.
+# NB: no `from __future__ import annotations`, PEP 563 stringizes @cute.struct fields.
 
 import torch
 from torch import Tensor
@@ -335,7 +334,7 @@ if _HAVE:
         tBs_g5, tBg_g5 = _part_b(tma_bt, m_bt, mma_x, 0)
         tBs_g6, tBg_g6 = _part_b(tma_bsx, m_bsx, mma_dm, 0)
 
-        # dp N-tile 1 (d_v=128 crown only): dp carries d_v in its N-dim, so d_v=128 lands
+        # dp N-tile 1 (d_v=128 only): dp carries d_v in its N-dim, so d_v=128 lands
         # cols 64..127 of m_dp_c from a second dp mainloop over b_du's 2nd N=64 tile.
         if cutlass.const_expr(d_v > _MNK_TILER[1]):
             tD_dp1 = _land(m_dp_c, mma_dp, thr_dp, 1)
@@ -359,7 +358,7 @@ if _HAVE:
         # ── 7 sequential mainloops + epilogues (straight-line; L3-at-nt=3 shape) ──
         # gmem K coordinate is literal 0 in every copy: the K-rest extent is statically 1
         # (tiler K=128 over 128-deep operands) and ab_e.count grows MONOTONICALLY across
-        # the 7 mainloops sharing this pipeline — count as coordinate is OOB from G2 on.
+        # the 7 mainloops sharing this pipeline; count as coordinate is OOB from G2 on.
 
         # G1: dp = a_tt @ b_du^T
         if warp_idx == 0:
@@ -391,10 +390,10 @@ if _HAVE:
         dp_f.release()
         pipeline.sync(barrier_id=2)
 
-        # G1b (d_v=128 crown): dp N-tile 1 = a_tt @ b_du[tile1]^T. dp tile 0 has already
-        # landed to gmem, so the dp accumulator + pipe are free to reuse (the G2a→G2b
-        # sequential-reuse idiom). Lands cols 64..127 of m_dp_c; the dv/dw SIMT tail then
-        # reads the full d_v width from gmem.
+        # G1b (d_v=128): dp N-tile 1 = a_tt @ b_du[tile1]^T. dp tile 0 has already
+        # landed to gmem, so the dp accumulator and pipe are free to reuse for tile 1.
+        # Lands cols 64..127 of m_dp_c; the dv/dw SIMT tail then reads the full d_v
+        # width from gmem.
         if cutlass.const_expr(d_v > _MNK_TILER[1]):
             if warp_idx == 0:
                 dp1_empty = dp_prod.acquire_and_advance()
@@ -495,7 +494,7 @@ if _HAVE:
         q1_f.release()
         pipeline.sync(barrier_id=2)
 
-        # G3 + G4: dT shared accumulator — ONE acquire, ACCUMULATE carried across, ONE commit.
+        # G3 + G4: dT shared accumulator, ONE acquire, ACCUMULATE carried across, ONE commit.
         if warp_idx == 0:
             dt_empty = dt_prod.acquire_and_advance()
             mma_dt.set(tcgen05.Field.ACCUMULATE, False)
@@ -627,13 +626,13 @@ if _HAVE:
 
         # Pass A: dbk_m[i,d] = sum_{s<i} (-dM[i,s]) * k[s,d] * exp2(g2[i,d]-g2[s,d]).
         # Pass B: dk_m[s,d] = sum_{i>s} (-dM[i,s]) * (b*k)[i,d] * exp2(g2[i,d]-g2[s,d]).
-        # Two trace-time shapes (skeptic finding: the triangular form's data-dependent
-        # inner bounds have no wheel precedent):
-        #   default    — triangular loops; the range IS the mask, exponents <= 0.
-        #   pred_tail  — the mamba2_ssd SegSum idiom (v452:3021-3033): constexpr
-        #                full-triangle unroll + runtime mask of the exponent to -inf
-        #                BEFORE exp2 (exp2(-inf) = 0 exactly; dead dM entries are
-        #                finite, so 0 * garbage = 0) — the masked_decay_rel structure.
+        # Two trace-time shapes (the triangular form's data-dependent inner bounds
+        # have no precedent in this DSL):
+        #   default:   triangular loops; the range IS the mask, exponents <= 0.
+        #   pred_tail: the mamba2_ssd SegSum idiom (constexpr full-triangle unroll +
+        #              runtime mask of the exponent to -inf before exp2; exp2(-inf) = 0
+        #              exactly, so dead dM entries times 0 stay 0), matching the
+        #              masked_decay_rel structure.
         if cutlass.const_expr(pred_tail):
             neg_inf = cutlass.Float32(-float("inf"))
             for e in cutlass.range(tidx, c * d_k, THREADS):
@@ -853,7 +852,7 @@ def run_k2_fused(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Fused channel-wise WY-VJP — ONE launch for all Z=B·H·NT chunks.
+    """Fused channel-wise WY-VJP, ONE launch for all Z=B·H·NT chunks.
 
     Packs via :func:`gdn2_bwd_wy_cw._k2f_pack`, launches ``_kern_k2f`` on torch's current
     stream (CUDA-graph-capturable; ``maybe_sync`` at the end only). Returns
@@ -957,7 +956,7 @@ def run_k2_fused(
         ex = cute.compile(_k2f_host, *args)
         _k2f_cache[key] = ex
     # Constexpr args (c, d_k, d_v, pred_tail) are baked at compile and DROPPED from the
-    # runtime signature — the call tuple is the 32 marked tensors + the CUstream.
+    # runtime signature; the call tuple is the 32 marked tensors + the CUstream.
     ex(*args[:32], stream)
     maybe_sync()
     return (

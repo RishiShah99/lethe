@@ -1,19 +1,19 @@
-"""C5 — hand-written Mamba fused-block forward.
+"""C5, hand-written Mamba fused-block forward.
 
 Drop-in for ``reference_fused_block_forward`` with the same signature and
 semantics, widened to more dtypes and devices:
 
 - CUDA + {fp32, fp16, bf16} with triton installed -> the two-kernel fused
   path (``_triton_fused_block``: conv1d + SiLU + selective scan in one
-  serial-L kernel, deterministic RMSNorm in a second — the why-not-one-
+  serial-L kernel, deterministic RMSNorm in a second; the why-not-one-
   kernel rationale lives on that module), wrapped in an autograd.Function
-  whose backward is the C6 Triton pipeline (first-order only — see
+  whose backward is the C6 Triton pipeline (first-order only, see
   ``_FusedBlockCuda``).
 - everything else (CPU, fp64, missing triton) -> ``_fused_eager``, a
   differentiable eager-torch path replicating the reference op-for-op.
   For fp32 on the same device it is bitwise-equal to the reference.
   fp64 is a verification-only dtype (gradcheck); half dtypes upcast once
-  and round once at the output (the mixed-precision contract — the
+  and round once at the output (the mixed-precision contract, the
   reference rejects non-fp32).
 """
 
@@ -69,10 +69,10 @@ class _FusedBlockCuda(torch.autograd.Function):
 
     First-order only: the Triton backward returns plain tensors with no
     graph, so double-backward through the CUDA path is silently absent
-    rather than an error — route through the eager path (CPU or fp64)
+    rather than an error. Route through the eager path (CPU or fp64)
     when higher-order gradients are needed. All nine gradients are
     computed unconditionally; ``needs_input_grad`` is not consulted
-    (autograd drops the extras — C2's convention).
+    (autograd drops the extras, C2's convention).
     """
 
     @staticmethod
@@ -175,7 +175,7 @@ def fused_block_forward(
     returns ``y`` [B, L_out, D] in ``x``'s dtype. All floating inputs share
     ``x``'s dtype (dispatch keys on ``x`` alone, the C1-C4 family contract).
     ``chunk_size`` is validated identically to the scan ops but is a
-    blocking hint only — the result does not depend on it.
+    blocking hint only, the result does not depend on it.
 
     Raises:
         ValueError: If ``conv_kernel_size`` disagrees with ``conv_weight``'s

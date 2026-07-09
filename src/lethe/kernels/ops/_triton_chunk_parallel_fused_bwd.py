@@ -3,33 +3,33 @@
 The serial C6 backward (``_triton_fused_block_bwd``) walks two serial-L sweeps:
 ``_fwd_stage_kernel`` register-carries the scan state ``h`` across chunks, and
 ``_bwd_sweep_kernel`` register-carries the adjoint ``ag = a_bar*g``. Both are the
-linear recurrences C1/C2 carry, so both reassociate the same way — this extends
+linear recurrences C1/C2 carry, so both reassociate the same way, extending
 the long-L lever from the SISO backward (C2) to the fused training block, where
 the serial backward is still ~3.5x behind official at L=16K.
 
-Pipeline (the two chunk-free kernels — RMSNorm backward, gather-form grad_x —
+Pipeline (the two chunk-free kernels, RMSNorm backward and gather-form grad_x,
 are reused verbatim from the serial module):
 
-  1. ``_fwd_reduce_kernel``   — per (b, chunk, D-block) local forward
+  1. ``_fwd_reduce_kernel``: per (b, chunk, D-block) local forward
      conv+SiLU+scan from a zero state -> chunk end state ``Sloc`` and decay
      ``Adecay = prod_j a_bar``.
-  2. ``_carry_scan`` (torch)  — O(L/K) forward carry -> ``hin`` entering each chunk.
-  3. ``_fwd_ys_kernel``       — per chunk, recompute h from ``hin``, stage ``ys``.
-  4. ``_norm_bwd_kernel``     — (reused) ``ys`` -> ``dys`` + norm-weight partials.
-  5. ``_rev_reduce_kernel``   — per chunk local reverse scan (dys*C) from a zero
+  2. ``_carry_scan`` (torch): O(L/K) forward carry -> ``hin`` entering each chunk.
+  3. ``_fwd_ys_kernel``: per chunk, recompute h from ``hin``, stage ``ys``.
+  4. ``_norm_bwd_kernel``: (reused) ``ys`` -> ``dys`` + norm-weight partials.
+  5. ``_rev_reduce_kernel``: per chunk local reverse scan (dys*C) from a zero
      carry -> reverse carry-out ``Sg = a_{c,0}*gloc_{c,0}``.
-  6. ``_rev_carry_scan`` (torch) — O(L/K) newest-first carry (the *same*
+  6. ``_rev_carry_scan`` (torch): O(L/K) newest-first carry (the *same*
      ``Adecay``) -> ``Gin`` entering each chunk's newest step.
-  7. ``_chunk_bwd_sweep_kernel`` — per chunk, recompute h from ``hin`` then
+  7. ``_chunk_bwd_sweep_kernel``: per chunk, recompute h from ``hin`` then
      reverse-sweep from ``Gin``, emitting all nine gradients' partials. Its inner
      body is byte-for-byte the serial ``_bwd_sweep_kernel`` reverse body; only
      the two carries are supplied externally instead of register-threaded, which
      is what lets all nc chunks run at once.
-  8. ``_conv_x_bwd_kernel``   — (reused) the gather-form grad_x.
+  8. ``_conv_x_bwd_kernel``: (reused) the gather-form grad_x.
 
 Memory: the per-chunk forward-recompute scratch (hbuf/zbuf/cvbuf) and the
 per-chunk reduction partials are sized for all chunks at once (O(B*L*D*block_n)
-for hbuf) — the cost of parallelising what the serial kernel reused across
+for hbuf), the cost of parallelising what the serial kernel reused across
 chunks. At small-batch/long-L (the regime this targets) it fits; the mode
 selector only picks it there. ``test_chunk_parallel_fused_bwd_replica`` pins the
 algebra fp64-exact / fp32 in-band before hardware. All C2/C6 invariants carry
@@ -454,7 +454,7 @@ def launch_fused_block_backward_chunk_parallel(
     """Chunk-parallel C6 backward. Inputs must be CUDA tensors of one dtype.
 
     Returns the nine gradients in ``FusedBlockGrads`` field order, each in its
-    input's dtype — same contract as the serial ``launch_fused_block_backward``.
+    input's dtype, same contract as the serial ``launch_fused_block_backward``.
     ``chunk_len`` (K) must divide L_out; it is the chunk-parallel granularity.
     """
     batch, seq_in, d_model = x.shape
@@ -478,7 +478,7 @@ def launch_fused_block_backward_chunk_parallel(
     n_chunks = l_out // chunk_len
     n_d_blocks = triton.cdiv(d_model, block_d)
 
-    # Per-chunk forward-recompute scratch sized for all chunks at once — O(B*L*D*
+    # Per-chunk forward-recompute scratch sized for all chunks at once: O(B*L*D*
     # block_n), the whole state tensor (the serial kernel reuses a K=16 buffer).
     # Guard before allocating so a too-large shape/config raises instead of an
     # opaque CUDA OOM (and config scoring records it honestly).

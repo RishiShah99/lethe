@@ -1,6 +1,7 @@
-"""Mamba-3 ECG classifier for PTB-XL (Phase F.2).
+"""Mamba-3 ECG classifier for PTB-XL.
 
-Architecture decisions (resolved here, not invented — see docs/mamba3_math_resolution.md):
+Architecture decisions (resolved here, not invented; math follows the Mamba-3
+paper and the official state-spaces/mamba reference):
 
 SISO variant: each Mamba-3 block uses the SISO selective scan (the same recurrence
 that reference_fused_block_forward implements) rather than the full MIMO variant.
@@ -11,13 +12,13 @@ as a block-level primitive.
 
 in_proj split: each block projects its residual input [B, L, D] via a single
 nn.Linear to [B, L, 2*D + 2*N]. The four slices are:
-  x_raw [B, L, D]   — fed to conv + SiLU + scan (the 'u' stream)
-  delta  [B, L, D]  — SSM timescale input (data-dependent, pre-softplus; softplus
+  x_raw [B, L, D]   : fed to conv + SiLU + scan (the 'u' stream)
+  delta  [B, L, D]  : SSM timescale input (data-dependent, pre-softplus; softplus
                        is inside fused_block_forward via the scan)
-  B      [B, L, N]  — SSM input projection (data-dependent)
-  C      [B, L, N]  — SSM output projection (data-dependent)
+  B      [B, L, N]  : SSM input projection (data-dependent)
+  C      [B, L, N]  : SSM output projection (data-dependent)
 
-Residual convention: pre-norm residual — RMSNorm is applied inside fused_block_forward
+Residual convention: pre-norm residual. RMSNorm is applied inside fused_block_forward
 on the scan output; the block adds the normed output to its input (post-norm residual
 would require a separate norm layer outside the op, conflicting with the fused design).
 
@@ -140,7 +141,7 @@ class _MambaBlock(nn.Module):
     Decision: all blocks share the same L_out (pad is only added once at the
     network's entry, not per block). The in_proj projection operates on L
     (padded length) but only the L_out slice of its delta/B/C outputs is
-    passed to the op — matching the reference convention where delta/B/C
+    passed to the op, matching the reference convention where delta/B/C
     have shape [B, L_out, *].
     """
 
@@ -156,7 +157,7 @@ class _MambaBlock(nn.Module):
         # A = -exp(A_log) (official Mamba convention). A is then strictly negative
         # for ANY value of A_log, so a_bar = exp(delta*A) stays in (0,1) and the scan
         # state cannot integrate/explode over long L. (The prior log_A-as-A init left
-        # the j=0 column at A=0 — a pure integrator that drifts positive under training
+        # the j=0 column at A=0, a pure integrator that drifts positive under training
         # and overflows the L=1000 scan into NaN.) S4D-real init: A = -(j+1).
         a_log = torch.log(torch.arange(1, N + 1, dtype=torch.float32).unsqueeze(0).expand(D, N))
         self.A_log = nn.Parameter(a_log.contiguous())
@@ -186,7 +187,7 @@ class _MambaBlock(nn.Module):
         B_proj = proj[..., 2 * D : 2 * D + N]  # [B, L, N]
         C_proj = proj[..., 2 * D + N :]  # [B, L, N]
 
-        # Slice to L_out for the SSM projections — conv removes K-1 steps
+        # Slice to L_out for the SSM projections: conv removes K-1 steps
         delta_out = delta[:, K - 1 :, :]  # [B, L_out, D]
         B_out = B_proj[:, K - 1 :, :]  # [B, L_out, N]
         C_out = C_proj[:, K - 1 :, :]  # [B, L_out, N]
@@ -217,14 +218,14 @@ class Mamba3ECGClassifier(nn.Module):
     """1.1B Mamba-1 SISO multi-label ECG classifier for PTB-XL (Mamba-3 MIMO block pending).
 
     Input:  [B, 12, T]  float32  (loader's native layout)
-    Output: [B, n_classes]  float32  logits (no activation — BCEWithLogitsLoss)
+    Output: [B, n_classes]  float32  logits (no activation: BCEWithLogitsLoss)
 
     Forward steps:
       1. Transpose to [B, T, 12] and project leads → d_model.
       2. Prepend K-1 zeros (causal left-pad) → [B, T+K-1, d_model].
       3. Pass through n_layers Mamba-3 blocks; each returns [B, L_out, D]
          where L_out = (T+K-1) - (K-1) = T (only the first block removes the
-         pad — subsequent blocks receive already-trimmed sequences and must NOT
+         pad; subsequent blocks receive already-trimmed sequences and must NOT
          re-pad). The design threads T through unchanged after block 0.
       4. Mean-pool over L_out → [B, D].
       5. Linear → [B, n_classes] logits.
@@ -251,7 +252,7 @@ class Mamba3ECGClassifier(nn.Module):
         x = ecg.transpose(1, 2)  # [B, T, 12]
         x = self.lead_proj(x)  # [B, T, D]
 
-        # Causal left-pad once — all blocks consume L = T + K - 1 on entry,
+        # Causal left-pad once: all blocks consume L = T + K - 1 on entry,
         # and each block trims back to T by the valid convolution.
         # After block 0 the sequence is T again; subsequent blocks receive T
         # and pad again, trimming back to T - (K-1) each time. To avoid

@@ -1,10 +1,10 @@
-"""PTB-XL multi-label training loop (Phase F.3).
+"""PTB-XL multi-label training loop.
 
 Framework-free: a plain AdamW + ``BCEWithLogitsLoss`` loop over a
 ``Mamba3ECGClassifier``, with macro-AUC evaluation and spot-resilient
-checkpoint/resume. DDP-aware but DDP-optional — single-process on CPU (the
-test path), data-parallel across the 8 B200 when launched under
-``torch.distributed`` (the box path, ``scratch/ptbxl_train.py``).
+checkpoint/resume. DDP-aware but DDP-optional: single-process on CPU (the
+test path), data-parallel across multiple GPUs when launched under
+``torch.distributed``.
 
 Checkpointing mirrors ``rl/train.py``: a step-stamped immutable model file
 plus the atomically replaced ``trainer_state.pt`` as the commit point that
@@ -127,8 +127,8 @@ class MedicalTrainer:
             self._core.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
         )
         self.criterion = nn.BCEWithLogitsLoss()
-        # The model may be cast to bf16 (the box path); the fp32 ECG inputs must
-        # match its dtype or the first Linear's matmul dtype-mismatches. Loss is
+        # The model may be cast to bf16; the fp32 ECG inputs must match its
+        # dtype or the first Linear's matmul dtype-mismatches. Loss is
         # computed in fp32 regardless (logits upcast) for stable BCE.
         self._in_dtype = next(self._core.parameters()).dtype
         self.step_idx = 0
@@ -137,8 +137,8 @@ class MedicalTrainer:
         """One optimizer step. Returns ``(loss, grad_norm)``."""
         self.model.train()
         # Stateless schedule (derived from the checkpointed step_idx): linear
-        # warmup — a 1.1B SSM from scratch at full LR spikes the first updates
-        # into NaN — then optional cosine decay to min_lr_ratio*peak (#19).
+        # warmup (a 1.1B SSM from scratch at full LR spikes the first updates
+        # into NaN), then optional cosine decay to min_lr_ratio*peak (#19).
         cfg = self.config
         warm = cfg.warmup_steps
         step = self.step_idx + 1
@@ -199,7 +199,7 @@ class MedicalTrainer:
         if self._dist:
             logits = torch.cat(self._all_gather(logits), dim=0)
             labels = torch.cat(self._all_gather(labels), dim=0)
-            # all_reduce must run on the NCCL device — a CPU tensor raises
+            # all_reduce must run on the NCCL device: a CPU tensor raises
             # "No backend type associated with device type cpu" under nccl.
             totals = torch.tensor([loss_sum, float(n)], dtype=torch.float64, device=self.device)
             torch.distributed.all_reduce(totals)
@@ -235,7 +235,7 @@ class MedicalTrainer:
             self.save_checkpoint()
 
     # ------------------------------------------------------------------
-    # Checkpointing (spot box: model + optimizer + step + RNG)
+    # Checkpointing (preemption-resilient: model + optimizer + step + RNG)
     # ------------------------------------------------------------------
 
     def _local_rng_state(self) -> dict[str, Tensor]:
@@ -258,7 +258,7 @@ class MedicalTrainer:
         """Step-stamped model file + atomic ``trainer_state.pt`` commit point."""
         cfg = self.config
         # Per-rank RNG is gathered on every rank (a collective), then written by
-        # rank 0 — restoring the *current device's* stream per rank, so resume
+        # rank 0, restoring the *current device's* stream per rank, so resume
         # neither depends on the machine's GPU count nor collapses all ranks onto
         # rank 0's RNG (identical dropout masks).
         rng_states = self._all_rng_states()
@@ -285,7 +285,7 @@ class MedicalTrainer:
         if not os.path.exists(path):
             return False
         # weights_only=True: the checkpoint holds only step/model_name plus the
-        # optimizer state_dict and per-rank RNG tensors — all tensors + primitive
+        # optimizer state_dict and per-rank RNG tensors, all tensors + primitive
         # containers, which the safe loader accepts. It closes the pickle-RCE if
         # checkpoint_dir ever points at a run dir this process did not write.
         state = torch.load(path, map_location="cpu", weights_only=True)
@@ -303,7 +303,7 @@ class MedicalTrainer:
 
     def _restore_rng_state(self, rng_states: list[dict[str, Tensor]]) -> None:
         if self.rank >= len(rng_states):
-            return  # resumed with more ranks than were saved — keep the seeded RNG
+            return  # resumed with more ranks than were saved: keep the seeded RNG
         local = rng_states[self.rank]
         torch.set_rng_state(local["cpu"])
         if self.device.type == "cuda" and "cuda" in local:

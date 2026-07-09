@@ -1,6 +1,6 @@
 """Mamba-3 fused-block backward pass via torch.autograd.
 
-Reference oracle — gradients are obtained by differentiating through
+Reference oracle: gradients are obtained by differentiating through
 ``reference_fused_block_forward`` using torch.autograd.grad.  No hand-derived
 formulae; correctness is guaranteed by PyTorch's autograd engine.
 

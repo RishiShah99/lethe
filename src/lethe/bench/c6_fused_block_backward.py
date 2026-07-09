@@ -3,31 +3,31 @@
 The training-bottleneck op. Comparators per (shape, dtype), each skipped
 with a recorded reason when infeasible:
 
-- ``ours_triton``          — the four-kernel pipeline. Every timed call
+- ``ours_triton``: the four-kernel pipeline. Every timed call
   pays the full forward re-stage in-kernel (the activation-free design);
   the autograd comparators below reuse forward-saved activations from a
-  graph built once outside the timed region — conservative against us,
+  graph built once outside the timed region, conservative against us,
   same disclosure as the C2 bench.
-- ``composed_autograd_bwd`` — VJP through torch conv1d/SiLU + our C1
+- ``composed_autograd_bwd``: VJP through torch conv1d/SiLU + our C1
   Triton forward (whose autograd dispatches to the C2 Triton backward) +
   torch RMSNorm, with ``retain_graph``: the fusion-benefit control (same
   scan engine, staged activations, torch-autograd conv/norm backwards).
-- ``official_composed_bwd`` — VJP through official ``causal_conv1d`` +
+- ``official_composed_bwd``: VJP through official ``causal_conv1d`` +
   ``selective_scan_fn`` + torch RMSNorm when installed, fp32 only (the
   C5 anchor composition, differentiated). The official fused-block
   training backward is a compiled TileLang artifact and its Triton SISO
-  backward is the #904 casualty — recorded as skip reasons.
-- ``eager_vjp``            — autograd through ``_fused_eager`` (the
+  backward is the #904 casualty, recorded as skip reasons.
+- ``eager_vjp``: autograd through ``_fused_eager`` (the
   dispatch fallback and CMP-02 path), memory-gated like C2's eager.
-- ``reference_loop_bwd``   — autograd through the Python-loop oracle
+- ``reference_loop_bwd``: autograd through the Python-loop oracle
   (small shapes).
 
 Plus the #904-contrast artifact: ``num_warps_sweep`` over the two
 serial-sweep kernels at num_warps 2/4/8 with per-specialisation ptxas
-resources — no ``tl.dot`` in any of the four kernels, and the op this one
+resources: no ``tl.dot`` in any of the four kernels, and the op this one
 replaces is exactly the one that dies on sm_100.
 
-Usage (on the box): ``uv run python -m
+Usage: ``uv run python -m
 lethe.bench.c6_fused_block_backward --out ~/out/c6_bench.json``
 (add ``--quick`` for a fast smoke pass).
 """
@@ -72,14 +72,14 @@ try:
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
     _HAS_MAMBA = True
-except ImportError:  # pragma: no cover - box-only dependency
+except ImportError:  # pragma: no cover - optional dependency
     _HAS_MAMBA = False
 
 try:
     from causal_conv1d import causal_conv1d_fn
 
     _HAS_CAUSAL_CONV = True
-except ImportError:  # pragma: no cover - box-only dependency
+except ImportError:  # pragma: no cover - optional dependency
     _HAS_CAUSAL_CONV = False
 
 
@@ -102,7 +102,7 @@ SHAPES = [
     ShapeSpec(2, 256, 256, 16, 4),  # oracle shape: every comparator runs
     ShapeSpec(8, 2048, 4096, 128, 4),  # training shape
     ShapeSpec(8, 4096, 4096, 128, 4),
-    ShapeSpec(2, 16384, 4096, 128, 4),  # long-sequence story
+    ShapeSpec(2, 16384, 4096, 128, 4),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 256, 256, 16, 4), ShapeSpec(4, 2048, 1024, 128, 4)]
 
@@ -179,7 +179,7 @@ def _timed_vjp(
     """Grads + timing of repeated VJPs through a graph built once.
 
     The forward runs outside the timed region (retain_graph), so the timed
-    backward reuses forward-saved activations — conservative against our
+    backward reuses forward-saved activations, conservative against our
     pipeline, which re-stages the forward in-kernel every call. The graph
     frees when this scope exits.
     """
@@ -254,7 +254,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
             }
             # causal_conv1d pads implicitly: pad-row values are constants to
             # it (zero grad), where our explicit pre-pad makes them real
-            # inputs with real gradients — compare core rows only.
+            # inputs with real gradients, compare core rows only.
             gx_core: dict[str, Any] = dict(
                 _parity_stats(
                     grads_ours[0][:, spec.conv_k - 1 :], grads_off[0][:, spec.conv_k - 1 :]

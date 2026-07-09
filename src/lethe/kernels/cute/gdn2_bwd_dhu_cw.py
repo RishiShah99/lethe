@@ -1,8 +1,8 @@
-"""K#1 channel-wise (Phase 3) — native Blackwell reverse inter-chunk state scan (GDN-2 B4).
+"""K#1 channel-wise (Phase 3), native Blackwell reverse inter-chunk state scan (GDN-2 B4).
 
-Box bring-up file (-> ``src/.../cute/gdn2_bwd_dhu_cw.py`` at integration). The Phase-3 crown
-lift of ``scratch/gdn2_bwd_dhu.py``: per-channel decay g (key axis) instead of one scalar per
-token. The recurrence skeleton is identical; the decay folds *inside* the contractions:
+The Phase-3 channel-wise lift of the scalar K#1: per-channel decay g (key axis)
+instead of one scalar per token. The recurrence skeleton is identical; the decay
+folds *inside* the contractions:
 
   1. dh[i_t] = b_dh
   2. b_dv = (k (.) decay_end) @ b_dh + dv_local         store dv2[i_t]   # decay on key axis
@@ -12,19 +12,19 @@ token. The recurrence skeleton is identical; the decay folds *inside* the contra
 decay_end = exp2(g_last - g2) and gamma = exp2(g2) are now ``[C, d_k]``; exp2(g_last) is
 ``[d_k]`` applied on the key (row) axis of ``b_dh``. Every decay multiplier is <= 1 on the
 positions that contribute, so the pre-scaled GEMM operands stay in range (no secondary
-normalization needed at this host-orchestrated step). Ground truth =
-``kernels.cute.gdn2_assemble.k1_reverse_state_cw_ref`` (validated to fp64 by
-``tests/test_gdn2_assemble_cw.py``); the math holds to machine precision before any box spend.
+normalization needed). Ground truth = ``kernels.cute.gdn2_assemble.k1_reverse_state_cw_ref``
+(validated to fp64 by ``tests/test_gdn2_assemble_cw.py``).
 
-Step 1 (THIS): host-orchestrated — the two GEMMs/chunk route through the proven (128,64,128)
-config via :func:`gdn2_bwd_wy._mm_tc` (M-pad to 128, K-pad to 128, N split into 64-tiles, so
-d_v in {64, 128} both work); decay scalings/carry in fp32 torch. Step 2 fuses the loop in
-kernel (inc-B2 lift). BOX-UNTESTED (authored desk-side; math de-risked).
+``run_k1_incB_serial`` routes the two GEMMs/chunk through the (128,64,128) config via
+:func:`gdn2_bwd_wy._mm_tc` (M-pad to 128, K-pad to 128, N split into 64-tiles, so d_v
+in {64, 128} both work); decay scalings/carry stay fp32 torch. ``run_k1_incB2`` fuses
+the loop in-kernel. Without the CuTe DSL toolchain this module still imports cleanly;
+it compiles nothing.
 
-Numerics: fp16 GEMM operands, fp32 accumulate; exp2 on g pre-scaled by RCP_LN2; deterministic.
-Off-box this imports cleanly and compiles nothing.
+Numerics: fp16 GEMM operands, fp32 accumulate; exp2 on g pre-scaled by RCP_LN2;
+deterministic.
 """
-# NB: no `from __future__ import annotations` — keep consistent with the DSL kernel files.
+# NB: no `from __future__ import annotations`, keep consistent with the DSL kernel files.
 
 import torch
 from torch import Tensor
@@ -51,7 +51,7 @@ def run_k1_cw_ref(
 
     Device/dtype-agnostic; in fp64 it reproduces the channel-wise bundle to roundoff.
     Returns ``(dh, dv2, dh0)`` head-major chunked. Identical to
-    ``gdn2_assemble.k1_reverse_state_cw_ref`` — kept here so the box file is self-contained.
+    ``gdn2_assemble.k1_reverse_state_cw_ref``, kept here so this module is self-contained.
     """
     b, h, nt, c, _d_k = q.shape
     d_v = do.shape[-1]
@@ -82,14 +82,14 @@ def run_k1_incB_serial(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Channel-wise K#1 step 1 — host-orchestrated reverse scan; GEMMs on tcgen05.
+    """Channel-wise K#1, host-orchestrated reverse scan; GEMMs on tcgen05.
 
-    The proven per-(b,hv) fallback. ``b_dh in [d_k, d_v]`` fp32 carried across the reverse
-    chunk loop. Per chunk, two matmuls route through the proven (128,64,128) GEMM via
+    The per-(b,hv) fallback. ``b_dh in [d_k, d_v]`` fp32 carried across the reverse
+    chunk loop. Per chunk, two matmuls route through the (128,64,128) GEMM via
     :func:`gdn2_bwd_wy._mm_tc`: G1 ``(k (.) decay_end) @ b_dh`` (key-axis decay folded into
     the operand) and GA ``[qg | -wy] @ [do | b_dv]^T``. The carry
     ``b_dh = exp2(g_last)[:,None] (.) b_dh + GA`` decays per key channel. Returns
-    ``(dh, dv2, dh0)`` head-major chunked. Lever B's :func:`run_k1_incB_batched` is the default.
+    ``(dh, dv2, dh0)`` head-major chunked. :func:`run_k1_incB_batched` is the default.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -146,13 +146,13 @@ def run_k1_incB_batched(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Lever B — channel-wise reverse scan with the (b,hv) groups batched per step.
+    """Lever B, channel-wise reverse scan with the (b,hv) groups batched per step.
 
     Same recurrence as :func:`run_k1_incB_serial` (identical math), but the ``for i in
     range(n_bh)`` host loop collapses into the batch dim: per reverse chunk ``it`` the two
     matmuls (G1 ``(k (.) decay_end)@b_dh``, GA ``[qg|−wy]@[do|b_dv]^T``) run ONCE over all
     n_bh groups via :func:`gdn2_bwd_dhu._bmm_tc` (d_v in {64,128} via its N-tiling). The
-    ``it`` loop stays sequential — it carries ``b_dh``. Returns ``(dh, dv2, dh0)``.
+    ``it`` loop stays sequential; it carries ``b_dh``. Returns ``(dh, dv2, dh0)``.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -197,12 +197,12 @@ def run_k1_incB_batched(
 
 
 # ------------------------------------------------------------------
-# Lever D — inc-B2 channel-wise: the crown lift of the scalar fused reverse loop.
+# Lever D, inc-B2 channel-wise: the channel-wise lift of the scalar fused reverse loop.
 # Same fusion (one CTA per (b,hv), reverse it-loop in-kernel, b_dh resident, two GEMMs/chunk
-# on the proven (128,64,128) config, b_ga GMEM round-trip) with the channel-wise glue: the
+# on the (128,64,128) config, b_ga GMEM round-trip) with the channel-wise glue: the
 # decay folds into the G1 key operand (a_g1 = k⊙decay_end), b_dv adds dv_local directly, and
-# the carry decays per key channel (glast ∈ [d_k]). _run_k1_incB2_modelled is the kernel spec;
-# scratch/k1_incB2_orchestration_check.py grades it vs the fp64 channel-wise bundle.
+# the carry decays per key channel (glast ∈ [d_k]). _run_k1_incB2_modelled is the kernel spec,
+# checked against the fp64 channel-wise bundle.
 # ------------------------------------------------------------------
 
 
@@ -303,13 +303,13 @@ def run_k1_incB2(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Lever D channel-wise — the fused persistent reverse scan (the crown lift of run_k1_incB2).
+    """Lever D channel-wise, the fused persistent reverse scan.
 
     Reuses the scalar module's ``_incb2_kernel`` verbatim; the channel-wise regime lives entirely
-    in the packed buffers (:func:`_incb2_pack_cw` folds decay into ``a_g1`` → the in-kernel G1
+    in the packed buffers (:func:`_incb2_pack_cw` folds decay into ``a_g1``, so the in-kernel G1
     glue multiplies by ``decay = 1``, and ``glast`` is the real per-key-channel [L, d_k]). Values
-    are desk-gated bit-exact vs the fp64 channel-wise bundle by k1_incB2_orchestration_check.py.
-    Returns ``(dh, dv2, dh0)`` head-major chunked. BOX-UNTESTED — ``run_k1_incB`` stays default.
+    are bit-exact vs the fp64 channel-wise bundle. Returns ``(dh, dv2, dh0)`` head-major chunked.
+    Not yet validated on hardware; ``run_k1_incB`` stays the default.
     """
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
@@ -352,17 +352,16 @@ def run_k1_incB(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Default cw K#1: Level-3 fused kernel > Level-2 epilogue-fused > lever B, by tile fit.
+    """Default cw K#1: Level-3 fused kernel > Level-2 epilogue-fused > Lever B, by tile fit.
 
-    The Level-3 path (the whole reverse chunk loop in ONE launch; silicon-GO,
-    results/k1_incb2_v3_{cw_nt4,cw_nt8}.json) and the Level-2 path (2 launches/step;
-    silicon-GO, results/k1_l2_epilogue_box.json) are both dim-locked to C=64, d_k=128,
-    d_v=64; d_v=128 stays on the batched path until the N-tiling increment. f16 outputs
-    upcast to fp32 to keep the assembly's operand-dtype contract (the closed stage-B
-    matmuls them against fp32). Kill-switches: ``FMR_DISABLE_L3=1`` drops to Level-2,
-    ``FMR_DISABLE_L2=1`` drops to the batched path (box-burst fallbacks while the
-    default flips re-gate). L3 compiles one executable per (n_bh, nt) — nt is baked
-    by the unroll; steady shapes amortize the compile.
+    The Level-3 path (the whole reverse chunk loop in ONE launch; worst scale_rel ~6.5e-4
+    vs the fp64 bundle) and the Level-2 path (2 launches/step; worst max_abs 7e-5 vs the
+    fp64 cw bundle) are both dim-locked to C=64, d_k=128, d_v=64; d_v=128 stays on the
+    batched path until the N-tiling increment. f16 outputs upcast to fp32 to keep the
+    assembly's operand-dtype contract (the closed stage-B matmuls them against fp32).
+    Kill-switches: ``FMR_DISABLE_L3=1`` drops to Level-2, ``FMR_DISABLE_L2=1`` drops to
+    the batched path. L3 compiles one executable per (n_bh, nt); nt is baked by the
+    unroll, so steady shapes amortize the compile.
     """
     import os
 
@@ -379,5 +378,5 @@ def run_k1_incB(
     return run_k1_incB_batched(q, k, wy, g2, g_last, do, dv_local, dht)
 
 
-# run_k1_incB_serial stays as the proven per-group fallback; inc-B2 (run_k1_incB2
-# above, the fully fused kernel) supersedes the per-step paths once box-green.
+# run_k1_incB_serial stays as the per-group fallback; inc-B2 (run_k1_incB2 above,
+# the fully fused kernel) supersedes the per-step paths once validated on hardware.

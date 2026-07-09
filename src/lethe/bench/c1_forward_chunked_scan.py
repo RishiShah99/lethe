@@ -3,14 +3,14 @@
 Comparators per (shape, dtype), each skipped with a recorded reason when
 infeasible:
 
-- ``ours_triton``      — this repo's hand-written kernel (C1)
-- ``official_cuda``    — ``mamba_ssm`` ``selective_scan_fn`` (Mamba-1 CUDA
+- ``ours_triton``: this repo's hand-written kernel (C1)
+- ``official_cuda``: ``mamba_ssm`` ``selective_scan_fn`` (Mamba-1 CUDA
   kernel; same SISO recurrence, [B, D, L] layout, ``delta_softplus=True``)
-- ``official_eager``   — ``mamba_ssm`` ``selective_scan_ref`` (vectorised
+- ``official_eager``: ``mamba_ssm`` ``selective_scan_ref`` (vectorised
   torch eager; materialises [B, D, L, N], so memory-gated)
-- ``reference_loop``   — our Python-loop oracle (small shapes only)
+- ``reference_loop``: our Python-loop oracle (small shapes only)
 
-Usage (on the box): ``uv run python -m lethe.bench.c1_forward_chunked_scan
+Usage: ``uv run python -m lethe.bench.c1_forward_chunked_scan
 --out ~/out/c1_bench.json`` (add ``--quick`` for a fast smoke pass).
 """
 
@@ -68,7 +68,7 @@ SHAPES = [
     ShapeSpec(8, 2048, 4096, 16),  # Mamba-1.4B-ish layer at training length
     ShapeSpec(8, 4096, 4096, 16),
     ShapeSpec(4, 8192, 4096, 16),
-    ShapeSpec(2, 16384, 4096, 16),  # long-sequence story
+    ShapeSpec(2, 16384, 4096, 16),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 512, 1024, 16), ShapeSpec(4, 2048, 2048, 16)]
 

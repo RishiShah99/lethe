@@ -1,4 +1,4 @@
-"""C6 — hand-written Mamba fused-block backward (the training bottleneck).
+"""C6, hand-written Mamba fused-block backward (the training bottleneck).
 
 Drop-in for ``reference_fused_block_backward`` with the same signature and
 semantics, widened to more dtypes and devices:
@@ -6,20 +6,20 @@ semantics, widened to more dtypes and devices:
 - CUDA + {fp32, fp16, bf16} with triton installed -> the four-kernel
   Triton pipeline (``_triton_fused_block_bwd``: forward re-stage with
   checkpoints, RMSNorm backward, chunked reverse sweep with conv/SiLU
-  recompute, gather-form conv input-gradient — the structural rationale
+  recompute, gather-form conv input-gradient; the structural rationale
   lives on that module).
 - everything else (CPU, fp64, missing triton) -> ``torch.autograd.grad``
   through ``_fused_eager``, the differentiable eager path shared with the
   C5 forward op. For fp32 on CPU this replicates the reference oracle's
   gradients; fp64 is the verification dtype (gradcheck) and deliberately
   routes here. When ``dy.requires_grad``, the eager path builds the
-  double-backward graph (``create_graph=True``) — the VJP is linear in
+  double-backward graph (``create_graph=True``), the VJP is linear in
   ``dy``, which is exactly what CMP-02's gradcheck differentiates.
 
 Deviations from the reference: the reference rejects non-fp32 inputs; this
 op defines the mixed-precision contract instead (compute in fp32, round
 once per gradient output). ``chunk_size`` is validated identically but is
-a blocking hint only — gradients do not depend on it, and the Triton
+a blocking hint only, gradients do not depend on it, and the Triton
 pipeline picks its own recompute-chunk internally.
 """
 
@@ -54,7 +54,7 @@ def _fused_bwd_eager(
     dy: Tensor,
     eps: float,
 ) -> FusedBlockGrads:
-    """Gradients via autograd through the eager forward — correct by construction."""
+    """Gradients via autograd through the eager forward, correct by construction."""
     create_graph = dy.requires_grad
     inputs = (x, conv_weight, conv_bias, delta, A, B, C, D, norm_weight)
     with torch.enable_grad():
@@ -157,7 +157,7 @@ def triton_fused_block_bwd_resource_meta(
 
     Must match ``fused_block_backward``'s dispatch: an explicit ``scan_mode``
     audits exactly that kernel, but when ``scan_mode`` is unset the dispatch
-    resolves the mode by *shape* — either kernel can run — so the audit returns
+    resolves the mode by *shape*, either kernel can run, so the audit returns
     the max envelope over both, never the serial one alone.
     """
     if not _triton_usable():

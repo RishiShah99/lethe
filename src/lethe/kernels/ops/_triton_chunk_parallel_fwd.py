@@ -1,23 +1,23 @@
 """Chunk-parallel-carry SISO forward scan (the long-L speedup lever).
 
-The serial-L kernel (``_triton_fwd_scan``) walks one program over all L — its
+The serial-L kernel (``_triton_fwd_scan``) walks one program over all L, its
 critical path is O(L), which is ~3.5x behind the official chunk-parallel CUDA
 kernel at L=16K. This module reassociates the *same* recurrence (the SSD
-chunked-scan decomposition, Dao & Gu 2024 / official ``mamba`` ``chunk_scan`` —
+chunked-scan decomposition, Dao & Gu 2024 / official ``mamba`` ``chunk_scan``,
 not new math; pinned op-for-op by ``test_chunk_parallel_scan_replica``) into
 three phases so the per-step work parallelises across the L/K chunks:
 
-  1. ``_chunk_reduce_kernel`` — per (batch, chunk, D-block), run the K-step
+  1. ``_chunk_reduce_kernel``: per (batch, chunk, D-block), run the K-step
      local scan from a zero state and emit only the chunk's end state
      ``Sloc`` and total decay ``A_chunk = prod_j a_bar`` (small: [B, nc, D, N]).
-  2. carry (launcher, torch) — serial over the nc=L/K chunk boundaries only:
+  2. carry (launcher, torch): serial over the nc=L/K chunk boundaries only:
      ``hin[0]=0; hin[c] = A_chunk[c-1]*hin[c-1] + Sloc[c-1]``. O(L/K), not O(L).
-  3. ``_chunk_scan_kernel`` — per (batch, chunk, D-block), re-run the K-step
+  3. ``_chunk_scan_kernel``: per (batch, chunk, D-block), re-run the K-step
      scan threaded from ``hin[c]`` and read out y. All nc chunks run
      concurrently; this is where the serial form had no parallelism.
 
 Within a chunk the recurrence order is identical to the serial kernel, so the
-only reassociation is the per-boundary carry — inside the eps*sqrt(chain)*scale
+only reassociation is the per-boundary carry, inside the eps*sqrt(chain)*scale
 band the gates already allow. All C1 invariants carry verbatim: fp32 compute
 (upcast at load, round once at store), libdevice exp/log1p, softplus threshold
 20, masked padded lanes, int64 offset bases, no tl.dot, no atomics.
@@ -191,7 +191,7 @@ def launch_chunk_parallel_scan(
     mode knob the autotuner/RL searches), independent of the public
     ``chunk_size`` blocking hint. ``config`` overrides block_d/num_warps/
     num_stages as in the serial launcher. BLOCK_N is pinned to the full state
-    dim — a correctness constraint, never a knob.
+    dim, a correctness constraint, never a knob.
     """
     batch, seq_len, d_model = u.shape
     n_state = a.shape[1]

@@ -7,11 +7,11 @@ L=16K even though the forward already reassociates. This module reassociates the
 backward the same way the forward was: both states it carries are linear
 recurrences.
 
-  - forward state ``h_t = a_t*h_{t-1} + bu_t`` — reused verbatim from the
+  - forward state ``h_t = a_t*h_{t-1} + bu_t``, reused verbatim from the
     forward module (``_chunk_reduce_kernel`` + ``_carry_scan``) to get the state
     ``hin`` entering each chunk, so every chunk can recompute its in-chunk
     forward states independently.
-  - reverse adjoint ``g_t = dy_t*C_t + a_{t+1}*g_{t+1}`` — the mirror-image
+  - reverse adjoint ``g_t = dy_t*C_t + a_{t+1}*g_{t+1}``, the mirror-image
     linear scan (newest-first). Its chunked carry is the reverse twin of the
     forward: a local per-chunk reverse reduce (``_rev_reduce_kernel``, parallel
     across chunks) emits each chunk's carry-out ``Sg``; an O(L/K) torch carry
@@ -20,9 +20,9 @@ recurrences.
     from ``Gin[c]``. The chunk decay ``A_chunk = prod_j a`` is the *same* product
     the forward carry uses, so it is produced once.
 
-The readout kernel's inner body — the six gradient expressions, grouping by
-grouping (``gm=(g*h_{t-1})*a`` once; the two delta paths as separate
-N-reductions) — is byte-for-byte the serial kernel's reverse-sweep body; only
+The readout kernel's inner body (the six gradient expressions, grouping by
+grouping: ``gm=(g*h_{t-1})*a`` once; the two delta paths as separate
+N-reductions) is byte-for-byte the serial kernel's reverse-sweep body; only
 the two carries (forward ``hin``, reverse ``Gin``) are supplied externally
 instead of threaded in registers, which is what lets all nc chunks run at once.
 The reassociation stays inside the eps*sqrt(chain)*scale band the gates allow;
@@ -30,7 +30,7 @@ The reassociation stays inside the eps*sqrt(chain)*scale band the gates allow;
 in-band before any hardware.
 
 Memory: the per-chunk forward recompute scratch (``hbuf``) is sized for all
-chunks at once (O(B*L*D*block_n)) — the cost of parallelising what the serial
+chunks at once (O(B*L*D*block_n)), the cost of parallelising what the serial
 kernel reused across chunks. At small-batch/long-L (the regime this targets)
 this is a few GB and fits; the mode selector / autotuner only picks it where it
 does. All C2 invariants carry verbatim: fp32 compute (upcast at load, round once
@@ -63,7 +63,7 @@ except ImportError:  # pragma: no cover - depends on installed triton
 _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 # Register-tile budget (elements) for the [block_d, block_n] fp32 tiles; block_d
 # shrinks at large block_n so a Mamba-3 d_state=128 tile doesn't spill. Mirrors
-# the serial backward; validated by scratch/bwd_n128_sweep.
+# the serial backward.
 _BWD_TILE_BUDGET = 2048
 
 
@@ -170,7 +170,7 @@ def _chunk_bwd_readout_kernel(  # type: ignore[no-untyped-def]
     BLOCK_N: tl.constexpr,
 ):
     """Phase 3 + readout: recompute the chunk's forward states from ``hin``, then
-    reverse-sweep from ``Gin`` computing all six gradients — the serial reverse
+    reverse-sweep from ``Gin`` computing all six gradients, the serial reverse
     body, run per-chunk in parallel.
     """
     pid_b = tl.program_id(0)
@@ -286,7 +286,7 @@ def launch_backward_chunk_parallel_scan(
     """Chunk-parallel backward scan. Inputs must be CUDA tensors of one dtype.
 
     Returns ``(grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)`` in the
-    input dtypes — same contract as the serial ``launch_backward_scan``.
+    input dtypes, same contract as the serial ``launch_backward_scan``.
     ``chunk_len`` (K) must divide L; it is the chunk-parallel granularity.
     ``config`` overrides block_d/num_warps/num_stages as in the serial launcher.
     BLOCK_N is pinned to the full state dim, a correctness constraint.
@@ -301,8 +301,8 @@ def launch_backward_chunk_parallel_scan(
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
     # Same register-tile budget as the serial backward: shrink block_d at large
-    # block_n so a Mamba-3 d_state=128 tile doesn't spill (2x at N=128;
-    # bwd_n128_sweep). Unchanged at N=16; correctness-invariant (tiling only).
+    # block_n so a Mamba-3 d_state=128 tile doesn't spill (measured 2x at N=128).
+    # Unchanged at N=16; correctness-invariant (tiling only).
     block_d = min(64, max(16, _BWD_TILE_BUDGET // block_n))
     if config is not None and config.block_d is not None:
         block_d = config.block_d
@@ -310,7 +310,7 @@ def launch_backward_chunk_parallel_scan(
 
     # The per-chunk forward-recompute scratch is sized for ALL chunks at once
     # (the serial kernel reuses one K=16-capped buffer; here chunk_len can be 512
-    # and nc*chunk_len=L, so hbuf is O(B*L*D*block_n) — the whole state tensor).
+    # and nc*chunk_len=L, so hbuf is O(B*L*D*block_n), the whole state tensor).
     # Guard before allocating so a too-large shape/config raises instead of an
     # opaque CUDA OOM mid-backward (and so config scoring records it honestly).
     scratch_bytes = _chunk_parallel_bwd_scratch_bytes(batch, seq_len, d_model, n_state, chunk_len)
@@ -349,7 +349,7 @@ def launch_backward_chunk_parallel_scan(
 
     grid = (batch, n_chunks, n_d_blocks)
     # block_d<=16 only at the large-state regime (block_n=128); num_warps=2 wins
-    # there (bwd_n128_sweep), all other shapes unchanged.
+    # there, all other shapes unchanged.
     num_warps = 2 if block_d <= 16 else (4 if block_d * block_n >= 512 else 2)
     if config is not None and config.num_warps is not None:
         num_warps = config.num_warps

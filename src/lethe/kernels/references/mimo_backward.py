@@ -4,28 +4,22 @@ Implements the MIMO SSM from:
   "Mamba-3" (Lahoti, Li, et al., ICLR 2026, arXiv:2603.15569)
   Section 3.3, Equations 12-14 and surrounding prose.
 
-SIGNATURE CHANGES FROM OLD STUB
----------------------------------
-The old stub accepted (u, delta, A, B, C, D, mix_weight, dy, *, n_heads_in,
-n_heads_out, chunk_size) and raised NotImplementedError.  That signature
-predated the math resolution and had several incorrect abstractions:
-
-  * "mix_weight" (a single [n_heads_out, n_heads_in] matrix) does not exist
-    in Mamba-3.  The resolved math has TWO separate learnable parameter tensors:
-      - mimo_x  (shape: nheads, R, headdim)  — psi_j, applied to x BEFORE the
-        B-weighted state update
-      - mimo_o  (shape: nheads, R, headdim)  — phi_i, applied to output AFTER
-        the C readout
-    These are data-independent per-head weight vectors, not a head-mixing matrix.
-  * "D" (skip connection) is handled by the outer Mamba block, not the SSM scan.
-    Removed from both forward and backward.
-  * "n_heads_in / n_heads_out" were conflated.  In Mamba-3 there is a single
-    rank R for both input and output.
-  * alpha (exp(dt*A)) is now passed pre-computed rather than split into (delta, A),
-    matching the paper's Eq. 12 notation.  dt is kept as a separate argument
-    because it multiplies B in the input term.
-  * B and C carry an explicit rank dimension (R), matching the in_proj split
-    structure documented in C1 mamba3.py.
+RESOLVED MATH
+-------------
+Mamba-3's MIMO block has TWO separate learnable parameter tensors, not a single
+head-mixing matrix:
+  * mimo_x (shape: nheads, R, headdim), psi_j, applied to x BEFORE the
+    B-weighted state update.
+  * mimo_o (shape: nheads, R, headdim), phi_i, applied to output AFTER
+    the C readout.
+These are data-independent per-head weight vectors. There is a single rank R
+for both input and output. ``D`` (skip connection) is handled by the outer
+Mamba block, not the SSM scan, so it is absent from both forward and backward.
+``alpha`` (exp(dt*A)) is passed pre-computed rather than split into (delta, A),
+matching the paper's Eq. 12 notation; ``dt`` is kept as a separate argument
+because it multiplies B in the input term. B and C carry an explicit rank
+dimension (R), matching the in_proj split structure documented in the official
+reference implementation.
 
 FORWARD MATH REFERENCE
 -----------------------
@@ -53,10 +47,10 @@ The oracle uses torch.autograd.grad (no hand-coded gradient formulae).
 The analytic backward structure, documented here for the Triton implementor
 (index legend: b=batch, l=seq, r/i/j=rank, h=head, p=headdim, s=d_state):
 
-  # Stage 0: through the output mix — dy_raw[i] from y = sum_i y_raw^(i)*phi_i:
+  # Stage 0: through the output mix, dy_raw[i] from y = sum_i y_raw^(i)*phi_i:
   #   dy_raw[b,l,i,h,p] = dy[b,l,h,p] * mimo_o[h,i,p]
   # Stage 1: per-token readout gradient (sum over output ranks; no time mixing
-  # here — each token reads its own aggregated state):
+  # here, each token reads its own aggregated state):
   #   dh_agg[b,l,h,p,s] = einsum("blrhp,blrhs->blhps", dy_raw, C)
   # Stage 2: reverse-time scan accumulation (the recurrence h_t = a_t h_{t-1} + ...
   # makes the total state gradient flow backward through time):
@@ -72,7 +66,8 @@ The analytic backward structure, documented here for the Triton implementor
 
 UNRESOLVED / OUT OF SCOPE
 --------------------------
-  * B_bias / C_bias (observed in C1 but role not stated in main paper text).
+  * B_bias / C_bias (observed in the official reference implementation but role
+    not stated in main paper text).
   * RoPE rotation on B and C: belongs to the complex_scan_rope oracle, not here.
     This oracle takes pre-rotated B and C as inputs.
   * D skip connection: outer block, not the scan.
@@ -219,7 +214,7 @@ def reference_mimo_backward(
 
     The analytic backward structure (two-stage einsum) is documented in the
     module docstring for use when implementing the Triton kernel.  This oracle
-    uses autograd — correctness by construction, not by hand-derived formulae.
+    uses autograd, correctness by construction, not by hand-derived formulae.
 
     Shape contracts  (same as reference_mimo_forward)
     ---------------
@@ -236,7 +231,7 @@ def reference_mimo_backward(
     -------
     MimoGrads named tuple with fields:
     ``grad_x``, ``grad_B``, ``grad_C``, ``grad_dt``, ``grad_alpha``,
-    ``grad_mimo_x``, ``grad_mimo_o`` — each matching the shape of the
+    ``grad_mimo_x``, ``grad_mimo_o``, each matching the shape of the
     corresponding input.
     """
     if x.dtype not in (torch.float32, torch.float64):

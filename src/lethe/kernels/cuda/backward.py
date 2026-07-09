@@ -1,8 +1,8 @@
-"""Python entry point for the CUDA selective-scan backward (Inc 3).
+"""Python entry point for the CUDA selective-scan backward.
 
 Transposes the reference-layout inputs ([B,L,D]/[D,N]/[B,L,N]) to the kernel's
 d-major layout, launches the fused backward, and finishes the cross-block
-reductions with deterministic torch.sum (no atomics — ORD-02). The kernel omits
+reductions with deterministic torch.sum (no atomics, ORD-02). The kernel omits
 grad_u's D*dy skip term; it is added here where Dskip is in hand.
 """
 

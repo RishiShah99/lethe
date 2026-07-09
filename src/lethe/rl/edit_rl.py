@@ -1,6 +1,6 @@
-"""E2.f — edit-RL: the action is a correctness-preserving edit of the kernel.
+"""Edit-RL: the action is a correctness-preserving edit of the kernel.
 
-config-RL (E2.c) is correctness-invariant by construction — it only re-tunes
+Config-RL is correctness-invariant by construction: it only re-tunes
 launch knobs, so it can never *discover* a structurally different kernel. Edit-RL
 hands the policy the source of the trusted kernel plus a SEARCH/REPLACE edit
 action; the edited source is graded through the *untrusted* path
@@ -10,10 +10,10 @@ shape). Any edit that changes the result, fails to compile, spills, or OOMs is
 caught and scores at or below the contract-fail floor; an edit earns speedup
 credit only after every gate re-passes. This is the only action space that can
 find structural wins (memory layout, vectorization, fusion) while staying
-reference-faithful — the verifier, never the policy, is the correctness oracle.
+reference-faithful: the verifier, never the policy, is the correctness oracle.
 
-The base is the self-contained SFT target (``triton`` on the box, where the
-kernel actually runs; ``eager`` for CPU plumbing tests). The edit is one or more
+The base is the self-contained SFT target (``triton`` for the GPU-run kernel;
+``eager`` for CPU plumbing tests). The edit is one or more
 git-conflict-style blocks::
 
     <<<<<<< SEARCH
@@ -23,7 +23,7 @@ git-conflict-style blocks::
     >>>>>>> REPLACE
 
 Each SEARCH must match the base exactly once (an absent or ambiguous SEARCH is an
-illegal action, scored 0.0 — the analog of the source track's no_code_block). A
+illegal action, scored 0.0: the analog of the source track's no_code_block). A
 completion carrying no SEARCH marker at all is a no_code_block; one with a marker
 but a malformed/unmatched block reaches the scorer and lands at the
 ``illegal_edit`` 0.0, so a botched edit stays distinguishable from no attempt.
@@ -61,10 +61,10 @@ def parse_edits(text: str) -> list[tuple[str, str]] | None:
 
     A block is ``<<<<<<< SEARCH`` … ``=======`` … ``>>>>>>> REPLACE`` on their
     own lines. An unterminated block (a SEARCH with no matching divider or
-    REPLACE) makes the whole emission illegal — a partial edit must not apply.
+    REPLACE) makes the whole emission illegal. A partial edit must not apply.
     A body line that is itself a bare marker (e.g. source containing a
-    ``=======`` line) is unrepresentable in this grammar — it would silently
-    shift the block boundaries — so such an emission is rejected outright
+    ``=======`` line) is unrepresentable in this grammar: it would silently
+    shift the block boundaries, so such an emission is rejected outright
     rather than mis-parsed into a wrong edit.
     """
     lines = text.splitlines()
@@ -99,7 +99,7 @@ def apply_edits(base: str, edits: list[tuple[str, str]]) -> str | None:
     """Apply each ``(search, replace)`` to *base*; None on any non-unique match.
 
     A SEARCH must occur exactly once: zero means it doesn't match the base, more
-    than one means the replacement is ambiguous — both reject so the edit is
+    than one means the replacement is ambiguous; both reject so the edit is
     deterministic. An empty SEARCH (a whole-file insertion) is rejected for the
     same reason. Replacements apply in order, so a later block sees the text the
     earlier ones produced.

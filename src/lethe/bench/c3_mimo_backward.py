@@ -3,13 +3,12 @@
 No open-source MIMO backward exists to compare against: the official repo
 ships the MIMO forward (TileLang) and decode-step (Triton) with readable
 source, but its training backward (``mamba_mimo_bwd_combined``) is a
-compiled TileLang artifact with fused-rotary semantics — different op
-signature (raw B/C + angles vs our pre-rotated B/C), source unfetchable
-(docs/mamba3_math_resolution.md, Unresolved #3). That absence is the C3
-headline; the comparator set is therefore:
+compiled TileLang artifact with fused-rotary semantics, a different op
+signature (raw B/C + angles vs our pre-rotated B/C), source unfetchable.
+That absence is the comparator gap; the comparator set is therefore:
 
-- ``ours_triton``        — this repo's hand-written MIMO backward (C3)
-- ``reference_loop_bwd`` — the Python-loop oracle's autograd (small shapes;
+- ``ours_triton``: this repo's hand-written MIMO backward (C3)
+- ``reference_loop_bwd``: the Python-loop oracle's autograd (small shapes;
   the only other implementation of this op anywhere)
 
 Plus the #904-contrast artifact carried over from C2: ``num_warps_sweep``
@@ -18,7 +17,7 @@ ptxas resources. Our kernel has no ``tl.dot`` for the TMEM-promotion pass
 to touch, so the sweep succeeding on sm_100 is the claim, recorded with
 evidence.
 
-Usage (on the box): ``uv run python -m
+Usage: ``uv run python -m
 lethe.bench.c3_mimo_backward --out ~/out/c3_bench.json``
 (add ``--quick`` for a fast smoke pass).
 """
@@ -76,7 +75,7 @@ SHAPES = [
     ShapeSpec(8, 2048, 2, 32, 64, 128),
     ShapeSpec(8, 2048, 4, 32, 64, 128),
     ShapeSpec(8, 4096, 2, 32, 64, 128),
-    ShapeSpec(2, 16384, 2, 32, 64, 128),  # long-sequence story
+    ShapeSpec(2, 16384, 2, 32, 64, 128),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 256, 2, 4, 16, 32), ShapeSpec(4, 2048, 2, 16, 64, 128)]
 

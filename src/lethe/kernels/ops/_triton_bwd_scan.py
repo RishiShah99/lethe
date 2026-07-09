@@ -5,13 +5,13 @@ This is the op the official ``mamba_ssm`` cannot compile on Blackwell
 TMEM-promotion pass (pre-#9093) promotes the LHS operand past sm_100's
 512-element TMEM budget at every ``num_warps >= 4`` config. This kernel is
 structured so that pass never engages: the recurrence is carried in
-registers as elementwise FMAs and ``tl.sum`` reductions — no ``tl.dot``,
-no MMA, no TMEM operands — so it compiles at num_warps 2/4/8 alike on
-sm_100. That contrast is the C2 story; the bench driver records both
-kernels' compile behaviour side by side.
+registers as elementwise FMAs and ``tl.sum`` reductions, no ``tl.dot``,
+no MMA, no TMEM operands, so it compiles at num_warps 2/4/8 alike on
+sm_100. The bench driver records both kernels' compile behaviour side
+by side.
 
 Import this module only when ``triton`` is installed and a CUDA device is
-the target — the public dispatcher in ``backward_selective_scan.py`` guards
+the target, the public dispatcher in ``backward_selective_scan.py`` guards
 both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
 
     u, delta, dy, grad_u, grad_delta : [B, L, D]   row-major
@@ -20,18 +20,18 @@ both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
     D_skip                           : [D]
 
 Parallelisation: one program per (batch, D-block), as in the C1 forward.
-The cross-program reductions the backward introduces — grad_B and grad_C
-sum over D; grad_A and grad_D sum over (batch, L) — are written as
+The cross-program reductions the backward introduces (grad_B and grad_C
+sum over D; grad_A and grad_D sum over (batch, L)) are written as
 per-program partial buffers and reduced by a deterministic ``torch.sum``
 in the launcher. No atomics anywhere: ORD-02 requires byte-identical
 repeated calls, and float-atomic accumulation order is run-dependent.
 
 State recompute: the reverse sweep needs h_{t-1} at every step. Storing
-all states is O(B*L*D*N) — terabytes at training shapes — and inverting
+all states is O(B*L*D*N), terabytes at training shapes, and inverting
 the recurrence (h_{t-1} = (h_t - dbar*u*B) / abar) divides by abar, which
 underflows to exact zero for saturated delta. Instead: a forward sweep
 stores the state *entering* each K-step chunk (checkpoint buffer), then
-chunks are processed newest-first — the K in-chunk pre-update states are
+chunks are processed newest-first, the K in-chunk pre-update states are
 recomputed from the checkpoint into a scratch buffer, then the reverse
 sweep walks the chunk. K is capped small so the scratch working set
 (B*D*K*N fp32) stays L2-resident (see ``_chunk_k``); the checkpoint
@@ -52,7 +52,7 @@ round at store); partial buffers and the launcher's reductions stay fp32
 and round once at the very end. Softplus and its derivative match
 ``torch.nn.functional.softplus`` exactly (linear above threshold 20;
 derivative z/(z+1) with z=exp(x), 1 above threshold). libdevice exp/log1p
-preserve denormals — ex2.approx flushes subnormal outputs and splits the
+preserve denormals, ex2.approx flushes subnormal outputs and splits the
 EXC masks (see the C1 module docstring).
 """
 
@@ -78,12 +78,12 @@ _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 MAX_BLOCK_N = 128
 # Register-tile budget (elements) for the per-program [block_d, block_n] fp32
 # tiles the serial-L recurrence holds; block_d shrinks at large block_n so a
-# Mamba-3 d_state=128 tile doesn't spill. Validated by scratch/bwd_n128_sweep.
+# Mamba-3 d_state=128 tile doesn't spill.
 _BWD_TILE_BUDGET = 2048
 
 # Recompute-chunk cap. Working set of the in-chunk state scratch is
 # B*D*K*N fp32 across all programs; K=16 keeps it ~34 MB at the training
-# shape (B=8, D=4096, N=16) — resident in B200's 126 MB L2, so the
+# shape (B=8, D=4096, N=16), resident in B200's 126 MB L2, so the
 # store-then-reload round trip never pays DRAM. Larger K trades scratch
 # traffic against checkpoint size; this is a v2 autotuning lever.
 MAX_CHUNK_K = 16
@@ -217,7 +217,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
             h_tm1 = tl.load(hbuf_prog + j * BLOCK_D * BLOCK_N)
 
             # g_t = dL/dh_t. dy in padded lanes loads as 0, but Inf*0 across
-            # the (d, n) broadcast would mint NaNs in padded n-lanes — mask.
+            # the (d, n) broadcast would mint NaNs in padded n-lanes, mask.
             g = tl.where(mask_dn, dy_t[:, None] * c_t[None, :] + ag_carry, 0.0)
 
             # grad_C partial: sum over this program's D-slice of dy_t * h_t.
@@ -233,10 +233,10 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
             tl.store(grad_u_ptr + uld, gu_t.to(grad_u_ptr.dtype.element_ty), mask=mask_d)
 
             # grad_delta_bar: two separate N-reductions, mirroring autograd's
-            # two AccumulateGrad paths (via exp and via b_bar) — the shared
+            # two AccumulateGrad paths (via exp and via b_bar). The shared
             # gm = (g*h_{t-1})*abar is also the grad_A integrand. gm needs no
             # mask of its own: g and h_tm1 are both pre-masked to exact zero
-            # in padded lanes, so gm is 0 there regardless of abar — that
+            # in padded lanes, so gm is 0 there regardless of abar, that
             # zero-ness is load-bearing for the re-masked uses below.
             gm = (g * h_tm1) * abar
             ddbar = tl.sum(tl.where(mask_dn, gm * a, 0.0), axis=1) + tl.sum(
@@ -293,9 +293,9 @@ def launch_backward_scan(
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
     # Cap the per-program [block_d, block_n] fp32 register tile at a budget so a
     # large state (Mamba-3 d_state=128) shrinks block_d instead of spilling: the
-    # serial-L recurrence holds several such tiles in registers, and at the old
-    # fixed block_d=64 a block_n=128 tile spills hard (measured 2x slower; bd=64
-    # nw=2 at N=128 was 6x worse — bwd_n128_sweep). Unchanged at N=16
+    # serial-L recurrence holds several such tiles in registers, and at a fixed
+    # block_d=64 a block_n=128 tile spills hard (measured 2x slower; bd=64
+    # nw=2 at N=128 was 6x worse). Unchanged at N=16
     # (2048//16=128 -> min(64,128)=64), correctness-invariant (tiling only).
     block_d = min(64, max(16, _BWD_TILE_BUDGET // block_n))
     if config is not None and config.block_d is not None:

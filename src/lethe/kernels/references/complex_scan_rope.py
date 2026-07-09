@@ -4,54 +4,48 @@ Implements the complex SSM reformulation from:
   "Mamba-3" (Lahoti, Li, et al., ICLR 2026, arXiv:2603.15569)
   Section 3.2, Equations 8-9 and Proposition 3.2.1.
 
-SIGNATURE CHANGES FROM OLD STUB
----------------------------------
-The old stub accepted (u, real, imag, theta, decay, B_proj, C_proj, D) and
-raised NotImplementedError.  That signature predated the math resolution and
-modelled an incorrect abstraction (separate real/imag projections and a fixed
-theta schedule).  The resolved math shows:
-
-  * B and C are single real vectors of size d_state carrying both the real and
-    imaginary parts in interleaved pairs — there is no separate B_hat / C_hat
-    projection (Prop 3.2.1; one d_state-wide linear layer, pairs (2k, 2k+1)).
-  * theta is DATA-DEPENDENT: accumulated as a causal cumsum over
-    tanh(angle_proj) * dt * pi, not a fixed frequency schedule (Q2b; C6).
-  * The discretisation parameter alpha = exp(dt * A) is now explicit (dt and A
-    enter as separate scalars, matching Eq. 9).
-  * The old D skip-connection is out of scope for this oracle (the kernel
-    verifier grades the SSM kernel only; D is handled by the outer Mamba block).
+Resolved math: B and C are single real vectors of size d_state carrying both
+the real and imaginary parts in interleaved pairs, so there is no separate
+B_hat / C_hat projection (Prop 3.2.1; one d_state-wide linear layer, pairs
+(2k, 2k+1)). theta is DATA-DEPENDENT: accumulated as a causal cumsum over
+tanh(angle_proj) * dt * pi, not a fixed frequency schedule. The
+discretisation parameter alpha = exp(dt * A) is explicit (dt and A enter as
+separate scalars, matching Eq. 9). The D skip-connection is out of scope
+for this oracle (the kernel verifier grades the SSM kernel only; D is
+handled by the outer Mamba block).
 
 ORACLE SCOPE
 ------------
-Implements the official rotary-kernel formulation (C2/C3): the cumulative
+Implements the official rotary-kernel formulation: the cumulative
 rotation is folded into B and C as a preprocessing step, and the scan itself
-is a plain decay scan —
+is a plain decay scan:
 
     B_rot_t = R(Theta_t) @ B_t,   C_rot_t = R(Theta_t) @ C_t
     h_t = exp(dt_t * A_t) * h_{t-1} + dt_t * B_rot_t * x_t
     y_t = C_rot_t^T @ h_t
 
 where Theta_t is the CUMULATIVE angle and R the block-diagonal pairwise
-rotation.  This is equivalent to Eq. 9's per-step state rotation
+rotation. This is equivalent to Eq. 9's per-step state rotation
 (h_t = alpha_t * R(delta_theta_t) @ h_{t-1} + ...) by the change of basis
 h_hat_t = R(-Theta_t) @ h_t, up to the sign of angle_proj (a learnable
-reparameterisation).  The official kernels use the fold-into-B/C form — the
-state is never re-rotated inside the scan — so the oracle matches that
+reparameterisation). The official kernels use the fold-into-B/C form: the
+state is never re-rotated inside the scan, so the oracle matches that
 convention exactly.
 
 The trapezoidal discretisation (Prop 3.2.2) reduces to this form at lambda=1;
 this oracle implements the lambda=1 base case. The full data-dependent
-trapezoidal term (lambda = sigmoid(trap), resolved from the paper + official
-mamba3.py) is implemented + pinned at the SISO oracle level in
-``forward_chunked_scan.reference_forward_trapezoidal_scan``; folding it into the
-RoPE scan + the six graded kernels is a scoped extension (they implement
-lambda=1, so they would diverge from a trapezoidal oracle otherwise).
+trapezoidal term (lambda = sigmoid(trap), resolved from the paper + the
+official reference implementation) is implemented + pinned at the SISO
+oracle level in ``forward_chunked_scan.reference_forward_trapezoidal_scan``;
+folding it into the RoPE scan + the six graded kernels is a scoped extension
+(they implement lambda=1, so they would diverge from a trapezoidal oracle
+otherwise).
 
 UNRESOLVED / OUT OF SCOPE
 --------------------------
   * B_bias / C_bias (shape (nheads, mimo_rank, d_state), initialised to 1):
-    observed in C1 mamba3.py but their role is not stated in the main-paper
-    text.  Not included here.
+    observed in the official reference implementation but their role is not
+    stated in the main-paper text. Not included here.
   * The trapezoidal lambda term (beta/gamma split of Prop 3.2.2): the oracle
     follows Eq. 9 only.
   * D skip connection: handled by the outer block, not the SSM scan.
@@ -70,7 +64,8 @@ def _apply_rope_rotation(v: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     Beyond 2*num_rope_angles the dimensions are left unchanged (identity).
 
     conjugate=False throughout (same rotation sign for B and C); confirmed
-    from C3 apply_rotary_qk_inference_reference called without conjugation.
+    from the official ``apply_rotary_qk_inference_reference`` called without
+    conjugation.
 
     Args:
         v:   Tensor of shape (..., d_state), float32.
@@ -114,30 +109,30 @@ def reference_complex_scan_rope(
 ) -> Tensor:
     """Real-equivalent SSM with data-dependent RoPE rotation (Mamba-3 §3.2).
 
-    Official rotary-kernel formulation (C2/C3) — rotation folded into B/C,
+    Official rotary-kernel formulation, rotation folded into B/C,
     plain decay scan:
         B_rot_t = R(Theta_t) @ B_t,   C_rot_t = R(Theta_t) @ C_t
         h_t = alpha_t * h_{t-1} + dt_t * B_rot_t * x_t
         y_t = C_rot_t^T @ h_t
 
     where:
-        alpha_t = exp(dt_t * A_t)       — scalar per (batch, head, step)
+        alpha_t = exp(dt_t * A_t)       (scalar per (batch, head, step))
         R       = block-diag pairwise rotation
         Theta_t = cumsum_s<=t[ tanh(angle_proj_s) * dt_s * pi ]  mod 2*pi
 
-    The hidden state is NEVER re-rotated inside the scan — the cumulative
+    The hidden state is NEVER re-rotated inside the scan; the cumulative
     rotation lives entirely in B_rot/C_rot.  Equivalent to Eq. 9's per-step
     state rotation via the change of basis h_hat_t = R(-Theta_t) @ h_t (up to
     the sign of angle_proj); see the module docstring.
 
     Angle accumulation is computed as a preprocessing step before the scan
-    loop (structural requirement; confirmed from C2/C6 where angle_dt_fwd()
-    is called before the SSM kernel).  Modulo 2*pi is applied for numerical
-    stability (C6).
+    loop (structural requirement in the official reference implementation,
+    where angle accumulation is called before the SSM kernel). Modulo 2*pi
+    is applied for numerical stability.
 
     B and C encode both real and imaginary parts in interleaved pairs
-    (2k, 2k+1) — no separate B_hat / C_hat projection exists (Prop 3.2.1).
-    Pairwise rotation sign is the same for B and C (conjugate=False, C3).
+    (2k, 2k+1); no separate B_hat / C_hat projection exists (Prop 3.2.1).
+    Pairwise rotation sign is the same for B and C (conjugate=False).
     Dimensions beyond 2*num_rope_angles are identity-rotated.
 
     Shape contracts
@@ -206,13 +201,13 @@ def reference_complex_scan_rope(
     alpha = torch.exp(dt * A.unsqueeze(0).unsqueeze(0))  # (B, L, H)
 
     # -----------------------------------------------------------------
-    # Step 4: Scan loop — plain decay scan over pre-rotated B/C.
+    # Step 4: Scan loop: plain decay scan over pre-rotated B/C.
     # Layout convention: h is (batch, nheads, headdim, d_state).
     # x has shape (batch, seqlen, nheads, headdim); at step t, x_t is
-    # (batch, nheads, headdim) — i.e. x[:, t, :, :].
+    # (batch, nheads, headdim), i.e. x[:, t, :, :].
     # The B/C dot is over d_state; headdim is a parallel (independent) dim.
-    # The state is NOT rotated here — the cumulative rotation is already
-    # folded into B_rot/C_rot (official C2/C3 convention).
+    # The state is NOT rotated here; the cumulative rotation is already
+    # folded into B_rot/C_rot (official convention).
     # -----------------------------------------------------------------
     h = torch.zeros(batch, nheads, headdim, d_state, dtype=x.dtype, device=x.device)
     y = torch.empty_like(x)

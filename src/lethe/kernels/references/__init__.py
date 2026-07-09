@@ -1,4 +1,4 @@
-"""PyTorch reference implementations — slow, correct, oracle for the verifier."""
+"""PyTorch reference implementations: slow, correct, oracle for the verifier."""
 
 from .backward_selective_scan import (
     SelectiveScanGrads,

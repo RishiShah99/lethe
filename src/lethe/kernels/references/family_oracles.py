@@ -1,11 +1,11 @@
-"""Family oracles — independent token-serial references for the GDN-2 family gates.
+"""Family oracles: independent token-serial references for the GDN-2 family gates.
 
 Each member of the gated linear-recurrence family
 
     S_t = (I - k_t (b_t ⊙ k_t)^T) Diag(exp g_t) S_{t-1} + k_t (w_t ⊙ v_t)^T
 
 is implemented here FROM ITS OWN DEFINITION, not by feeding gate settings into
-``reference_gdn2_forward`` — a GLA oracle that never forms an erase term is
+``reference_gdn2_forward``: a GLA oracle that never forms an erase term is
 independent evidence that the GDN-2 assembly's reduction algebra is right, where
 the same oracle at ``b = 0`` would only be self-consistency.
 
@@ -21,7 +21,7 @@ Conventions match ``reference_gdn2_forward``: read is post-write ``o_t = S_t^T q
 (correct by construction). Machine-precision (fp64) parity with the GDN-2 oracle
 at the corresponding gate settings is pinned in ``tests/test_gdn2_family.py``.
 
-SSD-the-model plumbing (dt-softplus, D-skip, GVA) is external by design — these
+SSD-the-model plumbing (dt-softplus, D-skip, GVA) is external by design; these
 oracles cover the core recurrence only (H == HV).
 """
 
@@ -49,7 +49,7 @@ def _prep_qk(
 
 
 # ---------------------------------------------------------------------------
-# GLA — per-channel decay, no erase
+# GLA: per-channel decay, no erase
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +106,7 @@ def reference_gla_backward(
 
 
 # ---------------------------------------------------------------------------
-# LA — plain linear attention
+# LA: plain linear attention
 # ---------------------------------------------------------------------------
 
 
@@ -159,7 +159,7 @@ def reference_la_backward(
 
 
 # ---------------------------------------------------------------------------
-# SSD-class — scalar per-head decay, no erase
+# SSD-class: scalar per-head decay, no erase
 # ---------------------------------------------------------------------------
 
 
@@ -181,7 +181,7 @@ def reference_ssd_forward(
     scale: float | None = None,
     use_qk_l2norm: bool = True,
 ) -> Tensor:
-    """SSD-class token-serial forward. ``g`` [B, L, H] — one log-decay per token-head."""
+    """SSD-class token-serial forward. ``g`` [B, L, H], one log-decay per token-head."""
     _check_dtype(q)
     qh, kh, vh = (t.transpose(1, 2) for t in (q, k, v))
     gh = g.transpose(1, 2)
@@ -217,7 +217,7 @@ def reference_ssd_backward(
 
 
 # ---------------------------------------------------------------------------
-# KDA — per-channel decay, scalar erase/write β
+# KDA: per-channel decay, scalar erase/write β
 # ---------------------------------------------------------------------------
 
 

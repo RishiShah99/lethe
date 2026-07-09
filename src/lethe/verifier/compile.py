@@ -19,10 +19,9 @@ def kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
     """Kill *proc* and its descendants (e.g. ptxas / CUDA grandchildren).
 
     POSIX children are spawned as session leaders (``start_new_session``), so
-    ``killpg`` reaps the whole group — ``proc.kill`` alone would orphan the
-    grandchildren, which over a long box campaign of routine compile timeouts
-    accumulate. Windows has no process group here; the direct kill is all
-    that is available.
+    ``killpg`` reaps the whole group; ``proc.kill`` alone would orphan the
+    grandchildren, which accumulate over repeated compile timeouts. Windows
+    has no process group here; the direct kill is all that is available.
     """
     # sys.platform (not os.name) so mypy narrows the POSIX-only calls away on
     # Windows, where they don't exist.
@@ -89,7 +88,7 @@ _TYPE_PATTERNS: list[re.Pattern[str]] = [
 # fall back to ast.parse on CPU-only hosts.
 #
 # The __warmup__ convention: Triton compiles PTX lazily at first *launch*, so
-# merely exec'ing a module (JIT registration) can never surface ptxas errors —
+# merely exec'ing a module (JIT registration) can never surface ptxas errors,
 # including the C7907 / TMEM-budget class this project's reward signal depends
 # on. A candidate module may therefore define a zero-arg ``__warmup__()`` that
 # launches its kernel(s) once on small inputs; any ptxas/launch failure then
@@ -163,12 +162,12 @@ class CompileResult:
 
         Deliberately may be True alongside ``success=True``: the
         autotune-masked form of #904 prunes the TMEM-overflowing configs and
-        completes on crippled survivors — the failure strings appear on
+        completes on crippled survivors; the failure strings appear on
         stderr while the run "succeeds". That perf-cliff form IS the bug.
 
         Reward-gaming note: the bug-routing bonus is keyed on the
         *hand-written reference* tripping this flag, never on a candidate's
-        own flag — so a policy emitting these strings to its own stderr
+        own flag, so a policy emitting these strings to its own stderr
         marks itself failure-prone and earns nothing.
         """
         return self.ptxas_c7907 or self.tmem_budget
@@ -210,7 +209,7 @@ def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
     On hosts where ``triton`` is not importable, falls back to ``ast.parse``.
 
     Triton compiles PTX lazily at first launch, so sources that define a
-    zero-arg ``__warmup__()`` get it called after module exec — that is the
+    zero-arg ``__warmup__()`` get it called after module exec: that is the
     only way ptxas-level failures (the C7907 / TMEM-budget class) can be
     detected at "compile" time. Sources without ``__warmup__`` are only
     exec'd (JIT registration).

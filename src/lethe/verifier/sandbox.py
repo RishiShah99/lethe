@@ -1,7 +1,7 @@
 """Subprocess sandbox: run a kernel callable in an isolated child process.
 
 Isolates segfaults, OOM kills, and CUDA IMA faults from the parent process.
-The task (module/callable/inputs) is marshalled parent->child via pickle — it is
+The task (module/callable/inputs) is marshalled parent->child via pickle; it is
 parent-authored, so it is trusted. The child's RESULT travels back over a private
 fd serialized with ``torch.save`` and is loaded in the parent with
 ``torch.load(weights_only=True)``: the parent runs the reward/verdict logic, so it
@@ -138,7 +138,7 @@ def _classify_subprocess_failure(stderr: str, rc: int) -> ErrorClass:
     if rc == _RC_TIMEOUT:
         return ErrorClass.TIMEOUT
     if rc in (_RC_SEGFAULT_POSIX, _RC_ACCESS_VIOLATION_WIN, _RC_ACCESS_VIOLATION_WIN_U):
-        return ErrorClass.OTHER  # segfault — "OTHER" since ErrorClass has no SEGFAULT variant
+        return ErrorClass.OTHER  # segfault; "OTHER" since ErrorClass has no SEGFAULT variant
 
     stderr_lower = stderr.lower()
     if any(p.lower() in stderr_lower for p in _OOM_PATTERNS):
@@ -155,7 +155,7 @@ def _deserialize_child_output(data: bytes) -> Any:
 
     The child is untrusted (it runs the candidate kernel) and the parent runs the
     reward/verdict logic, so a bare ``pickle.loads`` here would let a reward-hacking
-    candidate execute arbitrary code in the parent via a ``__reduce__`` gadget —
+    candidate execute arbitrary code in the parent via a ``__reduce__`` gadget,
     forging rewards / GO verdicts. ``torch.load(weights_only=True)`` admits only
     tensors and plain primitive containers and refuses any code-bearing global, so
     a gadget surfaces as a deserialization failure instead of running. This is the
@@ -192,10 +192,10 @@ def run_in_subprocess(
         Wall-clock timeout in seconds.
     memory_limit_mb:
         Virtual-address limit for the child process (POSIX only; ignored on
-        Windows — see module docstring). Pass ``0`` to disable. IMPORTANT:
+        Windows, see module docstring). Pass ``0`` to disable. IMPORTANT:
         CUDA context initialisation maps more virtual address space than any
         practical RLIMIT_AS (multi-GPU unified addressing), so GPU-executing
-        candidates must run with ``memory_limit_mb=0`` — rely on the timeout
+        candidates must run with ``memory_limit_mb=0``; rely on the timeout
         and process isolation instead. The default suits CPU-only work.
     extra_env:
         Environment overrides for the child (e.g. ``CUDA_VISIBLE_DEVICES``
@@ -271,7 +271,7 @@ def run_in_subprocess(
             exit_code=rc,
         )
 
-    # Safely deserialize the result (never executes candidate code — see helper).
+    # Safely deserialize the result (never executes candidate code; see helper).
     try:
         output = _deserialize_child_output(stdout_bytes)
     except Exception as exc:

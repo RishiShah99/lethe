@@ -1,27 +1,26 @@
-"""Stage-B intra-einsum kernel — the squeeze after the K#2 fusion (campaign step 5).
+"""Stage-B intra-einsum kernel, replaces the ``decay_rel`` einsums after the K#2 fusion.
 
-After burst 5 the closed stage-B chain is the dominant device-time share, and its tax
-is the pair of ``decay_rel`` einsums (gdn2_assemble._stage_b_vjp_cw_closed):
+The closed stage-B chain's pair of ``decay_rel`` einsums (gdn2_assemble._stage_b_vjp_cw_closed):
 
     dq_intra[i,d] = sum_{s<=i} da_qk[i,s] * k[s,d] * exp2(g2[i,d] - g2[s,d])
     dk_intra[s,d] = sum_{i>=s} da_qk[i,s] * q[i,d] * exp2(g2[i,d] - g2[s,d])
 
-plus the 1.07 GB ``masked_decay_rel`` build feeding them. This kernel computes both
-sums SIMT with ON-THE-FLY exp2 on the lower-INCLUSIVE triangle only (the loop range is
-the mask; arguments are structurally <= 0 — the masked-unfactored discipline), so the
-materialization and both streamed reads disappear.
+cost a 1.07 GB ``masked_decay_rel`` materialization plus two streamed reads over it.
+This kernel computes both sums SIMT with on-the-fly exp2 on the lower-inclusive
+triangle only (the loop range is the mask, so exp2 arguments are structurally <= 0
+and no secondary overflow guard is needed), so the materialization and both streamed
+reads disappear.
 
-It is a transplant of the fused K#2 kernel's SIMT tail — SILICON-GO as of burst 5
-(results/k2f_microgate_*.json), including the data-dependent triangular loop bounds —
-with inclusive bounds (the diagonal's exp2(0)=1 is live here, matching lower_incl
-da_qk). No GEMMs, no TMEM, no TMA, no smem: grid-z over Z=B·H·NT, 128 threads, two
-independent passes of serial per-thread fp32 accumulation (fixed order, deterministic).
+It is a transplant of the fused K#2 kernel's SIMT tail, with inclusive bounds (the
+diagonal's exp2(0)=1 is live here, matching lower_incl da_qk). No GEMMs, no TMEM, no
+TMA, no smem: grid-z over Z=B·H·NT, 128 threads, two independent passes of serial
+per-thread fp32 accumulation (fixed order, deterministic).
 
-Executor discipline unchanged: call tuple = the 6 marked cute.Tensors + CUstream
-(Constexprs baked + dropped). Kill-switch at the wiring site: ``FMR_DISABLE_SBE=1``
-keeps the torch einsum path. Box gate harness: ``scratch/sbe_microgate.py``.
+Executor discipline: call tuple = the 6 marked cute.Tensors + CUstream (Constexprs
+baked and dropped from the runtime signature). Kill-switch at the wiring site:
+``FMR_DISABLE_SBE=1`` keeps the torch einsum path.
 """
-# NB: no `from __future__ import annotations` — keep consistent with the DSL kernel files.
+# NB: no `from __future__ import annotations`, keep consistent with the DSL kernel files.
 
 import torch
 from torch import Tensor

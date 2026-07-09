@@ -1,7 +1,7 @@
 """Triton kernels for the Mamba fused-block forward (C5).
 
 Import this module only when ``triton`` is installed and a CUDA device is
-the target — the public dispatcher in ``fused_block_forward.py`` guards
+the target, the public dispatcher in ``fused_block_forward.py`` guards
 both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
 
     x            : [B, L, D]      row-major, L = L_out + K - 1 (caller pre-pads)
@@ -21,18 +21,18 @@ or a grid sync (none exists); the one-program-per-batch alternative pays
 2*D*N*4 bytes/step of HBM state traffic and serialises D. So:
 
 - **Kernel A** fuses conv1d + SiLU + selective scan in one serial-L pass,
-  one program per (batch, D-block) — C1's layout. The conv is local in t,
+  one program per (batch, D-block), C1's layout. The conv is local in t,
   so it rides the scan's serial loop: each step loads the K-column x window
   as one [BLOCK_D, BLOCK_K] block, of which only the newest column is an
   L2 miss (the other K-1 columns were loaded on previous steps). Neither
-  the conv activation nor SiLU ever round-trips HBM — the official path
+  the conv activation nor SiLU ever round-trips HBM, the official path
   stages both (causal_conv1d kernel, then the scan kernel re-reads). Only
   the scan output is staged, once, in fp32, so the mixed-precision
   contract (compute fp32, round once at the final store) survives the
   kernel split.
 - **Kernel B** is a deterministic RMSNorm: one program per (batch,
   t-block), the full-D sum of squares accumulated in-program over fixed
-  D-chunks (no atomics, fixed order — ORD-02 by construction).
+  D-chunks (no atomics, fixed order, ORD-02 by construction).
 
 Scan invariants carried from C1 verbatim: fp32 state and arithmetic with
 upcast-at-load, libdevice exp/log1p (ex2.approx flushes subnormals and
@@ -209,7 +209,7 @@ def launch_fused_block_forward(
 
     ``config`` overrides the conv-scan kernel's searched knobs (block_d,
     num_warps, num_stages); ``num_warps`` is the legacy bench-sweep hook. The
-    norm kernel keeps its own heuristic — a memory-bound pass, not the
+    norm kernel keeps its own heuristic, a memory-bound pass, not the
     autotuner's subject. A None config or None field keeps the shipped
     heuristic.
     """
@@ -225,9 +225,9 @@ def launch_fused_block_forward(
     block_n = triton.next_power_of_2(n_state)
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
-    # block_d tiles D into independent per-D outputs — bitwise correctness-
+    # block_d tiles D into independent per-D outputs, bitwise correctness-
     # invariant (it sets only which program computes which d, never the math).
-    # The E2.d grid sweep + full-gate confirm found block_d=16 with num_warps=4
+    # A grid sweep with full-gate confirmation found block_d=16 with num_warps=4
     # the robust optimum: 1.64x over the prior block_d=64 default at (2,2048,1024),
     # gate-clean, and 1.45-1.66x across width 256-4096 x seq 1024-16384.
     block_d = min(16, triton.next_power_of_2(d_model))

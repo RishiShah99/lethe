@@ -1,7 +1,7 @@
 """Gated DeltaNet-2 (GDN-2) chunkwise recurrence: forward reference + autograd backward.
 
 Oracle for the native Blackwell GDN-2 training backward. The forward is an explicit
-token-serial scan (slow, correct); the backward delegates to ``torch.autograd`` —
+token-serial scan (slow, correct); the backward delegates to ``torch.autograd``,
 correctness by construction, not by hand-derived formulae.
 
 RECURRENCE (locked from NVIDIA's own GDN-2 source, not the paper)
@@ -18,7 +18,7 @@ State ``S in R^{d_k x d_v}``. Per token, with ``*``/``⊙`` elementwise:
 gate (key axis); ``w in [0,1]^{d_v}`` is the write gate (value axis). The read uses
 the post-write state (matches fla naive + the GDN-2 recurrent kernel exactly).
 
-Source of truth: ``NVlabs/GatedDeltaNet-2`` @ 95709fc ``lit_gpt/gdn2_ops/`` — the
+Source of truth: ``NVlabs/GatedDeltaNet-2`` @ 95709fc ``lit_gpt/gdn2_ops/``. The
 ``fused_recurrent_gdn2`` docstring states the four-line recurrence above; this oracle
 reimplements that math (NC license: math only, never copy code). Cross-checked against
 ``fla`` ``naive_recurrent_gated_delta_rule`` for the scalar reduction.
@@ -31,7 +31,7 @@ which is exactly the scalar gated delta rule (fla ``naive_recurrent_gated_delta_
 precision (fp64 allclose; op order differs). This is the cheapest GO/NO-GO check for any
 GDN-2 kernel.
 
-SHAPES (crown target H == HV, i.e. no GVA; see PROJECT_PLAN §6)
+SHAPES (native kernel target H == HV, i.e. no GVA)
 --------------------------------------------------------------
     q, k, g, b : (batch, seqlen, nheads, d_k)
     v, w       : (batch, seqlen, nheads, d_v)
@@ -44,7 +44,7 @@ The kernel must produce ``dq, dk, dv, dg, db, dw`` (and ``dh0`` if an initial st
 given). The hard part is a reverse-time scan: ``S_t`` feeds ``S_{t+1}`` through BOTH the
 decay carry ``Diag(exp(g_{t+1})) S_t`` AND the erase term
 ``-k_{t+1} [(b⊙k)_{t+1}^T Diag(exp(g_{t+1})) S_t]^T`` (delta-rule coupling), so the state
-gradient ``dS`` accumulates backward with a rank-one correction per step — the reverse
+gradient ``dS`` accumulates backward with a rank-one correction per step, the reverse
 inter-chunk state recurrence (``chunk_gated_delta_rule_bwd_dhu`` in fla, the kernel even
 cuLA leaves in Triton). The read ``o_t = S_t^T q_t`` contributes ``dq_t = S_t @ do_t`` and a
 ``q_t ⊗ do_t`` term into ``dS_t``. The triangular-inverse / WY VJP handles the intra-chunk

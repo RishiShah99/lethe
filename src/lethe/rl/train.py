@@ -5,7 +5,7 @@ fenced code block → score each source through the sandboxed op-harness
 battery (``score_candidate_source``) → group-relative advantages →
 clipped surrogate + KL loss → one optimizer step on the LoRA adapter.
 
-Degenerate groups (all rewards identical — e.g. every candidate fails the
+Degenerate groups (all rewards identical: e.g. every candidate fails the
 same way, or all saturate at the compile ceiling) carry no policy-gradient
 signal; the step skips the log-prob forward passes and the update
 entirely, recording ``loss=None``. The test is exact value equality, not a
@@ -13,14 +13,14 @@ float-std threshold: fp32 mean rounding gives an all-0.1 group a std of
 ~7e-9, which would otherwise turn every saturated group into a spurious
 uniform-negative update.
 
-Checkpointing is spot-box-shaped: step-stamped immutable adapter dirs via
+Checkpointing is preemption-resilient: step-stamped immutable adapter dirs via
 peft ``save_pretrained``, with the atomically replaced ``trainer_state.pt``
 as the commit point naming the valid adapter (step counter, optimizer
 state, RNG states ride along). Resume = ``HFPolicy.from_pretrained(
 adapter_path=GRPOTrainingLoop.latest_adapter_path(dir))`` +
 :meth:`GRPOTrainingLoop.load_trainer_state`. Per-step metrics and
 per-candidate rollout rows append to JSONL files in the checkpoint dir so
-a detached box run can be polled with ``tail``; both use 1-based step ids.
+a running job can be polled with ``tail``; both use 1-based step ids.
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ class GRPOTrainingLoop:
         self.policy = policy
         # Generation is the bottleneck at 32B; an optional data-parallel
         # GenerationPool samples across replica GPUs. The trainer policy
-        # still owns the log-prob streams and the update — only sampling is
+        # still owns the log-prob streams and the update: only sampling is
         # pooled, and the pool's LoRA is refreshed from this policy each
         # step so the sampled distribution is the current behaviour policy.
         self._gen_pool = gen_pool
@@ -144,8 +144,9 @@ class GRPOTrainingLoop:
         self._batch_scorer = batch_scorer
         self._entry_point = _OP_ENTRY_POINTS[config.op]
         # The action representation is pluggable: the default pulls the final
-        # fenced code block (source-generation track); the E2.c config track
-        # passes an extractor that pulls the fenced KernelConfig JSON instead.
+        # fenced code block (source-generation track); the config-emission
+        # track passes an extractor that pulls the fenced KernelConfig JSON
+        # instead.
         self._extractor = extractor if extractor is not None else self._default_extractor
         # Forced-exploration seeds (#14): each step replaces the first
         # len(seed_completions) sampled completions with these fixed strings,
@@ -176,7 +177,7 @@ class GRPOTrainingLoop:
         )
 
     def step(self) -> TrainStepMetrics:
-        """One GRPO update. Dropout must be off — sampling and scoring
+        """One GRPO update. Dropout must be off: sampling and scoring
         log-probs must agree at step 0 (ratio identity)."""
         cfg = self.config
         self.policy.eval_mode()
@@ -235,14 +236,14 @@ class GRPOTrainingLoop:
         if rewards.max().item() != rewards.min().item():
             advantages = compute_group_advantages(rewards)
             # EOS joins the scored trajectory only where the policy actually
-            # stopped (last_terminated, from whichever sampled — pool or
+            # stopped (last_terminated, from whichever sampled: pool or
             # policy); stubs without it score all.
             terminated = getattr(generator, "last_terminated", None)
             append_eos: bool | list[bool] = (
                 list(terminated) if terminated and len(terminated) == len(completions) else True
             )
             # A seed is a complete emission (it ends with a closed fence), so
-            # the stop decision is part of its trajectory — override the
+            # the stop decision is part of its trajectory: override the
             # generator's terminated flag for the positions we overwrote.
             if n_seed and isinstance(append_eos, list):
                 for i in range(n_seed):
@@ -317,13 +318,13 @@ class GRPOTrainingLoop:
         return history
 
     # ------------------------------------------------------------------
-    # Checkpointing (spot box: adapter + optimizer + step + RNG)
+    # Checkpointing (preemption-resilient: adapter + optimizer + step + RNG)
     # ------------------------------------------------------------------
 
     def save_checkpoint(self) -> None:
         """Adapter dirs are step-stamped and immutable; the atomically
         replaced ``trainer_state.pt`` is the commit point naming the valid
-        one — a preemption mid-save leaves the previous checkpoint fully
+        one: a preemption mid-save leaves the previous checkpoint fully
         consistent (a half-written adapter dir is never referenced)."""
         cfg = self.config
         os.makedirs(cfg.checkpoint_dir, exist_ok=True)

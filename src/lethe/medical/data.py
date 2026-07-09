@@ -7,7 +7,7 @@ Expected on-disk layout (standard PhysioNet download, do not alter):
         records100/<subdir>/*.hea  -- 100 Hz WFDB records (filename_lr column)
         records500/<subdir>/*.hea  -- 500 Hz WFDB records (filename_hr column)
 
-Fetch command (box side):
+Fetch command:
     wget -r -N -c -np \
         https://physionet.org/files/ptb-xl/1.0.3/ \
         -P <root>
@@ -21,7 +21,7 @@ Label sets:
                    diagnostic == 1).
   "subclass"   -- 23 diagnostic subclasses: each diagnostic SCP code (rows
                   where diagnostic == 1) rolled up into its diagnostic_subclass
-                  grouping — the PTB-XL benchmark's 23-way diagnostic task.
+                  grouping, the PTB-XL benchmark's 23-way diagnostic task.
 
 min_likelihood:
   The scp_codes column is a dict {code: likelihood}.  A code is included in
@@ -79,7 +79,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         100  → records100/ (filename_lr column, T = 1 000 samples)
         500  → records500/ (filename_hr column, T = 5 000 samples)
     split:
-        "train" | "val" | "test" — official strat_fold partition.
+        "train" | "val" | "test": official strat_fold partition.
     label_set:
         "superclass" → 5-class multi-hot (NORM/MI/STTC/CD/HYP)
         "subclass"   → 23-class diagnostic-subclass multi-hot
@@ -91,7 +91,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     ------
     FileNotFoundError
         If ``ptbxl_database.csv`` or ``scp_statements.csv`` are absent
-        under *root* — caller must fetch the dataset first.
+        under *root*. Caller must fetch the dataset first.
     ValueError
         If *sampling_rate*, *split*, or *label_set* are invalid.
     """
@@ -147,7 +147,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         else:
             # PTB-XL diagnostic-subclass task: each diagnostic SCP code rolls up
             # into its diagnostic_subclass grouping (23 subclasses in PTB-XL
-            # 1.0.3), the unit the published benchmark reports — not the raw
+            # 1.0.3), the unit the published benchmark reports, not the raw
             # per-code set.
             sub_col = diag_stmts["diagnostic_subclass"].dropna().astype(str)
             sub_col = sub_col[sub_col.str.len() > 0]
@@ -223,7 +223,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         """Light ECG augmentation on a z-scored (12, T) signal (train only).
 
         Composes per-signal amplitude jitter, additive Gaussian noise, a circular
-        time shift, and occasional lead masking — perturbations that preserve the
+        time shift, and occasional lead masking: perturbations that preserve the
         diagnostic morphology while breaking memorization of exact waveforms.
         Uses the global torch RNG, which DataLoader seeds per worker.
         """

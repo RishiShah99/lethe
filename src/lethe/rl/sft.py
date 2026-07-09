@@ -1,16 +1,16 @@
-"""Warm-start SFT over verified targets — the cold-start fix's training half.
+"""Warm-start SFT over verified targets.
 
 GRPO is amplification-only: with zero contract passes in the sampling
 distribution every group is degenerate and the update is skipped, so
-RL-from-base floors (measured: 0 contract passes on every Phase E level
+RL-from-base floors (measured: 0 contract passes on every curriculum level
 it reached). This loop minimizes the NLL of a verified target completion
 given the same chat-templated op prompt GRPO samples from, through the
-same ``completion_log_probs`` path that scores GRPO's streams — the
+same ``completion_log_probs`` path that scores GRPO's streams, so the
 SFT'd distribution is exactly the behaviour policy the curriculum
 resumes from.
 
 The loop scores each target with ``completion_log_probs(temperature=1.0)``
-so the objective is standard cross-entropy by construction — minimizing
+so the objective is standard cross-entropy by construction: minimizing
 ``-log softmax(logits)``, not the tempered surrogate the policy's sampling
 temperature would otherwise impose (``completion_log_probs`` divides logits
 by its temperature; the GRPO behaviour streams want the sampling value, SFT
@@ -18,7 +18,7 @@ wants 1.0). Correctness no longer rides on the driver setting
 ``SamplingSettings(temperature=1.0)``.
 
 Targets are consumed as the exact bytes the verifier scored, fenced the
-way the prompt instructs and ``extract_code`` parses — the SFT example
+way the prompt instructs and ``extract_code`` parses: the SFT example
 IS a maximal-reward rollout. Example order is a pure function of
 (seed, epoch), never of global RNG, so a spot resume replays the same
 schedule. Checkpoint layout matches :class:`GRPOTrainingLoop` (immutable
@@ -149,7 +149,7 @@ class SFTTrainingLoop:
         cfg = self.config
         self.policy.eval_mode()
         example = self._example_for_step(self.step_idx)
-        # The target ends at the closing fence by choice — append_eos trains
+        # The target ends at the closing fence by choice: append_eos trains
         # the stop decision along with the code. temperature=1.0 makes the NLL
         # exact cross-entropy regardless of the policy's sampling temperature.
         log_probs, mask = self.policy.completion_log_probs(
@@ -195,7 +195,7 @@ class SFTTrainingLoop:
         return history
 
     # ------------------------------------------------------------------
-    # Checkpointing — same commit-point layout as GRPOTrainingLoop, so
+    # Checkpointing: same commit-point layout as GRPOTrainingLoop, so
     # latest_adapter_path resolves SFT dirs too.
     # ------------------------------------------------------------------
 
@@ -222,7 +222,7 @@ class SFTTrainingLoop:
         if not os.path.exists(path):
             return False
         # weights_only=True: safe loader for the step/adapter_name/optimizer/RNG
-        # payload — closes the pickle-RCE on resume from a foreign checkpoint dir
+        # payload, closes the pickle-RCE on resume from a foreign checkpoint dir
         # (same standard as GRPOTrainingLoop.load_trainer_state and medical/train).
         state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])

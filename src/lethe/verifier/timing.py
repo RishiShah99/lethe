@@ -45,7 +45,7 @@ def benchmark(
         Number of timed calls.  Median (not best-of) is reported.
     inputs_factory:
         When supplied, fresh inputs are built per call via
-        ``inputs_factory(i)`` *outside* the timed window — distinct content
+        ``inputs_factory(i)`` *outside* the timed window, distinct content
         per trial. A fixed input tuple lets a candidate that memoizes on an
         input fingerprint, or mutates a shared buffer in place, fabricate a
         speedup by serving cache hits after the first trial; rebuilding with
@@ -54,7 +54,7 @@ def benchmark(
     output_sink:
         When given, each timed trial's return value is appended (after the
         timing window closes, so retention never perturbs the measurement).
-        Lets the caller value-check the *actual timed outputs* — the only way
+        Lets the caller value-check the *actual timed outputs*, the only way
         to bind correctness to the calls that produced the ratio, so a
         candidate cannot no-op the timed trials while computing correctly for
         any separate probe. Warm-up outputs are not captured.

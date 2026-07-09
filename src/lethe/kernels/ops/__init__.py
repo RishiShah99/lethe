@@ -1,4 +1,4 @@
-"""Hand-written Triton kernels (Phase C), one module per op.
+"""Hand-written Triton kernels, one module per op.
 
 Each op mirrors its reference oracle's signature exactly and dispatches:
 CUDA + supported dtype -> the Triton kernel; everything else -> a

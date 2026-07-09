@@ -5,7 +5,7 @@ scored by the verifier. GRPO computes group-relative advantages over
 this batch and uses them to update the policy.
 
 These types are deliberately pure-data dataclasses with no model
-dependencies — the trainer mutates them, the verifier scores them,
+dependencies: the trainer mutates them, the verifier scores them,
 the policy generates them.
 """
 
@@ -76,7 +76,7 @@ class Rollout:
     def advantages(self) -> tuple[float, ...]:
         """Group-relative advantages via the single ground-truth estimator.
 
-        Delegates to :func:`lethe.rl.grpo.compute_group_advantages` — the
+        Delegates to :func:`lethe.rl.grpo.compute_group_advantages`, the
         estimator the live optimizer step uses (``eps=1e-4``). A local
         reimplementation here previously carried a divergent ``eps=1e-8`` floor: a
         latent foot-gun that would resurrect behaviour the trainer tuned away for

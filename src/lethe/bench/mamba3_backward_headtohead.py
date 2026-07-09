@@ -1,28 +1,28 @@
-"""Claim #3: our backward vs the *crippled* official Mamba-3 backward on B200.
+"""Backward bench: ours vs the crippled official Mamba-3 backward on B200.
 
-The THESIS make-or-break number. The c2/c6 benches compare ``ours_triton``
-against ``selective_scan_fn`` — the **Mamba-1 SSD CUDA** backward, which is
-healthy on Blackwell. That is the wrong baseline and is why we "looked 2.7x
-slow." The honest head-to-head is against the **Mamba-3** backward that
-#904 cripples: the path that launches ``mamba3_siso_bwd_kernel_dqkv``, which
-on sm_100 loses every ``num_warps >= 4`` config to the TMEM-budget overflow
-(544 > 512) and runs at the spilled ``num_warps=2`` survivor.
+The c2/c6 benches compare ``ours_triton`` against ``selective_scan_fn``, the
+**Mamba-1 SSD CUDA** backward, which is healthy on Blackwell. That is the wrong
+baseline for the #904 comparison; the honest head-to-head is against the
+**Mamba-3** backward that #904 cripples: the path that launches
+``mamba3_siso_bwd_kernel_dqkv``, which on sm_100 loses every ``num_warps >= 4``
+config to the TMEM-budget overflow (544 > 512) and runs at the spilled
+``num_warps=2`` survivor.
 
 What this measures, honestly: the wall-clock of **the backward kernel that
 runs in the real crippled model** vs our backward, at the same
-(B, L, d_model). It is NOT "same math, ours faster" — our op is a
+(B, L, d_model). It is NOT "same math, ours faster": our op is a
 Mamba-1-style SISO selective-scan backward (u, delta, A, B, C, D); the
 official ``mamba3_siso_combined`` backward is a richer Mamba-3 chunk-scan
 (Q/K/V/DT/Trap/angles/gates) doing materially more work. The point of the
 comparison is that the official path is the one #904 cripples and ours runs
-full-strength, not that the two compute identical FLOPs — so MFU is reported
+full-strength, not that the two compute identical FLOPs, so MFU is reported
 for **ours only** (under the explicit SSM FLOP model below); the official
 side reports wall-clock alone (a shared FLOP model applied to it would be a
 tautology). Wall-clock is the claim.
 
 Two official comparators, both exercising the crippled kernel:
 
-- ``official_siso_combined_bwd`` — the closest one: the Mamba-3 SISO
+- ``official_siso_combined_bwd``: the closest one: the Mamba-3 SISO
   chunk-scan training function ``mamba3_siso_combined`` (its backward
   dispatches to the crippled kernel), differentiated, vs our
   ``backward_selective_scan`` at the same (B, L, d_model). Its signature
@@ -30,23 +30,22 @@ Two official comparators, both exercising the crippled kernel:
   so rather than hand-build those tensors (which would mean guessing Mamba-3
   internals) we *capture* the exact tensors a real ``Mamba3`` module feeds
   the function via a monkeypatch hook, detach them into fresh leaves, and
-  time the backward on those — the op runs at the model's real head config
-  (recorded in ``official_meta``). A profiler check on the warm-up backward
-  confirms a ``mamba3_siso_bwd``/``dqkv`` kernel actually launched; if not
-  (or capture fails), the row is a recorded skip, never a fabricated timing.
-  The discovery dump (``scratch/mamba3_bwd_discover.py``) shows the real path.
-- ``official_mamba3_module_bwd`` — the robust backstop: the full ``Mamba3``
+  time the backward on those, at the model's real head config (recorded in
+  ``official_meta``). A profiler check on the warm-up backward confirms a
+  ``mamba3_siso_bwd``/``dqkv`` kernel actually launched; if not (or capture
+  fails), the row is a recorded skip, never a fabricated timing.
+- ``official_mamba3_module_bwd``: the robust backstop: the full ``Mamba3``
   SISO module backward (always exercises the kernel, but includes in/out
-  projections, so it is *not* shape-matched to our scan-only op — labelled,
+  projections, so it is *not* shape-matched to our scan-only op, labelled,
   for sanity not for the headline).
 
 Timing mirrors the c2/c6 benches: the official forward runs once outside the
 timed region and the timed backward reuses its forward-saved activations
-(conservative against us — every timed call of ours re-stages the forward
+(conservative against us, every timed call of ours re-stages the forward
 in-kernel). CUDA-event timed, median over trials.
 
-    CUDA_VISIBLE_DEVICES=0 uv run python -m \
-        lethe.bench.mamba3_backward_headtohead --out ~/out/headtohead.json
+Usage: ``uv run python -m
+lethe.bench.mamba3_backward_headtohead --out ~/out/headtohead.json``
 """
 
 from __future__ import annotations
@@ -71,7 +70,7 @@ try:
     from mamba_ssm.modules.mamba3 import Mamba3
 
     _HAS_MAMBA3 = True
-except Exception:  # pragma: no cover - box-only dependency
+except Exception:  # pragma: no cover - optional dependency
     _HAS_MAMBA3 = False
 
 # SSM selective-scan FLOP model (forward), per (batch, len, d_model, d_state)
@@ -114,9 +113,9 @@ class ShapeSpec:
 # SISO default (d_state=128). d_model multiples of headdim.
 SHAPES = [
     ShapeSpec(2, 512, 1024, 128, 64),  # small, every comparator runs
-    ShapeSpec(8, 2048, 4096, 128, 64),  # training shape — the #904 regime
+    ShapeSpec(8, 2048, 4096, 128, 64),  # training shape, the #904 regime
     ShapeSpec(8, 4096, 4096, 128, 64),
-    ShapeSpec(2, 16384, 4096, 128, 64),  # long-sequence story
+    ShapeSpec(2, 16384, 4096, 128, 64),  # long-sequence regime
 ]
 QUICK_SHAPES = [ShapeSpec(2, 512, 1024, 128, 64), ShapeSpec(4, 2048, 2048, 128, 64)]
 
@@ -159,7 +158,7 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
     """Run one Mamba3 forward, capture the args it feeds mamba3_siso_combined.
 
     Monkeypatches the function in its defining module so the captured tensors
-    are exactly what the real model passes — no Mamba-3-internal guessing.
+    are exactly what the real model passes, no Mamba-3-internal guessing.
     Returns (callable, captured_args_tuple, captured_kwargs, layer_cfg).
     """
     import sys
@@ -185,7 +184,7 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
     for mod in list(sys.modules.values()):
         # getattr on a PEP-562 lazy module (e.g. the torchvision stub) can
         # trigger an import that raises ModuleNotFoundError, which the None
-        # default does not catch — guard and skip.
+        # default does not catch, guard and skip.
         try:
             attr = getattr(mod, "mamba3_siso_combined", None)
         except Exception:
@@ -254,7 +253,7 @@ def _official_siso_combined(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):
 
 
 def _official_mamba3_module(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # type: ignore[no-untyped-def]
-    """Full Mamba3 SISO module forward, graph retained — robust backstop."""
+    """Full Mamba3 SISO module forward, graph retained, robust backstop."""
     torch.manual_seed(seed)
     dev = torch.device("cuda")
     layer = Mamba3(d_model=spec.d_model).to(dev).to(dtype)

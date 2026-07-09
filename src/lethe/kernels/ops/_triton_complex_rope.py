@@ -3,7 +3,7 @@
 Fully fused single pass: the official stack splits this op into an
 ``angle_dt`` cumsum kernel plus a scan that consumes pre-rotated B/C; here
 the per-step angle accumulation, tanh/cos/sin, the pairwise rotation and
-the decay scan all live in one program — no theta / B_rot / C_rot tensors
+the decay scan all live in one program, no theta / B_rot / C_rot tensors
 ever hit HBM. Same structural rules as C1-C3: no ``tl.dot`` (the sm_100
 TMEM-promotion pass never engages), no atomics (one program owns each
 output lane; ORD-02 by construction), serial over L.
@@ -12,7 +12,7 @@ The rotation is lane-parallel, never a register shuffle: state lane n
 belongs to pair k = n // 2; each lane reloads its partner lane (n ^ 1)
 from global memory (same cache line) and computes
 ``self * cos + sign * partner * sin`` with sign -1 on even lanes, +1 on
-odd — exactly the reference's interleaved-pair convention. Lanes at
+odd, exactly the reference's interleaved-pair convention. Lanes at
 n >= 2 * num_angles pass through unrotated. theta rides as a [BLOCK_N]
 fp32 accumulator (both lanes of a pair duplicate it) with a floor-based
 remainder 2*pi applied per step: algebraically identical to the
@@ -23,7 +23,7 @@ carries O(L * dt) magnitudes before its single mod.
 libdevice transcendentals throughout (exp/tanh/cos/sin), not the
 approx-path tl variants, for the same denormal/precision reasons as C1.
 
-Import only with triton installed and CUDA the target — the dispatcher in
+Import only with triton installed and CUDA the target, the dispatcher in
 ``complex_scan_rope.py`` guards both. Layout (enforced via
 ``.contiguous()``):
 
@@ -178,11 +178,11 @@ def launch_complex_scan_rope(
     y = torch.empty_like(x_c)
 
     grid = (batch, nheads, triton.cdiv(headdim, block_p))
-    # B200 nw2-vs-nw4 medians (scratch/c4_warp_probe.py): the heuristic wins
-    # or ties at B2xL256xH4 (0.211 vs 0.233), B2xL1024xH8 (tie) and
-    # B4xL2048xH16 (6.29 vs 6.37); at B8xL2048xH32 nw=2 wins (6.50 vs 7.64)
-    # — grid-size dependent, not block-size. Autotune is the v2 lever; the
-    # num_warps override below serves measured callers meanwhile.
+    # B200 nw2-vs-nw4 medians: the heuristic wins or ties at B2xL256xH4
+    # (0.211 vs 0.233), B2xL1024xH8 (tie) and B4xL2048xH16 (6.29 vs 6.37);
+    # at B8xL2048xH32 nw=2 wins (6.50 vs 7.64), grid-size dependent, not
+    # block-size. Autotune is the v2 lever; the num_warps override below
+    # serves measured callers meanwhile.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     if config is not None and config.num_warps is not None:
         warps = config.num_warps
