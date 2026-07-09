@@ -37,8 +37,12 @@ dev = [
     "mypy>=1.11",
     "ipython>=8.27",
 ]
+demo = [
+    "matplotlib>=3.10.9",
+    "imageio-ffmpeg>=0.6.0",
+]
 all = [
-    "lethe[gpu,rl,medical,dev]",
+    "lethe[gpu,rl,medical,dev,demo]",
 ]
 
 [build-system]
