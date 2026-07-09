@@ -1,5 +1,6 @@
-# Markdown — never push docs/plans to GitHub (strategic notes stay local)
+# Markdown — strategic notes stay local; README is the one public doc
 *.md
+!README.md
 
 # Python
 __pycache__/
@@ -42,11 +43,9 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Project-local artifacts
-scratch/runs/
-results/runs/
-results/logs/
-results/checkpoints/
+# Project-local working dirs (one-off probes + raw run artifacts stay local)
+scratch/
+results/
 *.log
 wandb/
 
@@ -74,3 +73,12 @@ credentials.json
 box_out_*/
 e2_config_seed/
 *_bundle_*.pt
+
+# Media + local pulls (demo renders and pulled box output never ship)
+video/
+*.mp4
+*.mov
+*.gif
+box_pull/
+results_pull_*/
+deliverables/

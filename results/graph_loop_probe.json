@@ -1,8 +1,0 @@
-{
-  "probe": "graph_loop_capture",
-  "available": true,
-  "capture_ok": true,
-  "replay_n": 5,
-  "replay_worst_rel": 0.0004205214499961585,
-  "GO": true
-}
