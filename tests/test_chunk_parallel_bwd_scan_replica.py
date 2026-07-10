@@ -1,40 +1,4 @@
-"""Pin the chunk-parallel-carry SISO backward algebra against the serial oracle.
-
-The serial-L backward (``reference_backward_selective_scan`` = autograd through
-the forward; mirrored op-for-op by the shipped C2 Triton kernel
-``_triton_bwd_scan``) carries two states step-by-step over all L: the forward
-state ``h`` (for the per-step ``h_{t-1}``/``h_t`` the gradient formulae need) and
-the reverse adjoint ``g_t = dL/dh_t``. Both are linear recurrences, so both
-reassociate the same way the forward scan does — this is the deferred long-L
-speedup lever for the *backward*, the half that makes the whole training path
-long-L competitive.
-
-The forward state is the C1 recurrence (``test_chunk_parallel_scan_replica``).
-The reverse adjoint is its mirror image — a linear scan running newest-first:
-
-    g_t = dy_t * C_t + a_{t+1} * g_{t+1}          (a = a_bar, g_L = 0)
-
-i.e. the same form as ``h_t = a_t*h_{t-1} + bu_t`` read in reverse time. So the
-SSD chunked-carry decomposition applies verbatim (Dao & Gu 2024 / official
-``mamba``; not new math):
-
-  Phase 1 (local, parallel across chunks): per chunk c, run the K-step reverse
-    scan from a zero carry -> gloc[c,j]; the chunk's carry-out at its oldest edge
-    Sg[c] = a_{c,0}*gloc[c,0] and its total decay A_chunk[c] = prod_j a_{c,j}.
-  Phase 2 (carry, serial over the nc=L/K chunks, newest-first):
-    Gin[nc-1]=0; Gin[c] = A_chunk[c+1]*Gin[c+1] + Sg[c+1].
-  Phase 3 (combine): g[c,j] = Pdec[c,j]*Gin[c] + gloc[c,j], where the carry-in
-    decay Pdec[c,j] = prod_{i>j} a_{c,i} is the exclusive reverse cumprod of a.
-
-Once ``h`` (forward chunk-parallel) and ``g`` (reverse chunk-parallel) are in
-hand, every gradient is a local elementwise/reduction expression — computed
-here exactly grouping-by-grouping as the serial kernel does (``gm=(g*h_{t-1})*a``
-once; the two delta paths as separate N-reductions; grad_A=sum gm*dbar; etc.).
-Phase 3 is algebraically exact; in fp it differs from the serial thread only by
-the distributive split, i.e. within the eps*sqrt(chain)*scale reduction-order
-band the gates already allow. This test holds the replica to that band so the
-Triton kernel that mirrors it has a pinned, hardware-free correctness target.
-"""
+"""Pin the chunk-parallel-carry SISO backward algebra against the serial oracle."""
 
 from __future__ import annotations
 
@@ -57,13 +21,7 @@ _T = TypeVar("_T")
 
 
 def _in_big_stack(fn: Callable[[], _T]) -> _T:
-    """Run ``fn`` in a worker thread with a 64 MiB C stack.
-
-    The reference backward is autograd through a depth-L Python-loop forward;
-    at L=16384 the engine's graph traversal overflows the default thread stack
-    (Windows especially). This is a test-harness detail — the chunk-parallel
-    algebra itself is depth-free.
-    """
+    """Run ``fn`` in a worker thread with a 64 MiB C stack."""
     box: dict[str, _T] = {}
 
     def work() -> None:
@@ -90,12 +48,7 @@ def chunk_parallel_bwd_scan_replica(
     *,
     chunk_size: int,
 ) -> SelectiveScanGrads:
-    """Chunk-parallel-carry SISO backward, op-for-op as the Triton kernel will.
-
-    fp64 inputs stay fp64 (exact-algebra check); everything else computes in
-    fp32 and rounds once per gradient output, the kernel's mixed-precision
-    contract.
-    """
+    """Chunk-parallel-carry SISO backward, op-for-op as the Triton kernel will."""
     batch, seq_len, d_model = u.shape
     n_state = A.shape[1]
     if seq_len % chunk_size != 0:
@@ -234,10 +187,7 @@ def test_chunk_parallel_bwd_matches_reference_fp32(
 
 @pytest.mark.parametrize("chunk_size", [16, 64, 256])
 def test_chunk_size_invariance_fp64(chunk_size: int) -> None:
-    # fp64: the reassociation error collapses, so the gradients are chunk-size
-    # free to a far tighter band — the algebra itself is exact. The fp32-only
-    # reference can't oracle fp64, so compare chunk-parallel against the serial
-    # autograd through the same (fp64-capable) eager forward.
+    # fp64: reassociation error collapses, so gradients are chunk-size free to a tight band.
     u, delta, A, B, C, D, dy = _draw(2, 1024, 6, 16, seed=3, dtype=torch.float64)
     leaves = [t.detach().requires_grad_(True) for t in (u, delta, A, B, C, D)]
     y = _scan_eager(*leaves)
@@ -254,10 +204,7 @@ def test_indivisible_chunk_rejected() -> None:
 
 
 class TestChunkParallelBwdNonFinites:
-    """EXC-01 pin: the chunked reverse carry must mint the same NaN/Inf pattern
-    autograd's serial adjoint does. The combine form (Pdec*Gin) exercises the
-    cumulative-product machinery most prone to 0*Inf, so a match here is the
-    strict evidence the gate battery needs before the B200."""
+    """EXC-01 pin: chunked reverse carry must match autograd's serial NaN/Inf pattern."""
 
     def _masks_match(self, inject: str) -> None:
         u, delta, A, B, C, D, dy = _draw(1, 64, 6, 8, seed=3, dtype=torch.float32)
@@ -282,9 +229,7 @@ class TestChunkParallelBwdNonFinites:
 
 
 def test_single_chunk_equals_serial_sweep() -> None:
-    # nc=1 (chunk_size==L) reduces the carry to a no-op: Gin=0, the local reverse
-    # sweep IS the full serial adjoint. A direct check that Phase 1 alone is the
-    # serial backward when there is only one chunk.
+    # nc=1 reduces the carry to a no-op: Gin=0, the local sweep IS the full serial adjoint.
     u, delta, A, B, C, D, dy = _draw(2, 64, 4, 8, seed=5, dtype=torch.float64)
     leaves = [t.detach().requires_grad_(True) for t in (u, delta, A, B, C, D)]
     y = _scan_eager(*leaves)

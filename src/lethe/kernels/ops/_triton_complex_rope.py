@@ -1,38 +1,4 @@
-"""Triton kernel for the Mamba-3 complex-RoPE selective scan forward (C4).
-
-Fully fused single pass: the official stack splits this op into an
-``angle_dt`` cumsum kernel plus a scan that consumes pre-rotated B/C; here
-the per-step angle accumulation, tanh/cos/sin, the pairwise rotation and
-the decay scan all live in one program, no theta / B_rot / C_rot tensors
-ever hit HBM. Same structural rules as C1-C3: no ``tl.dot`` (the sm_100
-TMEM-promotion pass never engages), no atomics (one program owns each
-output lane; ORD-02 by construction), serial over L.
-
-The rotation is lane-parallel, never a register shuffle: state lane n
-belongs to pair k = n // 2; each lane reloads its partner lane (n ^ 1)
-from global memory (same cache line) and computes
-``self * cos + sign * partner * sin`` with sign -1 on even lanes, +1 on
-odd, exactly the reference's interleaved-pair convention. Lanes at
-n >= 2 * num_angles pass through unrotated. theta rides as a [BLOCK_N]
-fp32 accumulator (both lanes of a pair duplicate it) with a floor-based
-remainder 2*pi applied per step: algebraically identical to the
-reference's mod-after-cumsum, and better conditioned at large L because
-cos/sin always see a small argument while the reference's fp32 cumsum
-carries O(L * dt) magnitudes before its single mod.
-
-libdevice transcendentals throughout (exp/tanh/cos/sin), not the
-approx-path tl variants, for the same denormal/precision reasons as C1.
-
-Import only with triton installed and CUDA the target, the dispatcher in
-``complex_scan_rope.py`` guards both. Layout (enforced via
-``.contiguous()``):
-
-    x, y        : [B, L, H, P]   row-major
-    B, C        : [B, L, H, N]
-    dt          : [B, L, H]
-    A           : [H]
-    angle_proj  : [B, L, H, S]   (2*S <= N)
-"""
+"""Triton kernel for the Mamba-3 complex-RoPE selective scan forward (C4)."""
 
 from __future__ import annotations
 
@@ -94,9 +60,7 @@ def _complex_rope_kernel(  # type: ignore[no-untyped-def]
     h = tl.zeros((BLOCK_P, BLOCK_N), dtype=tl.float32)
     theta = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
-    # Running offsets are int64 via the promoted base; the per-step
-    # increments are H-scale strides (nheads * max(P, N, S)), int32-safe
-    # at any contract-legal shape.
+    # Offsets are int64 via the promoted base; per-step H-scale strides stay int32-safe.
     xhp_off = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * headdim + offs_p
     bn_off = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * n_state + offs_n
     bn_partner_off = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * n_state + partner
@@ -122,8 +86,7 @@ def _complex_rope_kernel(  # type: ignore[no-untyped-def]
         x_t = tl.load(x_ptr + xhp_off, mask=mask_p, other=0.0).to(tl.float32)
         alpha_t = libdevice.exp(dt_t * a_h)
 
-        # Reference grouping ((dt * B_rot) * x) and padded-lane containment
-        # as in C1: a non-finite x lane must poison exactly its own row.
+        # Reference grouping is (dt * B_rot) * x; padded lanes stay isolated per C1 (poison own row only).
         bu = (dt_t * b_rot)[None, :] * x_t[:, None]
         h = tl.where(mask_pn, alpha_t * h + bu, 0.0)
 
@@ -148,14 +111,7 @@ def launch_complex_scan_rope(
     num_warps: int | None = None,
     config: KernelConfig | None = None,
 ) -> Tensor:
-    """Launch the fused rotary scan on CUDA tensors.
-
-    Dispatch keys on ``x`` (device, dtype); every load upcasts to fp32 and
-    ``y`` rounds once at store into ``x``'s dtype. ``config`` overrides the
-    autotuner's searched knobs (block_p, num_warps, num_stages); ``num_warps``
-    is the legacy bench-sweep hook. A None config or None field keeps the
-    shipped heuristic.
-    """
+    """Launch the fused rotary scan on CUDA tensors."""
     batch, seq_len, nheads, headdim = x.shape
     n_state = b_proj.shape[-1]
     s_angles = angle_proj.shape[-1]
@@ -178,11 +134,7 @@ def launch_complex_scan_rope(
     y = torch.empty_like(x_c)
 
     grid = (batch, nheads, triton.cdiv(headdim, block_p))
-    # B200 nw2-vs-nw4 medians: the heuristic wins or ties at B2xL256xH4
-    # (0.211 vs 0.233), B2xL1024xH8 (tie) and B4xL2048xH16 (6.29 vs 6.37);
-    # at B8xL2048xH32 nw=2 wins (6.50 vs 7.64), grid-size dependent, not
-    # block-size. Autotune is the v2 lever; the num_warps override below
-    # serves measured callers meanwhile.
+    # B200 medians: nw=2 vs nw=4 win is grid-size dependent, not block-size.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     if config is not None and config.num_warps is not None:
         warps = config.num_warps

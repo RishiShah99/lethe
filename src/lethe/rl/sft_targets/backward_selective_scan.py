@@ -1,10 +1,4 @@
-"""Mamba SISO selective-scan backward pass via autograd (eager PyTorch).
-
-The forward recurrence is rebuilt with leaf tensors and differentiated
-with torch.autograd.grad, so every gradient's non-finite dataflow matches
-autograd's grouping exactly. fp16/bf16 inputs are upcast once to float32,
-differentiated in float32, and each gradient is rounded once at return.
-"""
+"""Mamba SISO selective-scan backward pass via autograd (eager PyTorch)."""
 
 import torch
 import torch.nn.functional as F
@@ -42,9 +36,7 @@ def backward_selective_scan(
     if out_dtype in (torch.float16, torch.bfloat16):
         u, delta, A, B, C, D, dy = (t.to(torch.float32) for t in (u, delta, A, B, C, D, dy))
 
-    # Same divisibility contract as the reference — a warm-start target must
-    # teach the exact contract, not a looser one that silently accepts a
-    # non-dividing seq_len the kernel it stands in for would reject.
+    # Same divisibility contract as the reference: don't silently accept non-dividing seq_len.
     seq_len = u.shape[1]
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")

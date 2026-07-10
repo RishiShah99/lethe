@@ -1,9 +1,4 @@
-"""CPU tests for the warm-start SFT loop with a stub policy.
-
-The stub carries a real torch parameter whose log-probs improve as it
-moves toward zero, so the full NLL → backward → clip → step path runs
-end to end and loss movement is observable.
-"""
+"""CPU tests for the warm-start SFT loop with a stub policy."""
 
 from __future__ import annotations
 
@@ -136,8 +131,7 @@ class TestLoop:
         assert fresh.optimizer.state_dict()["state"]  # optimizer state restored
 
     def test_resume_refuses_pickle_gadget(self, tmp_path: Any) -> None:
-        # weights_only=True must reject a __reduce__ gadget in a resumed
-        # trainer_state.pt (same pickle-RCE class as the GRPO loader).
+        # weights_only=True must reject a __reduce__ gadget resumed here (same pickle-RCE as GRPO).
         import pickle
 
         from tests._sandbox_helpers import ReduceBomb
@@ -171,8 +165,7 @@ class TestLoop:
             SFTTrainingLoop(SFTConfig(checkpoint_dir=str(tmp_path)), StubSFTPolicy(), [])
 
     def test_scores_at_unit_temperature(self, tmp_path: Any) -> None:
-        # The NLL must be exact cross-entropy: every step scores at T=1.0,
-        # not the policy's sampling temperature.
+        # The NLL must be exact cross-entropy: every step scores at T=1.0, not the sampling temperature.
         loop, policy = make_loop(tmp_path, total_steps=3)
         loop.run()
         assert policy.seen_temperatures == [1.0, 1.0, 1.0]

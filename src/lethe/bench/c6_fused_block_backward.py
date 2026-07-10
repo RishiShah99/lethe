@@ -1,36 +1,4 @@
-"""C6 benchmark: the fused-block backward vs unfused VJPs of the same math.
-
-The training-bottleneck op. Comparators per (shape, dtype), each skipped
-with a recorded reason when infeasible:
-
-- ``ours_triton``: the four-kernel pipeline. Every timed call
-  pays the full forward re-stage in-kernel (the activation-free design);
-  the autograd comparators below reuse forward-saved activations from a
-  graph built once outside the timed region, conservative against us,
-  same disclosure as the C2 bench.
-- ``composed_autograd_bwd``: VJP through torch conv1d/SiLU + our C1
-  Triton forward (whose autograd dispatches to the C2 Triton backward) +
-  torch RMSNorm, with ``retain_graph``: the fusion-benefit control (same
-  scan engine, staged activations, torch-autograd conv/norm backwards).
-- ``official_composed_bwd``: VJP through official ``causal_conv1d`` +
-  ``selective_scan_fn`` + torch RMSNorm when installed, fp32 only (the
-  C5 anchor composition, differentiated). The official fused-block
-  training backward is a compiled TileLang artifact and its Triton SISO
-  backward is the #904 casualty, recorded as skip reasons.
-- ``eager_vjp``: autograd through ``_fused_eager`` (the
-  dispatch fallback and CMP-02 path), memory-gated like C2's eager.
-- ``reference_loop_bwd``: autograd through the Python-loop oracle
-  (small shapes).
-
-Plus the #904-contrast artifact: ``num_warps_sweep`` over the two
-serial-sweep kernels at num_warps 2/4/8 with per-specialisation ptxas
-resources: no ``tl.dot`` in any of the four kernels, and the op this one
-replaces is exactly the one that dies on sm_100.
-
-Usage: ``uv run python -m
-lethe.bench.c6_fused_block_backward --out ~/out/c6_bench.json``
-(add ``--quick`` for a fast smoke pass).
-"""
+"""C6 benchmark: the fused-block backward vs unfused VJPs of the same math."""
 
 from __future__ import annotations
 
@@ -64,8 +32,7 @@ from .c2_backward_selective_scan import _parity_stats, _time
 FusedArgs = tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
 
 _REFERENCE_LOOP_MAX_SEQ = 256
-# The eager VJP retains the chunked scan's [B, L, D, N] graph; gate on the
-# base intermediate size (C2's convention).
+# The eager VJP keeps the chunked scan's [B, L, D, N] graph; gate like C2's convention.
 _EAGER_BYTES_CAP = 4 * 1024**3
 
 try:
@@ -176,13 +143,7 @@ def _timed_vjp(
     warmup: int,
     trials: int,
 ) -> tuple[tuple[Tensor, ...], dict[str, float]]:
-    """Grads + timing of repeated VJPs through a graph built once.
-
-    The forward runs outside the timed region (retain_graph), so the timed
-    backward reuses forward-saved activations, conservative against our
-    pipeline, which re-stages the forward in-kernel every call. The graph
-    frees when this scope exits.
-    """
+    """Grads + timing of repeated VJPs through a graph built once."""
     leaves = _leaves(args)
     y = forward(leaves)
     grads = torch.autograd.grad(y, leaves, dy, retain_graph=True)
@@ -252,9 +213,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
                     FUSED_BWD_GRAD_FIELDS, grads_ours, grads_off, strict=True
                 )
             }
-            # causal_conv1d pads implicitly: pad-row values are constants to
-            # it (zero grad), where our explicit pre-pad makes them real
-            # inputs with real gradients, compare core rows only.
+            # causal_conv1d's implicit pad has zero grad there; compare core rows only.
             gx_core: dict[str, Any] = dict(
                 _parity_stats(
                     grads_ours[0][:, spec.conv_k - 1 :], grads_off[0][:, spec.conv_k - 1 :]
@@ -311,11 +270,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
 
 def _specialization_table() -> list[dict[str, Any]]:
-    """Per-compiled-specialisation resources from all four kernels' caches.
-
-    Attribute layout is triton-version dependent; missing fields record as
-    None rather than guessing (same convention as the C2-C5 tables).
-    """
+    """Per-compiled-specialisation resources from all four kernels' caches."""
     from lethe.kernels.ops import _triton_fused_block_bwd as mod
 
     rows: list[dict[str, Any]] = []
@@ -383,7 +338,7 @@ def _num_warps_sweep(quick: bool) -> dict[str, Any]:
         sweep["configs"][f"num_warps={warps}"] = entry
     sweep["specializations"] = _specialization_table()
     sweep["official_mamba3_triton_bwd"] = (
-        "fails compile at all num_warps>=4 on sm_100 (TMEM 544 > 512) — the "
+        "fails compile at all num_warps>=4 on sm_100 (TMEM 544 > 512), the "
         "exact op class this pipeline replaces; evidence: "
         "docs/904_reproducer.md, results/repro_904_report.json"
     )

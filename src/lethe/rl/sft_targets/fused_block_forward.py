@@ -1,10 +1,4 @@
-"""Fused Mamba block forward: conv1d + SiLU + selective scan + RMSNorm (eager).
-
-The input arrives already left-padded with conv_kernel_size - 1 zeros, so
-the depthwise conv is a VALID convolution. fp16/bf16 inputs are upcast
-once to float32 (including the RMSNorm sum-of-squares) and rounded once
-at the output.
-"""
+"""Fused Mamba block forward: conv1d + SiLU + selective scan + RMSNorm (eager)."""
 
 import torch
 import torch.nn.functional as F
@@ -26,8 +20,7 @@ def fused_block_forward(
     eps: float = 1e-5,
     chunk_size: int = 64,
 ) -> Tensor:
-    # Same divisibility contract as the reference + triton sibling — a warm-start
-    # target must not teach a looser contract than ground truth.
+    # Same divisibility contract as the reference and triton sibling: don't teach a looser one.
     l_out = x.shape[1] - (conv_kernel_size - 1)
     if l_out % chunk_size != 0:
         raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")

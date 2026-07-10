@@ -1,12 +1,4 @@
-"""GPU-side validation of the verifier.
-
-Everything CPU-tested so far gets exercised for real here: the Triton
-compile path (exec + ``__warmup__`` launch), CUDA-event timing, and
-sandbox isolation with device work. Runs on the fleet box via
-``fleet run "uv run pytest tests/test_gpu_verifier.py -q"``; GPU tests
-skip cleanly on CPU-only hosts. The POSIX rlimit test runs on any
-POSIX host (including CI).
-"""
+"""GPU-side validation of the verifier."""
 
 import sys
 
@@ -44,8 +36,7 @@ def __warmup__():
     assert torch.equal(out, x + 1)
 """
 
-# tl.arange bounds must be powers of 2; BLOCK=7 fails at JIT compile,
-# which only happens at launch — i.e. inside __warmup__.
+# tl.arange bounds must be powers of 2; BLOCK=7 fails at JIT compile time, inside __warmup__.
 BROKEN_AT_LAUNCH = """
 import torch
 import triton
@@ -79,13 +70,11 @@ class TestCompileOnGPU:
         result = compile_kernel(BROKEN_AT_LAUNCH, timeout_s=120.0)
         assert not result.success
         assert result.error_class is not ErrorClass.OK
-        # The captured stderr must carry the actual launch-time diagnostic,
-        # not be empty — that's the evidence channel the classifier reads.
+        # stderr must carry the actual launch-time diagnostic; empty stderr means no evidence.
         assert result.stderr.strip(), "launch failure produced no stderr evidence"
 
     def test_candidate_import_error_does_not_pass(self) -> None:
-        # With triton importable, a candidate's own ImportError must fail the
-        # compile — not fall through to the CPU ast.parse path and return OK.
+        # candidate ImportError must fail compile, not fall through to the CPU ast.parse path.
         result = compile_kernel(CANDIDATE_WITH_MISSING_IMPORT, timeout_s=120.0)
         assert not result.success
 
@@ -114,10 +103,7 @@ class TestTimingOnGPU:
 class TestSandboxOnGPU:
     def test_runs_gpu_callable(self) -> None:
         x = torch.arange(16, dtype=torch.float32)
-        # memory_limit_mb=0: CUDA context init maps more virtual address
-        # space than any sane RLIMIT_AS allows (multi-GPU unified addressing),
-        # so GPU sandbox runs must disable the AS cap. Isolation + timeout
-        # still apply.
+        # memory_limit_mb=0: CUDA context init maps too much VA space for RLIMIT_AS to survive.
         result = run_in_subprocess(
             "tests._gpu_helpers", "gpu_square", (x,), timeout_s=300.0, memory_limit_mb=0
         )

@@ -1,48 +1,4 @@
-"""HF causal-LM + LoRA policy behind ``PolicyInterface``.
-
-Design constraints this module encodes:
-
-- ``transformers``/``peft`` live in the ``rl`` extra and are absent from
-  some dev environments, so every heavy import is deferred into
-  :meth:`HFPolicy.from_pretrained`. The class body is duck-typed against
-  the small model/tokenizer surface it actually uses (``apply_chat_template``,
-  ``generate``, forward logits, ``device``), which lets CPU tests drive the
-  full logic with stubs.
-- ``apply_chat_template(..., return_dict=True)`` returns a ``BatchEncoding``
-  on the pinned transformers version: ``input_ids`` and ``attention_mask`` are
-  extracted and passed to ``generate`` explicitly.
-- GRPO needs new/old/ref per-token log-probs over the *same* token
-  sequence. Completions round-trip through strings (the verifier consumes
-  source text), so all three streams retokenize identically via
-  :meth:`HFPolicy.completion_log_probs`: at the first optimizer step
-  new == old exactly and the importance ratio starts at 1. Retokenization
-  may drift from the sampled token ids (non-canonical BPE splits);
-  accepted by convention since all streams drift together.
-- Log-probs are computed under the *sampling* distribution: logits are
-  divided by the sampling temperature before the softmax (the behaviour
-  policy is the tempered one; scoring the untempered distribution would
-  make the policy gradient a biased estimator). ``top_p`` truncation is
-  ignored by the usual GRPO convention.
-- EOS is appended to a completion's token sequence only when generation
-  terminated naturally (the policy actually chose to stop); for
-  length-truncated samples training on a fabricated EOS would push the
-  policy toward stopping at the truncation point.
-- The KL reference policy is the base model with the LoRA adapter
-  disabled (``peft``'s ``disable_adapter``), exposed as
-  :class:`ReferencePolicyView`: one set of base weights in memory, two
-  ``PolicyInterface`` objects.
-- The differentiable log-prob pass stores activations for the whole
-  K x (P + T) batch; at 32B that exceeds a single B200 without gradient
-  checkpointing (measured: OOM at 177 GiB). ``gradient_checkpointing=True``
-  enables HF non-reentrant checkpointing, which only engages in train
-  mode, so :meth:`completion_log_probs` toggles ``train()`` around the
-  grad-enabled forward only. Every dropout in the stack is 0.0 (LoRA
-  dropout off by policy default, Qwen2.5 attention dropout 0.0), so the
-  train-mode forward stays deterministic and the step-0 ratio identity
-  holds. Scoring forwards always pass ``use_cache=False``: a KV cache
-  is pure waste on a full-sequence pass and incompatible with
-  checkpointing.
-"""
+"""HF causal-LM + LoRA policy behind ``PolicyInterface``."""
 
 from __future__ import annotations
 
@@ -78,12 +34,7 @@ class SamplingSettings:
 
 
 class HFPolicy:
-    """A trainable HF causal LM (optionally LoRA-wrapped) kernel-generation policy.
-
-    Satisfies ``PolicyInterface`` (``generate`` / ``log_probs``) and adds the
-    batched, differentiable :meth:`completion_log_probs` the GRPO update
-    consumes, plus adapter checkpointing hooks.
-    """
+    """A trainable HF causal LM (optionally LoRA-wrapped) kernel-generation policy."""
 
     def __init__(
         self,
@@ -107,8 +58,7 @@ class HFPolicy:
         lora: bool = True,
         lora_r: int = 16,
         lora_alpha: int = 32,
-        # Dropout breaks GRPO's step-0 ratio identity (sampled vs scored
-        # log-probs diverge under different dropout masks); default off.
+        # Dropout breaks GRPO's step-0 ratio identity (log-probs diverge); default off.
         lora_dropout: float = 0.0,
         lora_target_modules: tuple[str, ...] = DEFAULT_LORA_TARGET_MODULES,
         adapter_path: str | None = None,
@@ -117,14 +67,7 @@ class HFPolicy:
         sampling: SamplingSettings | None = None,
         gradient_checkpointing: bool = False,
     ) -> HFPolicy:
-        """Load a real HF model (+ fresh or checkpointed LoRA adapter).
-
-        Requires the ``rl`` extra (transformers, peft). ``adapter_path``
-        resumes a saved adapter; otherwise a fresh adapter is attached when
-        ``lora=True``. ``gradient_checkpointing`` trades ~30% step time for
-        the activation memory of the differentiable log-prob pass,
-        required for 32B-class models on a single device.
-        """
+        """Load a real HF model (+ fresh or checkpointed LoRA adapter)."""
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -134,8 +77,7 @@ class HFPolicy:
             device_map=device_map,
         )
         if gradient_checkpointing:
-            # Non-reentrant variant recomputes unconditionally; the input
-            # require-grads hook covers peft's frozen-embedding edge anyway.
+            # Non-reentrant checkpointing needs enable_input_require_grads for frozen embeddings.
             model.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
@@ -158,18 +100,8 @@ class HFPolicy:
             model, tokenizer, sampling=sampling, gradient_checkpointing=gradient_checkpointing
         )
 
-    # ------------------------------------------------------------------
-    # PolicyInterface
-    # ------------------------------------------------------------------
-
     def generate(self, prompt: str, n: int) -> list[str]:
-        """Sample ``n`` completions of ``prompt`` (chat-templated, batched).
-
-        Sets ``self.last_terminated`` (one bool per completion): True iff
-        the sequence emitted EOS before ``max_new_tokens``. Early-finished
-        sequences are padded with EOS by ``generate``, so any EOS in the
-        generated tail means natural termination.
-        """
+        """Sample ``n`` completions of ``prompt`` (chat-templated, batched)."""
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")
         if n == 0:
@@ -209,10 +141,6 @@ class HFPolicy:
             lp, mask = self.completion_log_probs(prompt, [completion])
         return [float(x) for x in lp[0][mask[0]].tolist()]
 
-    # ------------------------------------------------------------------
-    # Trainer surface
-    # ------------------------------------------------------------------
-
     def completion_log_probs(
         self,
         prompt: str,
@@ -222,21 +150,7 @@ class HFPolicy:
         append_eos: bool | Sequence[bool] = True,
         temperature: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Batched per-token log-probs of each completion given ``prompt``.
-
-        Returns ``(log_probs, mask)``, both ``(K, T_max)``. ``mask`` is True
-        at valid completion positions. Logits are divided by ``temperature``
-        before the softmax; ``None`` (the GRPO default) uses the sampling
-        temperature, so these are the *behaviour* policy's log-probs. SFT
-        passes ``temperature=1.0`` to get standard cross-entropy regardless
-        of the policy's sampling setting: minimizing ``-log softmax(logits)``,
-        not a tempered surrogate. Differentiable: wrap in ``torch.no_grad()``
-        for old/ref streams. ``use_adapter=False`` computes under the frozen
-        base model via peft's ``disable_adapter``. ``append_eos`` (scalar or
-        one bool per completion, e.g. ``last_terminated`` from ``generate``)
-        controls whether the stop decision is part of the scored trajectory;
-        pass the same value to every stream.
-        """
+        """Batched per-token log-probs of each completion given ``prompt``."""
         if not completions:
             raise ValueError("completions must be non-empty")
         if isinstance(append_eos, bool):
@@ -267,9 +181,7 @@ class HFPolicy:
             attention[i, prompt_len : prompt_len + len(ids)] = 1
             mask[i, : len(ids)] = True
 
-        # Checkpointing only engages in train mode; the toggle is scoped to
-        # the grad-enabled pass (no_grad streams store no activations, and
-        # eval elsewhere keeps the policy's documented sampling behaviour).
+        # Checkpointing only engages in train mode, scoped to the grad-enabled pass.
         toggle_train = self._gradient_checkpointing and use_adapter and torch.is_grad_enabled()
         if toggle_train:
             self._model.train()
@@ -287,8 +199,7 @@ class HFPolicy:
             if toggle_train:
                 self._model.eval()
 
-        # Logits at position j predict token j+1: completion tokens occupy
-        # absolute positions [prompt_len, prompt_len + t_max).
+        # Logits at j predict token j+1; completions occupy [prompt_len, prompt_len + t_max).
         pred = logits[:, prompt_len - 1 : prompt_len + t_max - 1, :]
         targets = full[:, prompt_len : prompt_len + t_max]
         temp = self.sampling.temperature if temperature is None else temperature
@@ -314,11 +225,7 @@ class HFPolicy:
         return dev
 
     def adapter_state_dict(self) -> dict[str, torch.Tensor]:
-        """The current LoRA tensors (detached, CPU) for broadcast to replicas.
-
-        CPU-resident so a generation-pool replica on another device loads
-        them without a cross-device peer copy from the trainer.
-        """
+        """The current LoRA tensors (detached, CPU) for broadcast to replicas."""
         from peft import get_peft_model_state_dict
 
         sd = get_peft_model_state_dict(self._model)
@@ -338,10 +245,6 @@ class HFPolicy:
     def eval_mode(self) -> None:
         self._model.eval()
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
     def _encode_prompt(self, prompt: str) -> tuple[torch.Tensor, torch.Tensor]:
         enc = self._tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
@@ -356,17 +259,13 @@ class HFPolicy:
         disable = getattr(self._model, "disable_adapter", None)
         if disable is None:
             raise RuntimeError(
-                "model has no disable_adapter — reference log-probs require a peft-wrapped model"
+                "model has no disable_adapter, reference log-probs require a peft-wrapped model"
             )
         return disable()
 
 
 class ReferencePolicyView:
-    """``PolicyInterface`` view of an :class:`HFPolicy` with the adapter off.
-
-    The KL reference for LoRA training is the base model itself; this view
-    shares the policy's weights instead of loading a second copy.
-    """
+    """``PolicyInterface`` view of an :class:`HFPolicy` with the adapter off."""
 
     def __init__(self, policy: HFPolicy) -> None:
         self._policy = policy

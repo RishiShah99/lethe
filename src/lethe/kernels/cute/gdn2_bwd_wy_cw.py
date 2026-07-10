@@ -1,34 +1,4 @@
-"""K#2 channel-wise (Phase 3), native Blackwell WY / triangular-inverse VJP (GDN-2 B6).
-
-The Phase-3 channel-wise lift of the scalar K#2: per-channel decay g (key axis), and
-*separate* erase gate b (key axis) and write gate w (value axis), replacing the single
-scalar beta. Returns FIVE grads ``(dk2, dv, db, dw, dg2)`` (was four; db and dw split).
-
-The map differentiated, per chunk (M from the channel-decayed erase-gated key-key product,
-``T = (I+M)^{-1}`` GIVEN from fwd):
-
-    u = T (w (.) v) ,  wy = T (b (.) gamma (.) k)
-
-VJP, given du(=dv2 from B4) and dwy(from B5). The inverse adjoint is the SAME two-triangular-
-GEMM form as scalar (``T`` reused, never re-inverted); the channel-wise decay only enters
-when pushing ``dM`` back onto k/b/g:
-
-    dp = T^T@du ; dq_wy = T^T@dwy ; dT = du P^T + dwy Q^T ; dM = strict_lower(-(T^T dT T^T))
-    dv = dp (.) w ; dw = dp (.) v
-    dbk = dq_wy (.) gamma + sum_s dM (.) k (.) decay_rel        # decay_rel[i,s,d]=exp2(g2_i-g2_s)
-    db = dbk (.) k ; dk = dbk (.) b + sum_i dM (.) (b k) (.) decay_rel
-    dg2 = ln2(rowsum E - colsum E) + ln2 dq_wy (.) Q ;  E = dM (.) (b k) (.) k (.) decay_rel
-    dg = RCP_LN2 * reverse_cumsum(dg2)                          # dg exits reverse-cumsum
-
-Ground truth = ``kernels.cute.gdn2_assemble.k2_wy_vjp_cw_ref`` (validated to fp64 by
-``tests/test_gdn2_assemble_cw.py``). The decay-weighted pushes use ``decay_rel`` (<= 1 on the
-strict-lower triangle dM reads) so they stay bounded in fp32; no secondary normalization.
-
-``run_k2_serial`` routes the six un-decayed GEMMs/chunk through the (128,64,128) config
-via :func:`gdn2_bwd_wy._mm_tc`; the decay-weighted pushes and the reverse-cumsum stay
-fp32 torch. The WY-VJP is per-chunk independent (no reverse carry). fp16 GEMM operands,
-fp32 accumulate.
-"""
+"""K#2 channel-wise (Phase 3), native Blackwell WY / triangular-inverse VJP (GDN-2 B6)."""
 # NB: no `from __future__ import annotations`, keep consistent with the DSL kernel files.
 
 import math
@@ -58,11 +28,7 @@ def run_k2_cw_ref(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Validated pure-torch channel-wise WY-VJP (the spec the kernel transcribes).
-
-    Returns ``(dk2, dv, db, dw, dg2)`` head-major chunked. Identical to
-    ``gdn2_assemble.k2_wy_vjp_cw_ref``, kept here so this module is self-contained.
-    """
+    """Validated pure-torch channel-wise WY-VJP (the spec the kernel transcribes)."""
     bsz, hh, nt, c, d_k = k.shape
     d_v = v.shape[-1]
 
@@ -121,15 +87,7 @@ def run_k2_serial(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Channel-wise K#2, host-orchestrated WY-VJP: un-decayed GEMMs on tcgen05.
-
-    The per-chunk fallback. Mirrors ``gdn2_bwd_wy.run_k2_serial``: the six un-decayed
-    matmuls (dp, dq_wy, dT's two GEMMs, dM's two GEMMs) route through the (128,64,128)
-    GEMM via :func:`gdn2_bwd_wy._mm_tc`; the decay-weighted pushes (dbk_m, dk_m, E ->
-    dg2_m via ``decay_rel`` <= 1) and the reverse-cumsum stay fp32 torch. Per-chunk
-    independent. Returns ``(dk2, dv, db, dw, dg2)`` head-major chunked. The
-    :func:`run_k2` selector (fused > batched) is the default; this stays for fallback/debug.
-    """
+    """Channel-wise K#2, host-orchestrated WY-VJP: un-decayed GEMMs on tcgen05; the fallback."""
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     from lethe.kernels.cute.gdn2_bwd_wy import _mm_tc
@@ -201,13 +159,7 @@ def run_k2_batched(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Lever B, channel-wise WY-VJP with all n_idx chunks batched into one GEMM per step.
-
-    :func:`run_k2_cw_ref`'s structure verbatim with each un-decayed ``@`` replaced by ONE
-    batched tcgen05 GEMM (:func:`gdn2_bwd_dhu._bmm_tc`) over all chunks; the decay-weighted
-    pushes (``decay_rel`` einsums) and the reverse-cumsum are already batched in the ref and
-    stay fp32 torch. Per-chunk independent (no carry). Returns ``(dk2, dv, db, dw, dg2)``.
-    """
+    """Lever B, channel-wise WY-VJP with all n_idx chunks batched into one GEMM per step."""
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     from lethe.kernels.cute.gdn2_bwd_dhu import _bmm_tc
@@ -258,25 +210,13 @@ def run_k2_batched(
     )
 
 
-# ------------------------------------------------------------------
-# Fused K#2: one grid-z-batched kernel per backward.
-# Chunk-local (no carry), so the right grid is one CTA per chunk over Z=B·H·NT:
-# the Level-2 batching layout, not L3's unroll. _run_k2_fused_modelled is the kernel
-# spec (fp64-pinned vs k2_wy_vjp_cw_ref by tests/test_gdn2_k2_fused.py); _k2f_pack
-# is the host pre-glue the launcher casts to fp16.
-# ------------------------------------------------------------------
-
 _M_PAD = 128  # tiler M: every A operand / accumulator M-pads to 128 rows
 _N_TILE = 64  # tiler N: one accumulator tile; d_k=128 outputs span 2 tiles
 _K_PAD = 128  # tiler K
 
 
 def k2f_dims_ok(c: int, d_k: int, d_v: int) -> bool:
-    """True iff the fused kernel's baked tile fits: C=64, d_k=128, d_v in {64,128}.
-
-    d_v=128 fires the dp N-tiling path (a 2nd dp mainloop over b_du's 2nd N=64 tile);
-    d_v=64 is the single-tile shape.
-    """
+    """True iff the fused kernel's baked tile fits: C=64, d_k=128, d_v in {64,128}."""
     return c == 64 and d_k == 128 and d_v in (64, 128)
 
 
@@ -290,14 +230,7 @@ def _k2f_pack(
     dwy: Tensor,
     du: Tensor,
 ) -> dict[str, Tensor]:
-    """Host pre-glue for the fused K#2 kernel: staged GEMM operands, flat over Z=B·H·NT.
-
-    Six GEMM sites on the a@b^T (128,64,128) tiler: A operands [Z,128,128]
-    (M/K zero-pad), B operands [Z,N,128] (K zero-pad); G2's d_k=128 output spans two
-    N=64 tiles. Elementwise pre-glue (gamma, bk, pwv, q_kbg) is O(C·d) and stays host,
-    matching the ``_incb2_pack`` layout. The SIMT epilogue operands ride along unpadded.
-    Dtype-preserving; the launcher casts GEMM operands to fp16.
-    """
+    """Host pre-glue for the fused K#2 kernel: staged GEMM operands, flat over Z=B·H·NT."""
     bsz, hh, nt, c, d_k = k.shape
     d_v = v.shape[-1]
     if c > _N_TILE or d_v > 2 * _N_TILE or d_k > _K_PAD:
@@ -305,8 +238,7 @@ def _k2f_pack(
             f"_k2f_pack stages on the ({_M_PAD},{_N_TILE},{_K_PAD}) tiler (d_v up to "
             f"2·N_TILE via the dp N-tiling); got c={c}, d_k={d_k}, d_v={d_v}"
         )
-    # ``b_du`` carries d_v in its N-dim: one N=64 tile at d_v=64, two at d_v=128 (the
-    # dp N-tiling increment, mirroring b_dwy's d_k=128 → 2·N_TILE staging).
+    # b_du carries d_v in N: one N=64 tile at d_v=64, two (the dp N-tiling) at d_v=128.
     n_du = _N_TILE if d_v <= _N_TILE else 2 * _N_TILE
     z = bsz * hh * nt
     dev, dt = k.device, k.dtype
@@ -370,18 +302,7 @@ def _run_k2_fused_modelled(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Pure-torch model of the fused K#2 kernel's in-kernel dataflow (the kernel spec).
-
-    Statement order mirrors the kernel: G1 dp / G2 dq_wy / G3+G4 dT (one shared
-    accumulator), the two chained landings written into the zero-padded operand scratch
-    (``s_dt`` A-shaped, ``s_x`` B-shaped/transposed, fp16) before G5/G6,
-    strict-lower mask + negate in G6's epilogue, then the decay pushes and the
-    reverse-cumsum. The kernel computes ``exp2(g2_i - g2_s)`` on the fly on the
-    strict-lower triangle only; ``masked_decay_rel`` is bitwise the same on every entry
-    ``d_m`` reads (its live diagonal multiplies ``d_m``'s zero diagonal). Device/dtype-
-    agnostic; in fp64 it reproduces ``k2_wy_vjp_cw_ref`` to roundoff. Returns
-    ``(dk2, dv, db, dw, dg2)`` head-major chunked.
-    """
+    """Pure-torch model of the fused K#2 kernel's in-kernel dataflow (the kernel spec)."""
     bsz, hh, nt, c, d_k = k.shape
     d_v = v.shape[-1]
     z = bsz * hh * nt
@@ -441,14 +362,7 @@ def run_k2(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Default cw K#2: fused single-launch kernel > lever-B batched, by tile fit.
-
-    The fused path (ONE grid-z launch for all chunks, no ``decay_rel``
-    materialization; :mod:`gdn2_bwd_wy_f`) is dim-locked to C=64, d_k=128, d_v in
-    {64,128} (d_v=128 fires the dp N-tiling path); other shapes fall to batched.
-    Kill-switch: ``FMR_DISABLE_K2F=1`` forces the batched path. ``run_k2_serial``
-    stays as the per-chunk fallback.
-    """
+    """Default cw K#2: fused single-launch kernel > lever-B batched, by tile fit."""
     import os
 
     c, d_k = k.shape[3], k.shape[4]

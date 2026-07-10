@@ -1,12 +1,4 @@
-"""CPU tests for the E2.f edit-emitting GRPO path.
-
-Covers the edit action representation (extract/parse/apply), the
-apply-then-score bridge on CPU against the eager base (where the gate battery
-re-verifies correctness — a no-op edit lands the 0.5 floor, a correctness-
-breaking edit is demoted), the edit-emission prompt, the adapted
-``score_candidate_source`` shape threading, the parallel scorer, and the
-GRPOTrainingLoop reuse through its extractor + scorer hooks with a stub policy.
-"""
+"""CPU tests for the E2.f edit-emitting GRPO path."""
 
 from __future__ import annotations
 
@@ -73,9 +65,7 @@ class TestParseEdits:
         assert parse_edits("<<<<<<< SEARCH\nx\n>>>>>>> REPLACE\n") is None
 
     def test_bare_divider_in_body_is_rejected_not_misparsed(self) -> None:
-        # A body line that is itself a bare `=======` marker would shift the
-        # block boundaries; the parser must reject the whole emission rather
-        # than mis-parse it into a wrong edit.
+        # A bare `=======` body line would shift block boundaries; the parser must reject it.
         text = "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n=======\n>>>>>>> REPLACE"
         assert parse_edits(text) is None
 

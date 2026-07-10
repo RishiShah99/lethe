@@ -1,11 +1,4 @@
-"""Cheating kernel: adds small random noise on every call.
-
-Models a kernel with a non-commutative atomic reduction order — different
-output across calls with identical input.
-
-Expected rejector: ORD-02 (atomic determinism). Two runs with the
-same input produce non-equal tensors.
-"""
+"""Cheating kernel: adds small random noise on every call."""
 
 from __future__ import annotations
 

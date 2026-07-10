@@ -1,50 +1,4 @@
-"""Adapters bridging multi-argument kernel ops to the single-tensor gates.
-
-The 12 Kernel-Contract gates (``contracts.py``) drive candidates through a
-single-tensor interface ``candidate(t) -> Tensor``; real ops take full
-argument sets (``u, delta, A, B, C, D``). Per op this module provides:
-
-- a **candidate adapter**: closes a scan-signature callable over auxiliary
-  inputs derived deterministically from the primary tensor's shape. Aux
-  tensors are generated on CPU from a fixed seed and then cast to the
-  primary tensor's device/dtype, so the candidate and the reference consume
-  bit-identical auxiliaries on any device, and repeated calls are identical
-  (ORD-02 relies on this).
-- a **reference adapter**: feeds the same auxiliaries to the fp32 reference
-  oracle. Non-fp32 inputs are upcast to fp32 for the oracle and the output
-  is rounded back once, defining the mixed-precision contract the
-  PRC gates measure candidates against: compute internally in fp32, round
-  only at the output. (fp64 never reaches the reference adapter: the only
-  fp64 gate, CMP-02 gradcheck, calls the candidate alone.)
-- **gate overrides**: per-gate kwarg overrides tuning gate defaults to the
-  op (e.g. PRC-02's accumulation stress belongs on the scan length L, not
-  on the elementwise D axis its default shape implies).
-
-Backward ops return gradient *tuples*, so they get one gate view per
-gradient output (``BWD_GRAD_FIELDS``): the primary tensor the gates drive
-is the upstream gradient ``dy``, same [B, L, D] shape conventions, and
-the gates' non-finite injections flow through ``dy`` exactly as the
-forward gates flow them through ``u``, while ``u`` joins the
-deterministic auxiliaries. Each view runs the full 12-gate suite against
-the autograd oracle's corresponding output, with per-view tolerance
-overrides (``SCAN_BWD_GATE_OVERRIDES``): the accumulation extents differ
-per output, grad_A sums over batch*L of L-long carry chains where
-grad_u sees one chain, so one tolerance table cannot serve all six.
-
-This is the same wiring the RL reward path uses to score generated
-kernels per op, consumed via ``score_candidate(gate_kwargs=...)``.
-
-The verify drivers share one generic core (``_verify_op_views``): adapters
-plus override table plus an optional saturation-free PRC-02 re-run. The
-scan ops re-run PRC-02 because their aux plants softplus-saturation
-entries; the MIMO backward takes ``dt``/``alpha`` precomputed, no
-softplus exists inside the op, so its aux has no saturation analog and a
-single PRC-02 run already measures the accumulator. MIMO's 4D primary
-rides the gates' 3D [batch, seq, d_model] tensors by viewing d_model as
-(nheads, MIMO_HEADDIM); every gate d_model is divisible by 4. The rope
-scan reuses the same 4D viewing for its forward primary ``x`` and,
-like MIMO, runs PRC-02 once (no softplus in the op).
-"""
+"""Adapters bridging multi-argument kernel ops to the single-tensor gates."""
 
 from __future__ import annotations
 
@@ -74,44 +28,25 @@ from lethe.verifier.contracts import (
 )
 
 ScanCallable = Callable[..., Tensor]
-# Backward-scan signature: (u, delta, A, B, C, D, dy, *, chunk_size) -> the
-# six gradients as an indexable sequence (SelectiveScanGrads or plain tuple).
+# Backward-scan signature returns six grads (SelectiveScanGrads or a plain tuple).
 BwdScanCallable = Callable[..., Any]
 
 SCAN_N_STATE = 16
-# Must divide every sequence length the gates use (CMP-02's default L=8 is
-# the smallest); the scan result itself does not depend on chunking.
+# Must divide every gate sequence length (min is CMP-02's L=8); scan result is chunk-independent.
 SCAN_CHUNK_SIZE = 8
 _SCAN_AUX_SEED = 23117
 _BWD_AUX_SEED = 9241
 
-# Gradient outputs of the backward scan, in SelectiveScanGrads field order;
-# each gets its own full gate run (one single-tensor view per output).
+# Backward-scan gradient outputs, in SelectiveScanGrads field order; each gets its own gate run.
 BWD_GRAD_FIELDS: tuple[str, ...] = ("grad_u", "grad_delta", "grad_A", "grad_B", "grad_C", "grad_D")
 
 # Per-gate overrides appropriate for the scan op.
 SCAN_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
-    # The gate's default (2, 32, 1024) puts the long axis on D, which the
-    # scan treats elementwise. The op's accumulation axes are the sequence
-    # (h carried over L) and the N-dot; a missing fp32 accumulator shows up
-    # on a long scan, so stress L instead. At this shape with the Mamba-
-    # realistic delta below (saturation off, see verify_scan_op), the
-    # honest fp32-accumulator floor is ~6e-3 and an fp16 accumulator lands
-    # at ~1.5e-1, so the gate's default atol=2e-2 separates them with
-    # margin (pinned by a discriminative test).
+    # The gate's default (2, 32, 1024) puts the long axis on D, which the scan treats elementwise.
     "gate_prc_02_mixed_precision_accumulation": {"shape": (2, 1024, 32)},
-    # The scan's accumulation chain is the sequence, not the trailing dim:
-    # at the gate's (4, 512, 32) shape the reduction extent is L=512.
+    # The scan's accumulation chain is the sequence, not the trailing dim; at the gate shape L=512.
     "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
-    # Bitwise identity vs a torch eager reference is unachievable for a
-    # tree-reducing, FMA-contracting hardware kernel (measured ~2e-6 on
-    # B200), so run with a tolerance, but at a length where unstable
-    # orderings have actually diverged. The cumprod-ratio scan trick is
-    # algebraically exact and stays within ~3e-5 of the oracle up to
-    # L=4096 with this aux distribution; at L=8192 its decay products
-    # underflow and it NaNs out, while honest reorder noise follows
-    # eps*sqrt(L)*scale ~ 1e-4. atol=1e-3 sits 9x above honest noise and
-    # rejects the collapse (pinned by a discriminative test).
+    # Bitwise match to torch eager is unachievable (~2e-6 on B200); use a length where orderings diverge.
     "gate_ord_03_noncommutative_reduction": {
         "shape": (1, 8192, 16),
         "atol": 1e-3,
@@ -119,8 +54,7 @@ SCAN_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
 }
 
-# Official Mamba dt initialisation range (state-spaces/mamba,
-# modules/mamba_simple.py): dt log-uniform in [dt_min, dt_max].
+# Official Mamba dt init (state-spaces/mamba mamba_simple.py): dt log-uniform in [dt_min, dt_max].
 _DT_MIN = 1e-3
 _DT_MAX = 1e-1
 
@@ -134,11 +68,7 @@ def _verify_op_views(
     resource_meta: dict[str, int] | None,
     saturation_rerun: bool,
 ) -> dict[str, GateResult]:
-    """Generic gate run for one adapted view: overrides + optional PRC-02 re-run.
-
-    Factories take ``saturate`` and return the gates' single-tensor callable;
-    the re-run swaps in saturation-free aux (see ``verify_scan_op`` for why).
-    """
+    """Generic gate run for one adapted view: overrides + optional PRC-02 re-run."""
     overrides: dict[str, dict[str, Any]] = {k: dict(v) for k, v in base_overrides.items()}
     if resource_meta is not None:
         overrides["gate_res_02_resource_limits"] = {"resource_meta": resource_meta}
@@ -150,11 +80,7 @@ def _verify_op_views(
     )
     if not saturation_rerun:
         return results
-    # Route the saturation-free re-run through run_all_gates so it inherits the
-    # per-gate seed and the RNG save/restore bracket. Calling the gate directly
-    # drew its probe from the un-seeded global stream, making the authoritative
-    # PRC-02 verdict (which gates the speedup reward) nondeterministic on
-    # thin-margin candidates, and leaking RNG state past run_all_gates' restore.
+    # Routes the saturation-free re-run through run_all_gates for the per-gate seed and RNG bracket.
     gate = "gate_prc_02_mixed_precision_accumulation"
     prc02_override = base_overrides.get(gate)
     rerun = run_all_gates(
@@ -176,30 +102,7 @@ def _aux_from_gen(
     n_state: int,
     saturate: bool,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """CPU-side (delta, A, B, C, D_skip) drawn from ``gen``, shared aux core.
-
-    ``delta`` is drawn so that ``softplus(delta)`` is log-uniform in
-    [1e-3, 1e-1], the official Mamba dt-init distribution. This matters
-    for gate power: small dt makes the scan a near-integrator with long
-    memory, which is both the deployment-realistic regime and the one
-    where low-precision accumulators actually lose mass (PRC-02). A
-    unit-scale delta would make the scan strongly contractive and mask
-    accumulator cheats.
-
-    With ``saturate=True``, a sparse deterministic subset of ``delta``
-    entries is set into the softplus saturation regime (12 / 25 / 95):
-    an unguarded softplus (``log1p(exp(x))`` with no large-x branch)
-    overflows to Inf at x ~ 89 in fp32 and would otherwise pass every
-    gate, since the bulk distribution never leaves negative territory.
-    PRC-02 runs with ``saturate=False``: the saturated channels amplify
-    local magnitudes ~100x, so the candidate's irreducible fp16
-    *input-rounding* error there swamps the accumulator signal the gate
-    exists to measure (value correctness at saturation is CMP-01's job,
-    on same-bits fp32 inputs). Aux tensors stay finite by construction;
-    non-finite *aux* behaviour is outside the gate contract (the gates
-    inject non-finites through the primary only) and is covered by the
-    kernels' direct tests.
-    """
+    """CPU-side (delta, A, B, C, D_skip) drawn from ``gen``, shared aux core."""
     log_lo = math.log(_DT_MIN)
     log_hi = math.log(_DT_MAX)
     dt = torch.exp(torch.rand(batch, seq_len, d_model, generator=gen) * (log_hi - log_lo) + log_lo)
@@ -225,12 +128,7 @@ def _scan_aux(
     dtype: torch.dtype,
     saturate: bool = True,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Deterministic (delta, A, B, C, D_skip) for a [batch, seq_len, d_model] primary.
-
-    Distribution rationale lives on ``_aux_from_gen``. Draw order under
-    ``_SCAN_AUX_SEED`` is pinned: the measured cheat-vs-honest separations
-    in the discriminative tests depend on these exact values.
-    """
+    """Deterministic (delta, A, B, C, D_skip) for a [batch, seq_len, d_model] primary."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_SCAN_AUX_SEED)
     delta, a, b_proj, c_proj, d_skip = _aux_from_gen(
@@ -252,14 +150,7 @@ def _bwd_scan_aux(
     dtype: torch.dtype,
     saturate: bool = True,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Deterministic (u, delta, A, B, C, D_skip) for a [batch, seq_len, d_model] ``dy``.
-
-    The backward op's primary is the upstream gradient ``dy``, so the
-    forward input ``u`` joins the auxiliaries: unit-normal, like the
-    primaries the gates drive the forward op with. Same distribution
-    rationale as ``_aux_from_gen``; a distinct seed keeps the backward
-    aux decorrelated from any forward-harness primary.
-    """
+    """Deterministic (u, delta, A, B, C, D_skip) for a [batch, seq_len, d_model] ``dy``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_BWD_AUX_SEED)
     u = torch.randn(batch, seq_len, d_model, generator=gen)
@@ -303,8 +194,7 @@ def scan_reference_adapter(
         aux = _scan_aux(batch, seq_len, d_model, n_state, u.device, u.dtype, saturate=saturate)
         if u.dtype == torch.float32:
             return reference_forward_chunked_scan(u, *aux, chunk_size=chunk_size)
-        # Mixed-precision contract: oracle computes in fp32 from the same
-        # (already rounded) operand bits, rounds once at the output.
+        # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
         y = reference_forward_chunked_scan(
             u.to(torch.float32),
             *(t.to(torch.float32) for t in aux),
@@ -323,17 +213,7 @@ def verify_scan_op(
     n_state: int = SCAN_N_STATE,
     chunk_size: int = SCAN_CHUNK_SIZE,
 ) -> dict[str, GateResult]:
-    """Run all 12 contract gates over a scan-signature callable.
-
-    ``resource_meta`` (from compile-stage extraction or the Triton kernel
-    cache) activates RES-02's evidence-based check; None leaves it
-    not-applicable.
-
-    PRC-02 is re-run with saturation-free auxiliaries: the saturated
-    delta entries probe softplus value-correctness (CMP-01's same-bits
-    domain) but their ~100x amplification drowns PRC-02's accumulator
-    signal in fp16 input-rounding noise (see ``_scan_aux``).
-    """
+    """Run all 12 contract gates over a scan-signature callable."""
     return _verify_op_views(
         lambda saturate: scan_candidate_adapter(
             scan_fn, n_state=n_state, chunk_size=chunk_size, saturate=saturate
@@ -348,11 +228,6 @@ def verify_scan_op(
     )
 
 
-# ---------------------------------------------------------------------------
-# Backward scan: one gate view per gradient output
-# ---------------------------------------------------------------------------
-
-
 def _bwd_view_overrides(
     *,
     ord01_reduction_elements: int,
@@ -362,28 +237,7 @@ def _bwd_view_overrides(
     cmp03_atol: float | None = None,
     cmp01_atol: float | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Per-view gate overrides sharing the backward op's fixed shapes.
-
-    PRC-02 keeps the forward's L-axis stress shape and adds rtol=1e-3:
-    gradient magnitudes span decades across outputs, so the fp16
-    *input-rounding* floor is relative to local output scale exactly as
-    the gate docstring anticipates, while the fp16-accumulator signal
-    sits ~30x above that rtol at this shape's sqrt(L)*eps16 error.
-    ``prc02`` replaces those kwargs for views where the flat model is
-    wrong (grad_A, below).
-
-    ORD-01's ``reduction_elements`` is the view's honest accumulation
-    extent under the eps*sqrt(chain)*scale random-walk model. ORD-03
-    keeps the forward's L=8192 collapse length. ORD tolerances are
-    theory-seeded; the B200 suite passes them as-is (measured within
-    1.1x of the model).
-
-    ``cmp03_atol`` widens CMP-03's unit atol for views whose cross-impl
-    reorder noise compounds past the 1e-5 default (B200-calibrated,
-    applied per view, see FUSED_BWD_GATE_OVERRIDES).
-    ``cmp01_atol`` is the same lesson at CMP-01's shapes, its long_seq
-    variation carries a longer worst chain than any CMP-03 shape.
-    """
+    """Per-view gate overrides sharing the backward op's fixed shapes."""
     overrides: dict[str, dict[str, Any]] = {
         "gate_prc_02_mixed_precision_accumulation": (
             prc02 if prc02 is not None else {"shape": (2, 1024, 32), "rtol": 1e-3}
@@ -402,10 +256,7 @@ def _bwd_view_overrides(
     return overrides
 
 
-# Accumulation extents at ORD-01's (4, 512, 32) gate shape:
-# grad_u / grad_delta see one reverse carry chain (~L); grad_B / grad_C sum
-# D=32 chain-carrying terms (~D*L/2); grad_A sums batch*L terms each with an
-# ~L/2 chain (~B*L^2/2); grad_D is a flat batch*L product sum (no chains).
+# Reduction extents scale with each field's accumulation chain: carry ~L, sums ~D*L/2 or B*L^2/2.
 SCAN_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_u": _bwd_view_overrides(ord01_reduction_elements=512, ord03_atol=1e-3, ord03_rtol=1e-3),
     "grad_delta": _bwd_view_overrides(
@@ -415,13 +266,7 @@ SCAN_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord01_reduction_elements=4 * 512 * 512 // 2,
         ord03_atol=1e-2,
         ord03_rtol=1e-2,
-        # grad_A sums batch*L large near-integrator terms: the fp16
-        # input-rounding error carries the magnitude of those intermediates
-        # even at elements that cancel, so flat atol and elementwise rtol both
-        # misread it. B200-measured floors at this shape (scale-normalised):
-        # honest 4.9e-4 (Triton) / 9.0e-4 (eager), fp16-carry cheat 1.25e-2;
-        # unit atol 3e-3 holds >3x margin both ways (pinned by a
-        # discriminative test).
+        # grad_A sums near-integrator terms; fp16 rounding error carries their magnitude past cancellation.
         prc02={
             "shape": (2, 1024, 32),
             "atol": 3e-3,
@@ -439,13 +284,7 @@ SCAN_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
         ord01_reduction_elements=4 * 512,
         ord03_atol=1e-3,
         ord03_rtol=1e-3,
-        # grad_D is a flat batch*L product sum: |out| ~ sqrt(B*L) ~ 100 at
-        # the gate shape, so the honest fp16 *input-rounding* floor and one
-        # fp16 output ULP both exceed the flat 2e-2 default, so the gate could
-        # only pass by draw luck. B200-measured over 8 draws
-        # (scale-normalised): honest kernel/eager
-        # <= 5.9e-4 vs fp16-sequential-accumulation cheat >= 3.8e-3; unit
-        # atol 1.5e-3 holds ~2.5x margin both ways.
+        # grad_D: |out| ~ sqrt(B*L) ~ 100 at gate shape; fp16 rounding floor exceeds the flat 2e-2 default.
         prc02={
             "shape": (2, 1024, 32),
             "atol": 1.5e-3,
@@ -496,8 +335,7 @@ def bwd_scan_reference_adapter(
         )
         if dy.dtype == torch.float32:
             return reference_backward_selective_scan(*inputs, dy, chunk_size=chunk_size)[idx]
-        # Mixed-precision contract: oracle computes in fp32 from the same
-        # (already rounded) operand bits, rounds once at the output.
+        # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
         u32, delta32, a32, b32, c32, d32 = (t.to(torch.float32) for t in inputs)
         grads = reference_backward_selective_scan(
             u32, delta32, a32, b32, c32, d32, dy.to(torch.float32), chunk_size=chunk_size
@@ -516,13 +354,7 @@ def verify_bwd_scan_op(
     n_state: int = SCAN_N_STATE,
     chunk_size: int = SCAN_CHUNK_SIZE,
 ) -> dict[str, GateResult]:
-    """Run all 12 contract gates over one gradient-output view of a backward op.
-
-    Mirrors ``verify_scan_op`` per view, including the saturation-free
-    PRC-02 re-run (same rationale: the saturated channels' ~100x local
-    amplification drowns the accumulator signal in fp16 input-rounding
-    noise; saturation value-correctness is CMP-01's job on this view).
-    """
+    """Run all 12 contract gates over one gradient-output view of a backward op."""
     return _verify_op_views(
         lambda saturate: bwd_scan_candidate_adapter(
             bwd_fn, grad_field, n_state=n_state, chunk_size=chunk_size, saturate=saturate
@@ -559,16 +391,10 @@ def verify_bwd_scan_op_all_grads(
     }
 
 
-# ---------------------------------------------------------------------------
-# MIMO backward (C3): one gate view per gradient output
-# ---------------------------------------------------------------------------
-
-# MIMO-backward signature: (x, B, C, dt, alpha, mimo_x, mimo_o, dy) -> the
-# seven gradients as an indexable sequence (MimoGrads or plain tuple).
+# MIMO-backward signature returns seven grads (MimoGrads or a plain tuple).
 MimoBwdCallable = Callable[..., Any]
 
-# The gates drive 3D [batch, seq, d_model] primaries; the MIMO dy views
-# d_model as (nheads, MIMO_HEADDIM). 4 divides every gate d_model.
+# Gates drive 3D [batch, seq, d_model] primaries; MIMO dy views d_model as (nheads, MIMO_HEADDIM).
 MIMO_HEADDIM = 4
 MIMO_RANK = 4
 MIMO_N_STATE = 16
@@ -602,18 +428,7 @@ def _mimo_bwd_aux(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Deterministic (x, B, C, dt, alpha, mimo_x, mimo_o) for a 4D-viewed ``dy``.
-
-    ``dt`` is log-uniform in the official Mamba dt-init range and ``alpha``
-    is exp(dt * A) with per-head negative A (Mamba-3's A is a per-head
-    scalar), the near-integrator regime where low-precision accumulators
-    actually lose mass, as in the scan aux. ``mimo_x``/``mimo_o`` are the
-    official ones/R init plus seeded jitter: exact ones/R is
-    rank-degenerate, and a rank-collapsing cheat would be invisible against
-    it. No saturation variant exists: the op takes dt/alpha precomputed,
-    there is no softplus inside it. Draw order under ``_MIMO_BWD_AUX_SEED``
-    is pinned.
-    """
+    """Deterministic (x, B, C, dt, alpha, mimo_x, mimo_o) for a 4D-viewed ``dy``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_MIMO_BWD_AUX_SEED)
     x = torch.randn(batch, seq_len, nheads, headdim, generator=gen)
@@ -635,22 +450,7 @@ def _mimo_bwd_aux(
 
 
 def _mimo_prc02(atol: float) -> dict[str, Any]:
-    """Scale-aware PRC-02 config for a MIMO view at the L=4096 stress shape.
-
-    Every MIMO gradient is a near-integrator sum whose fp16 input-rounding
-    error carries the magnitude of large cancelling intermediates (the
-    grad_A class), so flat atol and elementwise rtol both misread it, so all
-    seven views run scale-aware. The L=1024 forward shape has no power: an
-    fp16 state-carry cheat sits at 1.3-2.5x the honest floor there, inside
-    draw variance. At L=4096 the cheat's per-step re-rounding compounds
-    while the honest floor stays put, measured (CPU eager, 5 draws,
-    scale-normalised): honest <= 2.1e-3..4.9e-3 per view vs cheat >=
-    7.8e-3..1.4e-2; per-view unit atols sit between with the margin biased
-    to the honest side. B200-confirmed against the Triton kernel over
-    3 draws: kernel floor 1.2-2.6x under atol, cheat 1.3-2.7x over, every
-    view discriminates both ways; grad_dt is the thin view at 1.2x/1.3x,
-    recalibrate there first if it ever flakes.
-    """
+    """Scale-aware PRC-02 config for a MIMO view at the L=4096 stress shape."""
     return {
         "shape": (1, 4096, 32),
         "atol": atol,
@@ -659,13 +459,7 @@ def _mimo_prc02(atol: float) -> dict[str, Any]:
     }
 
 
-# Accumulation extents at ORD-01's (4, 512, 32) gate shape (nheads=8,
-# headdim=4, R=4, N=16), theory-seeded under the eps*sqrt(chain)*scale
-# model, B200-validated like the scan tables. grad_x sees one reverse
-# carry chain (~L); grad_B / grad_C contract headdim chain-carrying terms
-# (~P*L/2); grad_dt sums R*N of them (~R*N*L/2) and grad_alpha P*N
-# (~P*N*L/2); grad_mimo_x / grad_mimo_o are batch*L sums of chain-carrying
-# products (~B*L^2/2). PRC-02 entries: see _mimo_prc02.
+# Extents at (4,512,32) (nheads=8, headdim=4, R=4, N=16), eps*sqrt(chain)*scale, B200-validated.
 MIMO_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_x": _bwd_view_overrides(
         ord01_reduction_elements=512,
@@ -721,11 +515,7 @@ def mimo_bwd_candidate_adapter(
     headdim: int = MIMO_HEADDIM,
     saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
-    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``.
-
-    ``saturate`` is accepted for interface parity with the scan adapters
-    and ignored: the MIMO aux has no saturation variant.
-    """
+    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``."""
     idx = MIMO_BWD_GRAD_FIELDS.index(grad_field)
 
     def adapted(dy: Tensor) -> Tensor:
@@ -757,8 +547,7 @@ def mimo_bwd_reference_adapter(
         dy4 = dy.reshape(batch, seq_len, nheads, headdim)
         if dy.dtype == torch.float32:
             return reference_mimo_backward(*aux, dy4)[idx]
-        # Mixed-precision contract: oracle computes in fp32 from the same
-        # (already rounded) operand bits, rounds once at the output.
+        # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
         x32, b32, c32, dt32, alpha32, mx32, mo32 = (t.to(torch.float32) for t in aux)
         grads = reference_mimo_backward(
             x32, b32, c32, dt32, alpha32, mx32, mo32, dy4.to(torch.float32)
@@ -817,23 +606,13 @@ def verify_mimo_bwd_op_all_grads(
     }
 
 
-# ---------------------------------------------------------------------------
-# GDN-2 backward: one gate view per gradient output
-# ---------------------------------------------------------------------------
-
-# GDN-2-backward signature: (q, k, v, g, b, w, do) -> the six gradients as an
-# indexable sequence (Gdn2Grads, whose 7th field grad_initial_state is None and
-# never viewed). The gates drive 3D [batch, seq, d_model] primaries; the GDN-2
-# ``do`` views d_model as (nheads, GDN2_HEADDIM). The native kernel target is
-# d_k=d_v=128; the harness uses GDN2_HEADDIM=4 (d_k=d_v) so every gate d_model
-# factors cleanly.
+# GDN-2-backward signature returns six grads (Gdn2Grads; grad_initial_state unused, always None).
 Gdn2BwdCallable = Callable[..., Any]
 
 GDN2_HEADDIM = 4  # d_k == d_v at the gate shapes (no GVA; H == HV)
 _GDN2_BWD_AUX_SEED = 41213
 
-# Gradient outputs of the GDN-2 backward, in Gdn2Grads field order (the 6 the
-# kernel produces; grad_initial_state is excluded, no initial state is fed).
+# Gradient outputs of the GDN-2 backward, in Gdn2Grads order; grad_initial_state is excluded.
 GDN2_BWD_GRAD_FIELDS: tuple[str, ...] = (
     "grad_q",
     "grad_k",
@@ -858,16 +637,7 @@ def _gdn2_bwd_aux(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Deterministic (q, k, v, g, b, w) for a 4D-viewed ``do``.
-
-    ``g`` is channel-wise log-decay built from the official Mamba dt-init range
-    times a per-head negative rate (so exp(g) stays in the near-integrator regime
-    where low-precision accumulators lose mass), plus a small per-channel jitter
-    kept <= 0 for stability. ``b`` (erase, key axis) and ``w`` (write, value axis)
-    are sigmoid-squashed into (0, 1), the gate domains. No saturation variant
-    exists: the op takes g/b/w precomputed, there is no softplus inside it. Draw
-    order under ``_GDN2_BWD_AUX_SEED`` is pinned.
-    """
+    """Deterministic (q, k, v, g, b, w) for a 4D-viewed ``do``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_GDN2_BWD_AUX_SEED)
     q = torch.randn(batch, seq_len, nheads, headdim, generator=gen)
@@ -890,25 +660,7 @@ def _gdn2_bwd_aux(
 
 
 def _gdn2_prc02(atol: float) -> dict[str, Any]:
-    """Scale-aware PRC-02 config for a GDN-2 view at the L=4096 stress shape.
-
-    GDN-2 gradients are reverse-state-recurrence sums whose fp16 input-rounding
-    error carries the magnitude of large cancelling intermediates (the delta-rule
-    erase term), so a flat atol misreads them, every view runs scale-aware
-    (``scale_atol_by_ref_inf``), as the MIMO backward does.
-
-    Calibrated on CPU at (1, 4096, 32), 6 views x several draws: the honest
-    fp16 input-rounding floor is 5.5e-4..7.6e-4 of output scale across views.
-    An fp16-*state* cheat sits only ~2x over that floor: GDN-2's decay-limited
-    memory (exp(g) ~ 0.9, so only the last ~tens of tokens contribute) caps how
-    much an fp16 accumulator can drift, so it is not separable at a safe atol.
-    The robust adversary is a bf16 (or coarser) state accumulator at
-    4.3e-3..9.4e-3 of scale (5.9x..14.9x over the floor). The unit atol below
-    (2e-3) sits ~3x above the honest floor and >=2.1x under the bf16 cheat.
-    This floor catches coarse accumulators; the tight fp16-vs-fp32
-    discrimination floor is re-pinned against the native kernel on B200
-    once that kernel exists, as the MIMO/scan tables were.
-    """
+    """Scale-aware PRC-02 config for a GDN-2 view at the L=4096 stress shape."""
     return {
         "shape": (1, 4096, 32),
         "atol": atol,
@@ -917,12 +669,7 @@ def _gdn2_prc02(atol: float) -> dict[str, Any]:
     }
 
 
-# Per-view overrides. ORD reduction extents at ORD-01's (4, 512, 32) gate shape
-# (nheads=8, d_k=d_v=4) are theory-seeded under the eps*sqrt(chain)*scale model:
-# every gradient's dominant chain is the reverse-time state carry (~L). ORD/CMP
-# tolerances are theory-seeded (no kernel yet); re-pin against measured values
-# once the native kernel lands, like the MIMO/scan tables were. PRC-02 floor is
-# calibrated on CPU (see _gdn2_prc02).
+# Per-view overrides.
 _GDN2_PRC02_ATOL = 2e-3
 GDN2_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_q": _bwd_view_overrides(
@@ -971,11 +718,7 @@ def gdn2_bwd_candidate_adapter(
     headdim: int = GDN2_HEADDIM,
     saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
-    """Single-tensor view of one gradient output: ``do -> bwd(...)[field]``.
-
-    ``saturate`` is accepted for interface parity with the scan adapters and
-    ignored: the GDN-2 aux has no saturation variant.
-    """
+    """Single-tensor view of one gradient output: ``do -> bwd(...)[field]``."""
     idx = GDN2_BWD_GRAD_FIELDS.index(grad_field)
 
     def adapted(do: Tensor) -> Tensor:
@@ -1006,8 +749,7 @@ def gdn2_bwd_reference_adapter(
         if do.dtype == torch.float32:
             out = reference_gdn2_backward(q, k, v, g, b, w, do4)[idx]
         else:
-            # Mixed-precision contract: oracle computes in fp32 from the same
-            # (already rounded) operand bits, rounds once at the output.
+            # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
             q32, k32, v32, g32, b32, w32 = (t.to(torch.float32) for t in (q, k, v, g, b, w))
             out = reference_gdn2_backward(q32, k32, v32, g32, b32, w32, do4.to(torch.float32))[idx]
             out = out.to(do.dtype) if out is not None else None
@@ -1058,29 +800,7 @@ def verify_gdn2_bwd_op_all_grads(
     }
 
 
-# ---------------------------------------------------------------------------
-# GDN-2 scalar reduction gate: native scalar-GDN assembly contract check
-# ---------------------------------------------------------------------------
-
-# The native scalar-GDN kernels use g scalar per token, b = w = beta. The
-# assembly (kernels.cute.gdn2_assemble) is graded here in that regime against
-# the pure-torch refs assembly (the kernels' readable contracts, same wiring
-# on their torch reference paths). This mirrors the stock GDN-2 gate's
-# discipline (candidate vs same-algorithm reference): on CPU the candidate is
-# the refs assembly, so all 12 gates verify the assembly's contract compliance
-# (differentiable, deterministic, dtype/exceptional/subnormal-faithful); once
-# a native tcgen05 kernel exists the candidate becomes that path, turning the
-# gates into a real kernel-vs-reference cross-check (tolerances re-pinned
-# there). Independent value correctness is carried separately by the fp64
-# oracle test (assembly vs the token-serial oracle, bit-exact) and the
-# chunkwise tests; keeping the reference here structurally matched avoids
-# false EXC/subnormal divergence between two algebraically-equal but
-# op-order-distinct backwards.
-#
-# Views: grad_q/grad_k/grad_v compare channel-wise; grad_g and grad_beta (the
-# combined erase+write gate grad) compare as scalars, the only quantities a
-# scalar kernel recovers. Distinct from the channel-wise GDN-2 gate below
-# (eager fallback).
+# The native scalar-GDN kernels use g scalar per token, b = w = beta.
 _GDN2_SCALAR_AUX_SEED = 51217
 GDN2_REDUCTION_VIEWS: tuple[str, ...] = ("grad_q", "grad_k", "grad_v", "grad_g", "grad_beta")
 
@@ -1094,14 +814,7 @@ def _gdn2_bwd_aux_scalar(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Scalar-reducible (q, k, v, g, b, w): g channel-constant, ``b = w = beta·1``.
-
-    Same near-integrator decay distribution as ``_gdn2_bwd_aux`` (official Mamba
-    dt-init x per-head negative rate) but with NO per-channel jitter, so g is a single
-    log-decay per token broadcast across d_k; beta is sigmoid-squashed into (0, 1) and
-    broadcast as both the erase (b, key axis) and write (w, value axis) gate. Draw
-    order under ``_GDN2_SCALAR_AUX_SEED`` is pinned.
-    """
+    """Scalar-reducible (q, k, v, g, b, w): g channel-constant, ``b = w = beta·1``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_GDN2_SCALAR_AUX_SEED)
     q = torch.randn(batch, seq_len, nheads, d_k, generator=gen)
@@ -1239,25 +952,7 @@ def verify_gdn2_reduction_op_all_grads(
     }
 
 
-# ---------------------------------------------------------------------------
-# GDN-2 channel-wise gate: native channel-wise-assembly contract check
-# ---------------------------------------------------------------------------
-
-# The channel-wise native kernels use per-channel decay g; erase b on the key
-# axis, write w on the value axis. The channel-wise assembly
-# (kernels.cute.gdn2_assemble.assembled_channelwise_gdn2_backward) is graded
-# here against the channel-wise refs assembly (the kernels' readable contracts
-# on their torch paths), the same candidate-vs-same-algorithm discipline as
-# the scalar reduction gate, so all 12 gates verify contract compliance
-# (differentiable, deterministic, dtype/exceptional/subnormal-faithful). Once
-# a native tcgen05 kernel exists the candidate becomes that path, turning the
-# gates into a real channel-wise kernel-vs-reference cross-check (tolerances
-# re-pinned). Independent value correctness is carried by the fp64 oracle
-# test (channel-wise assembly vs the token-serial GDN-2 oracle, bit-exact)
-# and the channel-wise chunkwise tests. All six per-channel grads are viewed
-# directly (no reduction), distinct from the scalar reduction gate (5
-# channel-summed views) above. The channel-wise aux (``_gdn2_bwd_aux``,
-# per-channel g/b/w) is shared with the stock GDN-2 gate.
+# Channel-wise native kernels use per-channel decay g; erase b on the key axis, write w on value.
 
 
 def gdn2_channelwise_reference_adapter(
@@ -1325,20 +1020,7 @@ def verify_gdn2_channelwise_op_all_grads(
     }
 
 
-# ---------------------------------------------------------------------------
-# GDN-2 family gates: GLA / LA / SSD-class / KDA reductions as built-in gates
-# ---------------------------------------------------------------------------
-
-# Each member of the gated linear recurrence family runs through all 12
-# contract gates in its own family mode (kernels.cute.gdn2_family wrapper,
-# family-native signature, gate settings materialized inside). Discipline
-# mirrors the channel-wise gate: the reference is a structurally matched
-# refs-path wrapper (candidate-vs-same-algorithm on CPU; tcgen05-vs-reference
-# once a native kernel exists), so the battery verifies contract compliance
-# without false EXC/subnormal divergence between op-order-distinct algorithms.
-# Independent value correctness per family is carried by the fp64 tests
-# against the token-serial family oracles (kernels.references.family_oracles,
-# each written from its family's own definition), in tests/test_gdn2_family.py.
+# Each family member (LA/GLA/SSD/KDA) runs all 12 gates via the gdn2_family wrapper's native mode.
 
 FAMILY_GATE_VIEWS: dict[str, tuple[str, ...]] = {
     "gla": ("grad_q", "grad_k", "grad_v", "grad_g"),
@@ -1361,14 +1043,7 @@ def _family_bwd_aux(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, ...]:
-    """Deterministic family-native aux for a 4D-viewed ``do``.
-
-    Draw order per family is pinned under its seed: q, k, v, then the decay draws
-    (dt then a_head, the official Mamba near-integrator regime of ``_gdn2_bwd_aux``),
-    then the gate draw. GLA/KDA carry per-channel ``g`` (with the same <= 0 jitter as
-    the stock aux); SSD-class carries scalar ``g`` [B, L, H]; LA carries no decay.
-    KDA's ``beta`` is sigmoid-squashed into (0, 1).
-    """
+    """Deterministic family-native aux for a 4D-viewed ``do``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_FAMILY_AUX_SEEDS[family])
     q = torch.randn(batch, seq_len, nheads, d_k, generator=gen)
@@ -1456,9 +1131,7 @@ def family_reference_adapter(
     )
 
 
-# Family views reuse the GDN-2 tolerance classes: the gradients' dominant chains are
-# identical (reverse-time state carry ~L), and grad_beta is the same combined-gate
-# reduction as the scalar reduction gate's.
+# Family views reuse GDN-2 tolerances: dominant chains match (reverse-time carry ~L) across families.
 _FAMILY_VIEW_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_q": GDN2_BWD_GATE_OVERRIDES["grad_q"],
     "grad_k": GDN2_BWD_GATE_OVERRIDES["grad_k"],
@@ -1519,17 +1192,12 @@ def verify_gdn2_family_op_all_views(
     }
 
 
-# ---------------------------------------------------------------------------
-# Complex-RoPE scan (C4): forward op, one gate view
-# ---------------------------------------------------------------------------
-
 # Rope-scan signature: (x, B, C, dt, A, angle_proj) -> y.
 RopeCallable = Callable[..., Tensor]
 
 ROPE_HEADDIM = 4
 ROPE_N_STATE = 16
-# rotary_dim = 2*6 = 12 < N = 16: every gate run exercises the rotated
-# lanes and the identity tail simultaneously.
+# rotary_dim = 2*6 = 12 < N = 16: every gate run exercises both rotated lanes and identity tail.
 ROPE_NUM_ANGLES = 6
 _ROPE_AUX_SEED = 27791
 
@@ -1543,15 +1211,7 @@ def _rope_aux(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Deterministic (B, C, dt, A, angle_proj) for a 4D-viewed ``x``.
-
-    ``dt`` is log-uniform in the official dt-init range and ``A`` per-head
-    negative, the near-integrator regime, as in the scan aux. ``angle_proj``
-    is unit-normal: tanh maps it across both its linear and saturated
-    regions, and the rotation magnitude |tanh * dt * pi| stays well inside
-    one period per step. No saturation variant exists (no softplus in the
-    op). Draw order under ``_ROPE_AUX_SEED`` is pinned.
-    """
+    """Deterministic (B, C, dt, A, angle_proj) for a 4D-viewed ``x``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_ROPE_AUX_SEED)
     b_proj = torch.randn(batch, seq_len, nheads, n_state, generator=gen)
@@ -1568,21 +1228,7 @@ def _rope_aux(
     return cast(b_proj), cast(c_proj), cast(dt), cast(a_head), cast(angle)
 
 
-# The accumulation chain is the sequence (h carried over L), as for the
-# forward scan: extent L=512 at ORD-01's gate shape. ORD-03 keeps the
-# scan's L=8192 collapse length with 3x the scan's value tolerance as
-# kernel reorder/FMA headroom over the longer decay chain (theory-seeded;
-# the reference's own cumsum-vs-fp64 angle noise at L=8192 measures only
-# ~1e-6 rad and is not the budget driver). The fp16-state cheat measures
-# 5.2e-2 at this shape, 17x over the 3e-3 budget, so the collapse
-# length keeps ORD-03 discriminative too. B200 gate run passed unchanged.
-# PRC-02 runs the scan's stress shape scale-aware with a unit atol of
-# 3e-3 (the grad_A / MIMO convention; rope outputs at the gate
-# shape reach |ref|_inf ~6-9, so a flat atol mixes axes with the
-# scale-relative floors). Floors, as fractions of output scale: honest
-# eager <= 7.3e-4 vs fp16-state cheat >= 8.6e-3 on CPU (3 draws);
-# B200 Triton kernel <= 6.3e-4 vs cheat >= 1.05e-2, 4.8x under / 3.5x
-# over the unit atol on-device, pinned by a discriminative test.
+# Accumulation chain is the sequence (h carried over L); extent L=512 at ORD-01's gate shape.
 ROPE_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     "gate_prc_02_mixed_precision_accumulation": {
         "shape": (2, 1024, 32),
@@ -1606,11 +1252,7 @@ def rope_candidate_adapter(
     headdim: int = ROPE_HEADDIM,
     saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
-    """Single-tensor view of the rope scan: ``x -> y``, d_model as (nheads, headdim).
-
-    ``saturate`` is accepted for interface parity with the scan adapters
-    and ignored: the rope aux has no saturation variant.
-    """
+    """Single-tensor view of the rope scan: ``x -> y``, d_model as (nheads, headdim)."""
 
     def adapted(x: Tensor) -> Tensor:
         batch, seq_len, d_model = x.shape
@@ -1638,8 +1280,7 @@ def rope_reference_adapter(
         x4 = x.reshape(batch, seq_len, nheads, headdim)
         if x.dtype == torch.float32:
             return reference_complex_scan_rope(x4, *aux).reshape(batch, seq_len, d_model)
-        # Mixed-precision contract: oracle computes in fp32 from the same
-        # (already rounded) operand bits, rounds once at the output.
+        # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
         y = reference_complex_scan_rope(x4.to(torch.float32), *(t.to(torch.float32) for t in aux))
         return y.to(x.dtype).reshape(batch, seq_len, d_model)
 
@@ -1674,12 +1315,7 @@ def verify_rope_op(
     )
 
 
-# ---------------------------------------------------------------------------
-# Fused block (C5): forward op, one gate view
-# ---------------------------------------------------------------------------
-
-# Fused-block signature: (x, conv_weight, conv_bias, delta, A, B, C, D,
-# norm_weight, *, conv_kernel_size, eps, chunk_size) -> y.
+# Fused-block signature: (x, conv_w, conv_b, delta, A, B, C, D, norm_w, kwargs) -> y.
 FusedCallable = Callable[..., Tensor]
 
 FUSED_CONV_K = 4
@@ -1696,17 +1332,7 @@ def _fused_aux(
     dtype: torch.dtype,
     saturate: bool = True,
 ) -> tuple[Tensor, ...]:
-    """Deterministic (conv_w, conv_b, delta, A, B, C, D_skip, norm_w) for a [B, L, D] primary.
-
-    The scan core (delta/A/B/C/D_skip) comes from ``_aux_from_gen``, same
-    distribution rationale, including the saturation variant (the op has a
-    softplus inside its scan). ``conv_weight`` is unit-normal scaled
-    1/sqrt(K) so the conv output stays near input scale; ``conv_bias`` is
-    half-scale, shifting the SiLU operating point across its nonlinear
-    range without drowning the signal; ``norm_weight`` is 1 + 0.25*jitter,
-    exact ones is gain-degenerate (per-channel gain would go untested).
-    Draw order under ``_FUSED_AUX_SEED`` is pinned.
-    """
+    """Deterministic (conv_w, conv_b, delta, A, B, C, D_skip, norm_w) for a [B, L, D] primary."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_FUSED_AUX_SEED)
     delta, a, b_proj, c_proj, d_skip = _aux_from_gen(
@@ -1731,44 +1357,14 @@ def _fused_aux(
     )
 
 
-# The dominant accumulation chain is still the scan over L (extent 512 at
-# ORD-01's gate shape); the RMSNorm adds a D-extent reduction (32) that is
-# negligible under the sqrt-N model. ORD-03 keeps the scan's L=8192
-# collapse length with 3x the scan's value tolerance as kernel reorder/FMA
-# headroom across the conv window, the scan chain and the cross-D norm
-# reduction (theory-seeded; B200 must confirm).
-# PRC-02 runs at L=4096: at L=1024 the fp16-state cheat's per-step
-# re-rounding has only compounded to 7.8x the honest floor; at L=4096
-# the corridor is 15.6x. Scale-aware (outputs here reach |ref|_inf ~7).
-# Floors as fractions of output scale, CPU over 3 draws: honest
-# eager <= 1.26e-3 vs fp16-state cheat >= 1.95e-2, unit atol 5e-3 sits
-# 4.0x over honest / 3.9x under cheat, pinned by a discriminative test.
-# B200 (3 draws): Triton kernel <= 9.75e-4 vs cheat >= 2.08e-2, 21x
-# corridor, 5.1x under / 4.2x over the unit atol.
-# PRC-02's discrimination here is the L-chain scan state only: a fp16
-# norm-ssq cheat measures 1.2-1.6e-3 of scale, at the honest floor,
-# because the D=32 ssq chain is too short for fp16 re-rounding to
-# compound above input-rounding noise; no tolerance can separate it
-# at the gate's d_model. The norm's fp32 accumulator is pinned
-# structurally instead (kernel-replica test + byte-identical determinism).
+# Dominant chain is the scan over L (512 at gate shape); RMSNorm's D=32 reduction is negligible.
 FUSED_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
     "gate_prc_02_mixed_precision_accumulation": {
         "shape": (1, 4096, 32),
         "atol": 5e-3,
         "scale_atol_by_ref_inf": True,
     },
-    # The conv bias makes this op affine in x, the first op in the suite
-    # where subnormal inputs do NOT produce subnormal-scale outputs (the
-    # bias path dominates at O(1), where the earlier ops are multiplicative
-    # in the primary). EXC-02's value branch therefore measures plain kernel
-    # reorder noise at output scale (B200 kernel: 8.0e-6), not subnormal
-    # handling; the zero-mask parity branch keeps exact semantics. 1e-4 is
-    # ~12x the measured noise and far below any real numeric divergence.
-    # Input-subnormal preservation is fundamentally unobservable for this
-    # op (a DAZ load changes the output by ~1e-38 under an O(1) bias term),
-    # that is the op's structure, not the override. Internal subnormal
-    # behaviour (a_bar underflow at saturated delta, the ex2.approx
-    # lesson) stays covered by EXC-01/CMP-01's saturated-delta aux.
+    # Conv bias makes this op affine in x, so subnormal inputs don't yield subnormal-scale outputs.
     "gate_exc_02_subnormal_handling": {"atol": 1e-4},
     "gate_ord_01_reduction_order_tolerance": {"reduction_elements": 512},
     "gate_ord_03_noncommutative_reduction": {
@@ -1787,14 +1383,7 @@ def fused_candidate_adapter(
     chunk_size: int = SCAN_CHUNK_SIZE,
     saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
-    """Single-tensor view of the fused block: ``x -> y``.
-
-    The primary is the *unpadded* input; the adapter applies the causal
-    left-padding of K-1 zeros itself, so the op's output length equals the
-    gate primary's length and non-finite injections at step t smear
-    causally into outputs t..t+K-1, identically for candidate and
-    reference.
-    """
+    """Single-tensor view of the fused block: ``x -> y``."""
 
     def adapted(x: Tensor) -> Tensor:
         batch, seq_len, d_model = x.shape
@@ -1826,8 +1415,7 @@ def fused_reference_adapter(
             return reference_fused_block_forward(
                 x_pad, *aux, conv_kernel_size=conv_k, chunk_size=chunk_size
             )
-        # Mixed-precision contract: oracle computes in fp32 from the same
-        # (already rounded) operand bits, rounds once at the output.
+        # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
         y = reference_fused_block_forward(
             x_pad.to(torch.float32),
             *(t.to(torch.float32) for t in aux),
@@ -1848,13 +1436,7 @@ def verify_fused_block_op(
     conv_k: int = FUSED_CONV_K,
     chunk_size: int = SCAN_CHUNK_SIZE,
 ) -> dict[str, GateResult]:
-    """Run all 12 contract gates over a fused-block-signature callable.
-
-    PRC-02 is re-run with saturation-free auxiliaries, exactly as for the
-    forward scan: the saturated delta entries probe softplus value
-    correctness (CMP-01's same-bits domain) but their amplification drowns
-    PRC-02's accumulator signal in fp16 input-rounding noise.
-    """
+    """Run all 12 contract gates over a fused-block-signature callable."""
     return _verify_op_views(
         lambda saturate: fused_candidate_adapter(
             fused_fn, n_state=n_state, conv_k=conv_k, chunk_size=chunk_size, saturate=saturate
@@ -1869,13 +1451,7 @@ def verify_fused_block_op(
     )
 
 
-# ---------------------------------------------------------------------------
-# Fused block backward (C6): one gate view per gradient output
-# ---------------------------------------------------------------------------
-
-# Fused-backward signature: (x, conv_weight, conv_bias, delta, A, B, C, D,
-# norm_weight, dy, *, conv_kernel_size, eps, chunk_size) -> the nine
-# gradients as an indexable sequence (FusedBlockGrads or plain tuple).
+# Fused-backward signature: adds dy to the forward args; returns nine grads (FusedBlockGrads).
 FusedBwdCallable = Callable[..., Any]
 
 _FUSED_BWD_AUX_SEED = 52361
@@ -1904,15 +1480,7 @@ def _fused_bwd_aux(
     dtype: torch.dtype,
     saturate: bool = True,
 ) -> tuple[Tensor, ...]:
-    """Deterministic (x, conv_w, conv_b, delta, A, B, C, D_skip, norm_w) for a [B, L, D] ``dy``.
-
-    The backward op's primary is the upstream gradient ``dy``, so the
-    forward input ``x`` joins the auxiliaries, unit-normal and *unpadded*
-    (the adapters apply the causal K-1 left-padding, mirroring the forward
-    harness). Remaining draws follow ``_fused_aux``'s distribution
-    rationale; a distinct seed keeps the backward aux decorrelated from
-    the forward harness's primaries.
-    """
+    """Deterministic (x, conv_w, conv_b, delta, A, B, C, D_skip, norm_w) for a [B, L, D] ``dy``."""
     gen = torch.Generator(device="cpu")
     gen.manual_seed(_FUSED_BWD_AUX_SEED)
     x = torch.randn(batch, seq_len, d_model, generator=gen)
@@ -1940,27 +1508,7 @@ def _fused_bwd_aux(
 
 
 def _fused_bwd_prc02(atol: float) -> dict[str, Any]:
-    """Scale-aware PRC-02 config for a fused-backward view at (1, 4096, 32).
-
-    Same axes as the forward view (L=4096 needed for cheat compounding;
-    scale-aware because gradient errors carry the magnitude of large
-    cancelling intermediates, the grad_A / MIMO convention). Floors
-    CPU-measured per view over 3 draws, honest eager vs autograd through
-    the fp16-scan-state forward cheat, scale-normalised: honest
-    <= 7.0e-4..1.6e-3 per view; cheat corridors range 44x (grad_A, 4.2e-2)
-    down to 3.4x (grad_conv_bias, 5.3e-3) and 5.0x (grad_D, 6.4e-3): the
-    conv-bias and D-skip paths touch the fp16 state only through
-    dconv/dys, so the cheat's compounding is diluted there; those two
-    views carry the thinnest margins (re-measure first on B200 if either
-    flakes). Per-view unit atols sit between the floors, margin biased
-    honest-side.
-
-    B200 re-measurement (Triton pipeline vs the same cheat, 3 draws):
-    kernel honest <= 1.28e-3 of scale (worst view grad_B), every view
-    discriminates both ways; margins vs the unit atols 3.1-6.2x under /
-    1.8-6.3x over, thinnest grad_D (1.8x over) and grad_conv_bias
-    (2.5x over), matching the CPU prediction.
-    """
+    """Scale-aware PRC-02 config for a fused-backward view at (1, 4096, 32)."""
     return {
         "shape": (1, 4096, 32),
         "atol": atol,
@@ -1969,40 +1517,7 @@ def _fused_bwd_prc02(atol: float) -> dict[str, Any]:
     }
 
 
-# Accumulation extents at ORD-01's (4, 512, 32) gate shape, theory-seeded
-# under the eps*sqrt(chain)*scale model (the scan-table convention; B200
-# confirms). grad_x / grad_delta see one reverse carry chain (~L);
-# grad_B / grad_C contract D=32 chain-carrying terms (~D*L/2); grad_A,
-# grad_conv_weight, grad_conv_bias and grad_norm_weight sum batch*L terms
-# that each carry an ~L/2 chain (~B*L^2/2); grad_D is a batch*L sum of
-# chain-carrying dys*z products (~B*L). ORD-03 keeps the scan's L=8192
-# collapse length with the fused forward's 3x headroom for the conv
-# window and cross-D norm reduction; the long-chain-sum views (grad_A
-# class) take 1e-2, the grad_A precedent.
-#
-# CMP-03 unit atols are B200-calibrated (the gate's 5 shapes x 5 draws):
-# the kernel's honest cross-impl reorder noise rides the forward chain
-# state h (recomputed in-kernel vs torch's chunked scan, both fp32,
-# divergence compounds over L), and the views that contract against h or
-# the reverse carry g measure up to 1.4e-5 of output scale (grad_A/B/C;
-# 1.9e-5 observed in a live gate draw), past the 1e-5 default. grad_A/B/C
-# take 1e-4 (~5-7x over measured); the five other overridden views take
-# 5e-5 (measured <= 8.4e-6); grad_norm_weight keeps the default (measured
-# 1.5e-6, the rms division cancels h's compounding and the norm backward
-# is local in t). The atols stay >= 50x under the PRC-02 cheat floors
-# (floors measured at L=4096, a conservative basis for CMP-03's
-# L<=256 shapes).
-#
-# CMP-01 runs the same kernel-vs-oracle comparison and its long_seq
-# variation (4, 256, 32) carries a longer worst chain (B*L^2/2 = 131072)
-# than any CMP-03 shape, so the same default cannot be assumed safe.
-# B200-measured at CMP-01's base + long_seq shapes, 8 draws (the gate's
-# n_random): the h-contracting views reach 6.1e-6 of scale (grad_C;
-# grad_delta 5.7e-6, grad_B 4.3e-6, grad_A 2.7e-6), under the 1e-5 default
-# but a 1.6x margin on an unseeded reward gate, and CMP-03's live draw
-# exceeded its probe envelope by 1.36x. Those four views take cmp01_atol
-# 5e-5 (~8x over measured, above the eps32*sqrt(chain) model bound of
-# 4.3e-5); the rest measure <= 1.8e-6 and keep the default.
+# Extents at (4,512,32), theory-seeded under eps*sqrt(chain)*scale, B200-confirmed.
 FUSED_BWD_GATE_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
     "grad_x": _bwd_view_overrides(
         ord01_reduction_elements=512,
@@ -2082,13 +1597,7 @@ def fused_bwd_candidate_adapter(
     chunk_size: int = SCAN_CHUNK_SIZE,
     saturate: bool = True,
 ) -> Callable[[Tensor], Tensor]:
-    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``.
-
-    The primary is the upstream gradient ``dy``; the aux ``x`` is padded
-    here so non-finite injections through ``dy`` hit output rows whose
-    indices match the gate primary's, identically for candidate and
-    reference.
-    """
+    """Single-tensor view of one gradient output: ``dy -> bwd(...)[field]``."""
     idx = FUSED_BWD_GRAD_FIELDS.index(grad_field)
 
     def adapted(dy: Tensor) -> Tensor:
@@ -2122,8 +1631,7 @@ def fused_bwd_reference_adapter(
         )
         x_pad = torch.nn.functional.pad(x, (0, 0, conv_k - 1, 0))
         if dy.dtype != torch.float32:
-            # Mixed-precision contract: oracle computes in fp32 from the
-            # same (already rounded) operand bits, rounds once at the output.
+            # Mixed-precision: oracle computes in fp32 from the same rounded bits, rounds once at output.
             x_pad, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w = (
                 t.to(torch.float32)
                 for t in (x_pad, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w)
@@ -2157,12 +1665,7 @@ def verify_fused_bwd_op(
     conv_k: int = FUSED_CONV_K,
     chunk_size: int = SCAN_CHUNK_SIZE,
 ) -> dict[str, GateResult]:
-    """Run all 12 contract gates over one gradient view of the fused backward.
-
-    Mirrors ``verify_bwd_scan_op`` per view, including the saturation-free
-    PRC-02 re-run (the op has a softplus inside its scan; the saturated
-    channels' amplification drowns the accumulator signal).
-    """
+    """Run all 12 contract gates over one gradient view of the fused backward."""
     return _verify_op_views(
         lambda saturate: fused_bwd_candidate_adapter(
             bwd_fn,
@@ -2206,14 +1709,8 @@ def verify_fused_bwd_op_all_grads(
     }
 
 
-# ---------------------------------------------------------------------------
-# Elementwise SiLU: the GRPO trainer's toy validation op
-# ---------------------------------------------------------------------------
-
 ELEMENTWISE_GATE_OVERRIDES: dict[str, dict[str, Any]] = {
-    # Bitwise identity vs torch eager is unachievable for a hardware kernel
-    # (libdevice exp vs torch's sigmoid differ at ULP level); a near-ULP
-    # budget keeps the gate discriminative: wrong math errs > 1e-2 here.
+    # Bitwise match is unachievable (libdevice exp vs sigmoid differ at ULP); near-ULP tol, errs > 1e-2.
     "gate_ord_03_noncommutative_reduction": {"atol": 1e-6, "rtol": 1e-6},
 }
 
@@ -2232,12 +1729,7 @@ def verify_elementwise_op(
     device: str | torch.device = "cpu",
     resource_meta: dict[str, int] | None = None,
 ) -> dict[str, GateResult]:
-    """All 12 contract gates over an elementwise single-tensor callable.
-
-    Candidates already match the gates' single-tensor interface, so no
-    adapter closure or saturation re-run is needed and the gate defaults
-    apply unchanged (no accumulation axis to re-point).
-    """
+    """All 12 contract gates over an elementwise single-tensor callable."""
     overrides: dict[str, dict[str, Any]] = {
         k: dict(v) for k, v in ELEMENTWISE_GATE_OVERRIDES.items()
     }

@@ -1,14 +1,4 @@
-"""Regression: all shipped K#1/K#2/SBE backward run functions are CUDA-graph safe.
-
-A ``torch.cuda.synchronize()`` inside a ``torch.cuda.graph`` capture region is
-illegal and aborts the capture. All run functions route their end-of-run device
-sync through ``maybe_sync()`` (a no-op under ``graph_capture()``). These tests
-pin that every run function — including the shipped defaults (L3 K#1, fused K#2,
-L2 K#1, SBE) — uses the capturable sync, and that the scalar batched paths
-actually run under capture without calling ``torch.cuda.synchronize`` while still
-syncing once outside capture. CPU-only: the tcgen05 GEMM is stubbed, so only the
-host orchestration + the sync placement are exercised.
-"""
+"""Regression: all shipped K#1/K#2/SBE backward run functions are CUDA-graph safe."""
 
 from __future__ import annotations
 
@@ -55,7 +45,7 @@ _RUN_FNS = [
 def test_run_fn_uses_capturable_sync(fn: Any) -> None:
     src = inspect.getsource(fn)
     assert "torch.cuda.synchronize" not in src, (
-        f"{fn.__name__} has an unconditional sync — breaks CUDA-graph capture"
+        f"{fn.__name__} has an unconditional sync, breaks CUDA-graph capture"
     )
     assert "maybe_sync()" in src, f"{fn.__name__} must sync via the capturable maybe_sync()"
 

@@ -1,12 +1,4 @@
-"""Regression for the CRITICAL verifier-sandbox pickle-RCE.
-
-The child process runs untrusted candidate code; the parent runs the reward /
-GO-verdict logic. A bare ``pickle.loads`` of the child's return value let a
-reward-hacking candidate execute code in the parent via a ``__reduce__`` gadget
-(forging rewards/verdicts). The fix serializes the result with ``torch.save`` and
-loads it with ``torch.load(weights_only=True)``; these tests pin that a gadget is
-refused with no side effect while legitimate outputs still round-trip.
-"""
+"""Regression for the CRITICAL verifier-sandbox pickle-RCE."""
 
 from __future__ import annotations
 
@@ -36,9 +28,7 @@ def _torch_saved(obj: object) -> bytes:
 
 
 def test_result_fd_swap_precedes_untrusted_deserialize() -> None:
-    # The child must repoint fd 1 -> stderr BEFORE the stdin read, the task
-    # unpickle, and the heavy imports: a C-level write to fd 1 during any of
-    # those would prepend stray bytes to the torch.save result payload.
+    # fd 1 must repoint to stderr before stdin read, unpickle, and imports, or output corrupts.
     from lethe.verifier.sandbox import _WORKER_SCRIPT
 
     swap = _WORKER_SCRIPT.index("os.dup2(2, 1)")
@@ -62,8 +52,7 @@ class TestSafeDeserialize:
         assert not os.path.exists(path)
 
     def test_gadget_is_genuinely_dangerous_under_bare_pickle(self) -> None:
-        # Proves the payload is a real RCE proxy: bare pickle.loads DOES run it,
-        # which is exactly the behaviour the safe loader removes from the parent.
+        # Proves the payload is a real RCE proxy: bare pickle.loads runs it; the safe loader blocks that.
         path = _fresh_sentinel_path()
         pickle.loads(pickle.dumps(ReduceBomb(path)))
         assert os.path.exists(path)

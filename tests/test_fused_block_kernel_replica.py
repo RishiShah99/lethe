@@ -1,15 +1,4 @@
-"""CPU replica of the C5 Triton kernels' exact algorithm vs the reference.
-
-The fused path computes the same math as the reference through a different
-route: the conv as a per-step K-column window dot riding the scan's serial
-loop (reference: one F.conv1d over the whole sequence), SiLU inline as
-x * 1/(1+exp(-x)), the scan as C1's register recurrence, and the RMSNorm
-as a chunked in-program sum of squares (reference: torch mean). This
-replica mirrors both kernels statement-for-statement so any algebra
-divergence — window indexing, correlation-vs-convolution orientation,
-bias placement, ssq chunk boundary — surfaces on CPU without a GPU in the
-loop. Tolerances are fp32 reorder noise, not correctness slack.
-"""
+"""CPU replica of the C5 Triton kernels' exact algorithm vs the reference."""
 
 from __future__ import annotations
 
@@ -127,8 +116,7 @@ class TestKernelReplicaParity:
         self._check(1, 1, 8, 16, 4)
 
     def test_ssq_chunk_tail(self) -> None:
-        # d_model=10 with block_d=4: the chunked sum-of-squares runs a
-        # masked tail chunk, the boundary the Triton norm kernel has.
+        # d_model=10, block_d=4: chunked sum-of-squares runs a masked tail chunk (Triton's boundary).
         self._check(2, 32, 10, 8, 4, block_d=4)
 
     def test_saturated_softplus_branch(self) -> None:
@@ -138,9 +126,7 @@ class TestKernelReplicaParity:
         self._check(1, 512, 6, 16, 4, seed=7)
 
     def test_fp64_tight(self) -> None:
-        # The reference rejects fp64; _fused_eager is its documented
-        # op-for-op fp64 extension (bitwise-equal to the reference on fp32,
-        # pinned in test_fused_block_op).
+        # Reference rejects fp64; _fused_eager is its fp64 extension (bitwise vs reference on fp32).
         args = _inputs(2, 64, 12, 16, 4, seed=11, dtype=torch.float64)
         y_scan = _conv_scan_replica(*args[:8])
         got = _rmsnorm_replica(y_scan, args[8], 1e-5, 4)

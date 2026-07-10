@@ -1,33 +1,4 @@
-"""C2 benchmark: our Triton backward scan vs official mamba_ssm vs eager.
-
-Comparators per (shape, dtype), each skipped with a recorded reason when
-infeasible:
-
-- ``ours_triton``: this repo's hand-written backward kernel (C2)
-- ``official_cuda_bwd``: VJP through ``mamba_ssm`` ``selective_scan_fn``
-  (the Mamba-1 CUDA backward, healthy on Blackwell, unlike the Mamba-3
-  Triton backward this op replaces; timed via ``torch.autograd.grad`` with
-  ``retain_graph``, so the number includes autograd dispatch like ours
-  includes launcher reductions). The comparison is conservative against
-  us: the official forward runs once outside the timed region, so its
-  timed backward reuses forward-saved activations, while every timed call
-  of ours pays the full forward recompute in-kernel, the price of an
-  activation-free backward.
-- ``official_eager_bwd``: VJP through ``selective_scan_ref`` (vectorised
-  torch eager; materialises [B, D, L, N] *and* its graph, so memory-gated)
-- ``reference_loop_bwd``: our Python-loop oracle's autograd (small shapes)
-
-Plus the #904 contrast artifact: ``num_warps_sweep`` compiles and times our
-kernel at num_warps 2/4/8 and records per-specialisation ptxas resources
-(regs/spills/smem). The official Mamba-3 Triton backward fails to compile
-at every num_warps >= 4 config on sm_100 (TMEM budget); ours has no
-tl.dot for the TMEM-promotion pass to touch, so the sweep succeeding *is*
-the claim, recorded with the evidence.
-
-Usage: ``uv run python -m
-lethe.bench.c2_backward_selective_scan --out ~/out/c2_bench.json``
-(add ``--quick`` for a fast smoke pass).
-"""
+"""C2 benchmark: our Triton backward scan vs official mamba_ssm vs eager."""
 
 from __future__ import annotations
 
@@ -61,11 +32,9 @@ except ImportError:
 # Fixed-arity alias so star-unpacking binds precisely at call sites.
 ScanArgs = tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
 
-# Eager comparators materialise [B, D, L, N] intermediates plus their
-# autograd graph; gate on the base intermediate size.
+# Eager comparators keep [B, D, L, N] intermediates plus the autograd graph; gate on size.
 _EAGER_BYTES_CAP = 4 * 1024**3
-# The Python-loop oracle launches ~5 kernels per timestep forward and again
-# backward; cap the loop length.
+# The Python-loop oracle launches ~5 kernels/timestep each way; cap the loop length.
 _REFERENCE_LOOP_MAX_SEQ = 512
 
 
@@ -124,13 +93,7 @@ def _time(fn: Callable[[], Any], *, warmup: int, trials: int) -> dict[str, float
 
 
 def _official_leaves(args: ScanArgs) -> tuple[Tensor, ...]:
-    """Official [B, D, L] / [B, 1, N, L] layout, as autograd leaves.
-
-    A and D upcast from the *rounded* low-precision values so both kernels
-    consume identical operand bits (the official kernel requires fp32
-    weights); parity numbers then measure implementation differences, not
-    operand-rounding differences.
-    """
+    """Official [B, D, L] / [B, 1, N, L] layout, as autograd leaves."""
     u, delta, a, b_proj, c_proj, d_skip = args
     return (
         u.transpose(1, 2).contiguous().requires_grad_(True),
@@ -143,13 +106,7 @@ def _official_leaves(args: ScanArgs) -> tuple[Tensor, ...]:
 
 
 def _parity_stats(got: Tensor, want: Tensor) -> dict[str, float]:
-    """Absolute max error plus the comparand's scale.
-
-    grad_A magnitudes grow superlinearly with L in the near-integrator
-    regime, so a bare max_err reads as divergence when it is reorder noise
-    riding a large output, scale_rel (max_err / |want|_inf) is the
-    comparable number across shapes.
-    """
+    """Absolute max error plus the comparand's scale."""
     diff = (got.float() - want.float()).abs()
     ref_inf = float(want.float().abs().max().item())
     max_err = float(diff.max().item())
@@ -255,13 +212,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
 
 def _specialization_table() -> list[dict[str, Any]]:
-    """Per-compiled-specialisation resources from the kernel cache.
-
-    Unlike the max-envelope ``resource_meta()``, this keeps one row per
-    cached CompiledKernel with its launch config, the per-num_warps
-    evidence the #904 contrast needs. Attribute layout is triton-version
-    dependent; missing fields record as None rather than guessing.
-    """
+    """Per-compiled-specialisation resources from the kernel cache."""
     from lethe.kernels.ops import _triton_bwd_scan
 
     jit_fn = _triton_bwd_scan._bwd_scan_kernel
@@ -288,13 +239,7 @@ def _specialization_table() -> list[dict[str, Any]]:
 
 
 def _num_warps_sweep(quick: bool) -> dict[str, Any]:
-    """Compile + run + time our kernel at num_warps 2/4/8.
-
-    The official Mamba-3 Triton backward dies at compile for every
-    num_warps >= 4 config on sm_100 (`Required: 544, Hardware limit: 512`);
-    each successful entry here is the direct counterexample for our
-    formulation, with per-config ptxas resources alongside.
-    """
+    """Sweep num_warps 2/4/8; official bwd fails compile at warps>=4 on sm_100 (TMEM 544>512)."""
     from lethe.kernels.ops import _triton_bwd_scan
 
     spec = QUICK_SHAPES[1] if quick else SWEEP_SHAPE

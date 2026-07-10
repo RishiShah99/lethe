@@ -1,10 +1,4 @@
-"""Mamba-3 real-equivalent SSM scan with data-dependent RoPE (eager PyTorch).
-
-The cumulative rotation is folded into B and C as a preprocessing step
-(the hidden state is never re-rotated), then a plain decay scan runs over
-the rotated projections. fp16/bf16 inputs are upcast once to float32,
-computed with float32 state, and rounded once at the output.
-"""
+"""Mamba-3 real-equivalent SSM scan with data-dependent RoPE (eager PyTorch)."""
 
 import math
 

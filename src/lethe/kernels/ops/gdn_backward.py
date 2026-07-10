@@ -1,18 +1,4 @@
-"""GDN-2 chunkwise backward candidate op (oracle-faithful eager path).
-
-Drop-in for ``reference_gdn2_backward`` with the same ``(q, k, v, g, b, w, do)``
-signature, widened to half dtypes:
-
-- fp32/fp64 -> autograd straight through ``reference_gdn2_forward`` (gradients
-  bitwise-equal to the oracle).
-- fp16/bf16 -> leaves upcast to fp32, each gradient rounds once at the end (the
-  mixed-precision contract PRC-02 measures). When ``do.requires_grad`` the eager
-  path builds the double-backward graph (``create_graph``) for CMP-02's gradcheck.
-
-The native Blackwell tcgen05/TMEM kernel dispatches from here on CUDA, exactly as
-``mimo_backward`` dispatches to its Triton kernel, and falls back to this eager
-path when it declines.
-"""
+"""GDN-2 chunkwise backward candidate op (oracle-faithful eager path)."""
 
 from __future__ import annotations
 
@@ -40,18 +26,7 @@ def gdn2_backward(
     use_qk_l2norm: bool = True,
     fwd_stash: ChunkwiseForwardCW | None = None,
 ) -> Gdn2Grads:
-    """GDN-2 backward. Returns ``Gdn2Grads`` (``grad_initial_state`` is ``None``).
-
-    Args/semantics mirror ``reference_gdn2_backward``: ``q``/``k``/``g``/``b``
-    [B, L, H, d_k], ``v``/``w``/``do`` [B, L, H, d_v]; each returned gradient
-    matches its input's shape and dtype.
-
-    On a Blackwell device with a supported dtype the native CuTe kernel runs; if it
-    declines (returns ``None``), this falls through to the eager path.
-    ``fwd_stash`` is the chunkwise forward saved by the op's forward pass;
-    when given, the native route runs the closed stage-B assembly on it (no restage).
-    The eager fallback ignores it (its autograd needs its own graph).
-    """
+    """GDN-2 backward."""
     if q.is_cuda and q.dtype in (torch.bfloat16, torch.float16, torch.float32):
         from lethe.kernels.cute.gdn2_backward import native_gdn2_backward
 

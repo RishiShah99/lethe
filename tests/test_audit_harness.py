@@ -1,11 +1,4 @@
-"""Audit-harness behavior pins: planted-defect candidates and N/A reclassification.
-
-Each source pair below follows the KernelBench convention the audited
-corpora use (Model / ModelNew / get_inputs / get_init_inputs). Candidates
-plant one defect each; the tests pin which gate class catches it and that
-reference-side incapacity reclassifies to not-applicable instead of
-inflating the failure stats.
-"""
+"""Audit-harness behavior pins: planted-defect candidates and N/A reclassification."""
 
 from __future__ import annotations
 
@@ -403,8 +396,7 @@ class ModelNew(torch.nn.Module):
 
 
 def test_nan_matching_candidate_not_charged() -> None:
-    # log(randn) emits NaN on negatives in BOTH implementations; positional
-    # NaN agreement must not count as a value failure (C6.g-review FIX #2).
+    # log(randn) emits NaN on both sides; positional NaN agreement must not fail CMP-01.
     gates = _gates(audit_worker(REF_NAN_EMITTING, CAND_NAN_MATCHING, {"device": "cpu"}))
     assert gates["CMP-01"] == "pass", gates
     assert gates["CMP-03"] == "pass", gates
@@ -412,9 +404,7 @@ def test_nan_matching_candidate_not_charged() -> None:
 
 
 def test_undeepcopyable_candidate_prc_gates_via_rebuild() -> None:
-    # Half-dtype variants rebuild by re-instantiation under the audit seed;
-    # a deepcopy-hostile module must not be charged on the PRC gates
-    # (C6.g-review FIX #3).
+    # Half-dtype rebuild uses re-instantiation, not deepcopy; must not fail PRC gates.
     gates = _gates(audit_worker(REF_LINEAR, CAND_UNDEEPCOPYABLE, {"device": "cpu"}))
     assert gates["PRC-01"] in ("pass", "na"), gates
     assert gates["PRC-02"] in ("pass", "na"), gates
@@ -422,10 +412,7 @@ def test_undeepcopyable_candidate_prc_gates_via_rebuild() -> None:
 
 
 def test_ri_marker_not_forgeable_by_candidate_text() -> None:
-    # H4: a candidate whose exception text merely contains the guessable
-    # "[ref-inapplicable]" substring must NOT have its real failure
-    # reclassified as skipped coverage — the marker carries a nonce only the
-    # reference adapter produces. Only the genuine marker maps to "na".
+    # H4: a forged "[ref-inapplicable]" substring must not fool the nonce-backed marker.
     forged = GateResult(
         passed=False,
         reason="candidate raised: ValueError [ref-inapplicable] from foreign code",

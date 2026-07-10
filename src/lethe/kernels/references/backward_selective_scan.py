@@ -1,14 +1,4 @@
-"""Mamba-3 selective scan backward pass via torch.autograd.
-
-Reference oracle for the verifier. Gradients are computed by running
-torch.autograd.grad through the chunked forward reference, no hand-derived
-gradient formulae. This is intentional: the reference must be correct by
-construction; analytical gradient derivation belongs in the optimised Triton
-kernel, not here.
-
-Reference: "Mamba-3" (Lahoti, Li, et al., ICLR 2026); underlying scan math
-from the original Mamba paper (Gu & Dao, ICLR 2024, arXiv:2312.00752).
-"""
+"""Mamba-3 selective scan backward pass via torch.autograd."""
 
 from typing import NamedTuple
 
@@ -40,27 +30,7 @@ def reference_backward_selective_scan(
     *,
     chunk_size: int = 64,
 ) -> SelectiveScanGrads:
-    """Selective scan backward pass delegated entirely to torch.autograd.
-
-    Wraps ``reference_forward_chunked_scan`` with ``requires_grad=True`` leaves,
-    calls ``torch.autograd.grad`` with the upstream gradient ``dy``, and returns
-    the six input gradients as a named tuple.
-
-    Args:
-        u:          Input tensor, shape [B, L, D], float32.
-        delta:      Timescale input (pre-softplus), shape [B, L, D], float32.
-        A:          Log-magnitude SSM matrix, shape [D, N], float32, negative.
-        B:          Input projection, shape [B, L, N], float32.
-        C:          Output projection, shape [B, L, N], float32.
-        D:          Skip connection weight, shape [D], float32.
-        dy:         Upstream gradient w.r.t. y, shape [B, L, D], float32.
-        chunk_size: Forwarded to the scan; must divide L evenly.
-
-    Returns:
-        SelectiveScanGrads named tuple with fields:
-        ``grad_u``, ``grad_delta``, ``grad_A``, ``grad_B``, ``grad_C``,
-        ``grad_D``, each matching the shape of the corresponding input.
-    """
+    """Selective scan backward pass delegated entirely to torch.autograd."""
     if u.dtype != torch.float32:
         raise ValueError(f"Expected float32 input, got {u.dtype}")
 

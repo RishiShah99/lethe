@@ -1,10 +1,4 @@
-"""CPU tests for HFPolicy via stub model/tokenizer.
-
-transformers/peft are not required: the stubs implement exactly the
-duck-typed surface HFPolicy consumes, so the chat-template plumbing,
-batched log-prob gather/mask alignment, gradient flow, and the
-adapter-disabled reference path are all pinned without a real model.
-"""
+"""CPU tests for HFPolicy via stub model/tokenizer."""
 
 from __future__ import annotations
 
@@ -167,8 +161,7 @@ class TestGenerate:
         assert policy.last_terminated == [False, False]
 
     def test_decode_strips_prompt(self) -> None:
-        # Completion must not contain any prompt text even though the
-        # stub returns prompt+completion concatenated.
+        # Completion must not contain prompt text, though the stub returns them concatenated.
         out = make_policy(StubModel(completion="xyz")).generate("PROMPT", 1)
         assert out == ["xyz"]
 
@@ -213,8 +206,7 @@ class TestLogProbs:
         assert torch.isfinite(model.head.weight.grad).all()
 
     def test_log_probs_under_sampling_temperature(self) -> None:
-        # The behaviour policy is the tempered one — log-probs must divide
-        # logits by the sampling temperature (biased gradient otherwise).
+        # behaviour policy is tempered: log-probs divide logits by sampling temperature.
         model = StubModel()
         policy = make_policy(model, temperature=2.0)
         got = policy.log_probs("p", "abc")
@@ -224,8 +216,7 @@ class TestLogProbs:
         assert not torch.allclose(want, raw)
 
     def test_temperature_override_ignores_sampling_temp(self) -> None:
-        # SFT passes temperature=1.0 to get exact cross-entropy regardless of
-        # the policy's sampling temperature.
+        # SFT passes temperature=1.0 for exact cross-entropy, ignoring sampling temperature.
         model = StubModel()
         policy = make_policy(model, temperature=2.0)
         lp, mask = policy.completion_log_probs("p", ["abc"], temperature=1.0)
@@ -233,8 +224,7 @@ class TestLogProbs:
         torch.testing.assert_close(lp[0][mask[0]], want)
 
     def test_nonpositive_temperature_override_raises(self) -> None:
-        # A caller-supplied temperature<=0 would NaN-poison the whole GRPO
-        # update via log_softmax(logits/temp); it must be rejected up front.
+        # temperature<=0 would NaN-poison the GRPO update via log_softmax; reject up front.
         policy = make_policy()
         for temp in (0.0, -0.5):
             with pytest.raises(ValueError, match="temperature must be > 0"):
@@ -253,8 +243,7 @@ class TestLogProbs:
             make_policy().completion_log_probs("p", ["a", "b"], append_eos=[True])
 
     def test_no_grad_streams_identical_to_grad_stream(self) -> None:
-        # new == old at step 0: same retokenization path must give the
-        # exact same values with and without grad.
+        # new == old at step 0: retokenization path must match with and without grad.
         model = StubModel()
         policy = make_policy(model)
         lp_grad, _ = policy.completion_log_probs("p", ["abc"])
@@ -272,9 +261,7 @@ class TestReferenceView:
         assert model.adapter_disabled_calls == 1
         assert model.ref_logit_shift == 0.0
         pol_lp = policy.log_probs("p", "abc")
-        # Uniform logit shift cancels in softmax — values match, but the
-        # disable path must have been exercised; use a head-bias change
-        # to verify a real difference is observable.
+        # uniform logit shift cancels in softmax; a bias-changing test below checks real diffs.
         assert len(ref_lp) == len(pol_lp)
 
     def test_reference_differs_when_adapter_changes_logits(self) -> None:

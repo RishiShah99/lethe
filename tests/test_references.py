@@ -1,12 +1,4 @@
-"""Tests for the Mamba-3 PyTorch reference implementations.
-
-Covers:
-  - Import smoke test for all 6 public functions.
-  - Shape, NaN/Inf, and non-zero-gradient checks for the 4 fully-implemented ops.
-  - NotImplementedError assertions for the 2 stubs.
-
-All tests run on CPU with float32 tensors.
-"""
+"""Tests for the Mamba-3 PyTorch reference implementations."""
 
 import pytest
 import torch
@@ -23,9 +15,6 @@ from lethe.kernels.references import (
     reference_mimo_forward,
 )
 
-# ---------------------------------------------------------------------------
-# Shared test dimensions
-# ---------------------------------------------------------------------------
 B = 2  # batch
 L = 8  # sequence length
 D = 4  # model dim
@@ -54,11 +43,6 @@ def _make_scan_inputs(
     return u, delta, A, B_proj, C_proj, D_skip
 
 
-# ---------------------------------------------------------------------------
-# 1. reference_forward_chunked_scan
-# ---------------------------------------------------------------------------
-
-
 class TestForwardChunkedScan:
     def test_import(self) -> None:
         assert callable(reference_forward_chunked_scan)
@@ -79,7 +63,7 @@ class TestForwardChunkedScan:
         assert y.dtype == torch.float32
 
     def test_invalid_seq_len_raises(self) -> None:
-        # L=8 with chunk_size=3 — not divisible
+        # L=8 with chunk_size=3, not divisible
         u, delta, A, B_p, C_p, D_s = _make_scan_inputs(seq=8)
         with pytest.raises(ValueError, match="divisible"):
             reference_forward_chunked_scan(u, delta, A, B_p, C_p, D_s, chunk_size=3)
@@ -95,11 +79,6 @@ class TestForwardChunkedScan:
         u, delta, A, B_p, C_p, D_s = _make_scan_inputs()
         y = reference_forward_chunked_scan(u, delta, A, B_p, C_p, D_s, chunk_size=L)
         assert y.shape == (B, L, D)
-
-
-# ---------------------------------------------------------------------------
-# 2. reference_backward_selective_scan
-# ---------------------------------------------------------------------------
 
 
 class TestBackwardSelectiveScan:
@@ -140,12 +119,6 @@ class TestBackwardSelectiveScan:
             assert tensor.abs().sum() > 0, f"All-zero gradient for {field}"
 
 
-# ---------------------------------------------------------------------------
-# 3. reference_mimo_backward  (implemented — smoke tests only; full suite in
-#    tests/test_references_mimo_complex.py)
-# ---------------------------------------------------------------------------
-
-
 class TestMimoBackwardSmoke:
     def test_import(self) -> None:
         assert callable(reference_mimo_backward)
@@ -168,12 +141,6 @@ class TestMimoBackwardSmoke:
         assert y.shape == (B, L, D, N)
 
 
-# ---------------------------------------------------------------------------
-# 4. reference_complex_scan_rope  (implemented — smoke tests only; full suite
-#    in tests/test_references_mimo_complex.py)
-# ---------------------------------------------------------------------------
-
-
 class TestComplexScanRopeSmoke:
     def test_import(self) -> None:
         assert callable(reference_complex_scan_rope)
@@ -191,10 +158,6 @@ class TestComplexScanRopeSmoke:
         y = reference_complex_scan_rope(x, _B, _C, dt, A, angle_proj)
         assert y.shape == (B, L, D, N)
 
-
-# ---------------------------------------------------------------------------
-# 5. reference_fused_block_forward
-# ---------------------------------------------------------------------------
 
 CONV_K = 4
 # Input length is L_out + (K-1); L_out must be divisible by CHUNK
@@ -259,11 +222,6 @@ class TestFusedBlockForward:
         args[8] = args[8] * 2.0  # norm_weight is index 8
         y2 = reference_fused_block_forward(*args, conv_kernel_size=CONV_K, chunk_size=CHUNK)
         assert torch.allclose(y2, y1 * 2.0, atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# 6. reference_fused_block_backward
-# ---------------------------------------------------------------------------
 
 
 class TestFusedBlockBackward:

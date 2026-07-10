@@ -1,40 +1,4 @@
-"""PTB-XL ECG dataset loader (CPU-side).
-
-Expected on-disk layout (standard PhysioNet download, do not alter):
-    <root>/
-        ptbxl_database.csv        -- 21 799 record index, one row per ECG
-        scp_statements.csv        -- SCP-ECG code taxonomy (index = code string)
-        records100/<subdir>/*.hea  -- 100 Hz WFDB records (filename_lr column)
-        records500/<subdir>/*.hea  -- 500 Hz WFDB records (filename_hr column)
-
-Fetch command:
-    wget -r -N -c -np \
-        https://physionet.org/files/ptb-xl/1.0.3/ \
-        -P <root>
-
-Splits follow the official strat_fold protocol from the PTB-XL paper
-(Strodthoff et al. 2020):  train = folds 1-8 / val = fold 9 / test = fold 10.
-
-Label sets:
-  "superclass" -- 5 diagnostic superclasses: NORM / MI / STTC / CD / HYP
-                  (diagnostic_class column of scp_statements, rows where
-                   diagnostic == 1).
-  "subclass"   -- 23 diagnostic subclasses: each diagnostic SCP code (rows
-                  where diagnostic == 1) rolled up into its diagnostic_subclass
-                  grouping, the PTB-XL benchmark's 23-way diagnostic task.
-
-min_likelihood:
-  The scp_codes column is a dict {code: likelihood}.  A code is included in
-  the label vector when likelihood >= min_likelihood.  0.0 includes every
-  annotated code; 100.0 restricts to codes annotated with full certainty.
-  The published PTB-XL benchmarks use 0.0 (all annotated codes).
-
-Output of __getitem__:
-  signal : torch.Tensor  shape (12, T), float32
-      T = sampling_rate * recording_duration (T=1000 at 100 Hz, T=5000 at 500 Hz)
-  label  : torch.Tensor  shape (C,), float32 multi-hot
-      C = 5 for superclass, 23 for subclass (diagnostic_subclass groups)
-"""
+"""PTB-XL ECG dataset loader (CPU-side)."""
 
 from __future__ import annotations
 
@@ -68,33 +32,7 @@ def _parse_scp_codes(raw: str) -> dict[str, float]:
 
 
 class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
-    """torch Dataset over a local PTB-XL root directory.
-
-    Parameters
-    ----------
-    root:
-        Path to the directory that contains ``ptbxl_database.csv`` and
-        ``scp_statements.csv``.
-    sampling_rate:
-        100  → records100/ (filename_lr column, T = 1 000 samples)
-        500  → records500/ (filename_hr column, T = 5 000 samples)
-    split:
-        "train" | "val" | "test": official strat_fold partition.
-    label_set:
-        "superclass" → 5-class multi-hot (NORM/MI/STTC/CD/HYP)
-        "subclass"   → 23-class diagnostic-subclass multi-hot
-    min_likelihood:
-        Include an SCP code in the label when its annotated likelihood is
-        >= this value.  0.0 = all codes annotated for the record.
-
-    Raises
-    ------
-    FileNotFoundError
-        If ``ptbxl_database.csv`` or ``scp_statements.csv`` are absent
-        under *root*. Caller must fetch the dataset first.
-    ValueError
-        If *sampling_rate*, *split*, or *label_set* are invalid.
-    """
+    """torch Dataset over a local PTB-XL root directory."""
 
     def __init__(
         self,
@@ -118,8 +56,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         self._split = split
         self._label_set = label_set
         self._min_likelihood = min_likelihood
-        # #19: train-only augmentation against overfit. Off for val/test so the
-        # eval signal is the clean record. Applied after the per-lead z-score.
+        # #19: train-only augmentation against overfit.
         self._augment = augment
 
         db_path = self._root / "ptbxl_database.csv"
@@ -145,10 +82,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
                 if str(row["diagnostic_class"]) in _SUPERCLASSES
             }
         else:
-            # PTB-XL diagnostic-subclass task: each diagnostic SCP code rolls up
-            # into its diagnostic_subclass grouping (23 subclasses in PTB-XL
-            # 1.0.3), the unit the published benchmark reports, not the raw
-            # per-code set.
+            # Each SCP code rolls into diagnostic_subclass (23 classes, PTB-XL 1.0.3): the benchmark's unit.
             sub_col = diag_stmts["diagnostic_subclass"].dropna().astype(str)
             sub_col = sub_col[sub_col.str.len() > 0]
             code_to_sub: dict[str, str] = {str(code): str(sub) for code, sub in sub_col.items()}
@@ -198,18 +132,12 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         return len(self._records)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(signal, label)``.
-
-        signal : float32, shape ``(12, T)``
-        label  : float32 multi-hot, shape ``(C,)``
-        """
+        """Return ``(signal, label)``."""
         record_path = str(self._root / self._records[idx])
         signal, _ = wfdb.rdsamp(record_path)
         # wfdb returns (T, 12); transpose to (12, T).
         sig_t = torch.from_numpy(np.array(signal, dtype=np.float32)).T
-        # Some PTB-XL records carry NaN/Inf samples; raw mV scales also vary per
-        # lead. Both NaN the deep SSM forward, so guard then per-lead z-score
-        # (zero mean / unit std over time; flat leads -> zero via the clamp).
+        # Some PTB-XL records carry NaN/Inf samples; raw mV scales also vary per lead.
         sig_t = torch.nan_to_num(sig_t, nan=0.0, posinf=0.0, neginf=0.0)
         mean = sig_t.mean(dim=1, keepdim=True)
         std = sig_t.std(dim=1, keepdim=True).clamp_min(1e-6)
@@ -220,13 +148,7 @@ class PTBXL(Dataset[tuple[torch.Tensor, torch.Tensor]]):
 
     @staticmethod
     def _augment_signal(sig: torch.Tensor) -> torch.Tensor:
-        """Light ECG augmentation on a z-scored (12, T) signal (train only).
-
-        Composes per-signal amplitude jitter, additive Gaussian noise, a circular
-        time shift, and occasional lead masking: perturbations that preserve the
-        diagnostic morphology while breaking memorization of exact waveforms.
-        Uses the global torch RNG, which DataLoader seeds per worker.
-        """
+        """Light ECG augmentation on a z-scored (12, T) signal (train only)."""
         n_leads, t = sig.shape
         sig = sig * (1.0 + 0.1 * (torch.rand(n_leads, 1) - 0.5) * 2.0)  # +/-10% per-lead scale
         sig = sig + 0.08 * torch.randn_like(sig)  # additive noise

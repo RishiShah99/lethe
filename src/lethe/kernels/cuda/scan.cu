@@ -1,23 +1,4 @@
 // SISO selective-scan CUDA kernels (cub::BlockScan, no tensor cores).
-//
-// The SSM recurrence h_t = a_t * h_{t-1} + b_t is a linear (first-order)
-// recurrence, so it scans under the monoid op((a0,b0),(a1,b1)) =
-// (a1*a0, a1*b0 + b1) with (a1,b1) the newer element. cub::BlockScan runs
-// that scan across the L axis as an O(log L) warp-shuffle prefix scan, the
-// engine the fast official Mamba-1 backward uses, and the reason this beats a
-// serial-L walk. No tl.dot / mma / tensor cores anywhere: cub::BlockScan is
-// pure __shfl, so this is #904-safe by construction.
-//
-// The basic forward below prioritises correctness: one block per (batch,
-// d_model); the block owns the L axis (chunked over blockDim, a running
-// prefix carried in shared memory per state index n) and loops the d_state
-// axis n serially. That serial-n loop is the N=128 bottleneck the 2-D
-// decomposition below removes; here it is the simplest correct structure to
-// validate the scan primitive and parity vs reference_forward_chunked_scan.
-//
-// All math is fp32. softplus and exp match the references (softplus identity
-// above 20; plain expf, no fast-math approximation) so the verifier's
-// tolerance and EXC-01 denormal masks line up with the Triton kernels.
 
 #include <torch/extension.h>
 
@@ -38,9 +19,7 @@ struct SSMScanOp {
   }
 };
 
-// Carries the scan prefix across L-chunks: returns the prefix to seed the
-// current chunk (everything older than it), then folds the chunk's aggregate
-// in for the next chunk. cub invokes operator() in thread 0 only.
+// Carries the scan prefix across L-chunks between cub scan calls.
 struct ChunkPrefixOp {
   float2 running;
   __device__ __forceinline__ explicit ChunkPrefixOp(float2 r) : running(r) {}
@@ -89,8 +68,7 @@ __global__ void forward_scan_kernel(const float *__restrict__ u,      // [B,L,D]
 
     for (int n = 0; n < N; ++n) {
       const float a_dn = A[static_cast<int64_t>(d) * N + n];
-      // Invalid (padding) lanes must scan as the identity (1,0) so they leave
-      // the running prefix untouched; their y is never stored.
+      // Invalid (padding) lanes scan as identity (1,0) so they don't corrupt the running prefix.
       const float a_bar = valid ? expf(dbar * a_dn) : 1.0f;
       const float b_tn = valid ? Bmat[bln + n] : 0.0f;
       const float b_val = valid ? dbar * b_tn * u_t : 0.0f;
@@ -109,21 +87,9 @@ __global__ void forward_scan_kernel(const float *__restrict__ u,      // [B,L,D]
 }
 
 // ---- The 2-D decomposition (the N=128 win) ---------------------------------
-//
-// The basic forward above loops d_state serially, so its cost scales with N,
-// fine at N=16, the bottleneck at Mamba-3's N=128. Here the block is (32, W):
-// the 32 lanes own a 32-step L-chunk (warp-shuffle scan, carry across chunks
-// per state), and the W warps split the d_state axis (warp w owns n = w,
-// w+W, ...). The y_t = sum_n h_t[n]*C_t[n] contraction becomes a cross-warp
-// reduction over the W warps for each lane. Parallel over BOTH L and
-// d_state: neither the Mamba-1 CUDA backward (serial d_state) nor the Triton
-// kernels (serial L) do this. Still pure __shfl: #904-safe.
 
 __device__ __forceinline__ float warp_inclusive_ssm(float a, float b, float2 &carry, int lane) {
-  // Inclusive Kogge-Stone scan of (a,b) across the 32 lanes under the SSM
-  // monoid, then fold the cross-chunk carry (older than the whole warp) in.
-  // Returns h_t for this lane; updates carry to the running prefix after the
-  // chunk (lane 31's full aggregate, broadcast).
+  // Inclusive Kogge-Stone scan of (a,b) across 32 lanes, then folds in the cross-chunk carry.
   float va = a, vb = b;
 #pragma unroll
   for (int off = 1; off < 32; off <<= 1) {
@@ -201,18 +167,6 @@ __global__ void forward_scan_2d_kernel(const float *__restrict__ u,      // [B,L
 }
 
 // ---- The efficient forward (d-major layout, kNItems time-tiling) ----------
-//
-// Measurement of the two kernels above showed the N=128 cost is NOT d_state
-// serialisation but (a) the [B,L,D] layout, a d-fixed L-scan reads u/delta
-// strided by D, and (b) one timestep per thread (too many block-scans +
-// syncs). This kernel is the official structure, owned line-by-line: inputs
-// are d-major [B,D,L] / [B,N,L] (the launcher transposes), so loads
-// coalesce; each thread owns kNItems consecutive timesteps via
-// cub::BlockLoad (WARP_TRANSPOSE), does a thread-local serial scan, and a
-// single block-scan over the per-thread aggregates carries the prefix, so
-// the block-scan count drops by kNItems.
-// d_state stays serial (the official does too, and it is not the bottleneck).
-// Still no tl.dot / mma: cub scan is pure __shfl. #904-safe.
 
 template <int kNThreads, int kNItems>
 __global__ void forward_scan_tiled_kernel(const float *__restrict__ u,      // [B,D,L]
@@ -310,29 +264,6 @@ __global__ void forward_scan_tiled_kernel(const float *__restrict__ u,      // [
 }
 
 // ---- The backward -----------------------------------------------------------
-//
-// Six grads (u, delta, A, B, C, D) from the forward state h (fwd scan) and the
-// adjoint g (reverse scan), fused so h is never materialised over all of L
-// (a full materialisation would cost ~34 GB of hbuf). Structure, owned
-// line-by-line, informed by the official Mamba-1 backward + the Triton
-// kernel _triton_bwd_scan.py:
-//
-//   * One block per (batch, d_block of kBlockD rows). grad_B/grad_C sum over D,
-//     so d MUST be tiled: atomics are forbidden (ORD-02) and per-single-d
-//     partials would be terabytes; the kBlockD rows reduce in-block and the
-//     [B, D/kBlockD, N, L] partials reduce by a deterministic torch.sum.
-//   * L is parallelised (kNItems time-tiling), the point over the serial-L
-//     Triton kernel. Forward recompute is an inclusive cub scan; the adjoint
-//     g_t = dy_t*C_t + abar_{t+1} g_{t+1} is a REVERSE scan, done as a cub
-//     ExclusiveScan over shared-reversed thread aggregates (the custom reverse
-//     block-scan). Pure __shfl: no tl.dot/mma. #904-safe.
-//   * d_state (n) serial; phase 1 checkpoints the per-chunk entering state,
-//     phase 2 recomputes h within each chunk newest-first.
-//
-// Grad groupings mirror autograd exactly (not just algebraically) so EXC-01
-// NaN/Inf masks match: gm = (g*h_{t-1})*abar computed once, the two delta paths
-// kept as separate N-reductions (Inf*0 mints NaN where autograd does). grad_u's
-// skip term D*dy is added by the launcher (needs Dskip; kept out of the kernel).
 
 __device__ __forceinline__ float softplus_grad(float x) {
   if (x > 20.0f) return 1.0f;
@@ -372,9 +303,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
   __shared__ float2 ag_carry[kBlockD * kMaxN];  // phase-2 reverse carry per (row,n)
   __shared__ float ga_sh[kBlockD * kMaxN];      // grad_A accum per (row,n)
   __shared__ float gd_sh[kBlockD];              // grad_D accum per row
-  // grad_u / grad_delta accumulators (sum over n) are kBlockD*kChunk each, too
-  // large for the 48 KB static limit, so they live in opt-in dynamic shared
-  // (the launcher raises MaxDynamicSharedMemorySize and passes the byte count).
+  // grad_u/grad_delta accumulators exceed 48 KB static limit; use dynamic shared mem.
   extern __shared__ float dyn_smem[];
   float *gu_sh = dyn_smem;                       // [kBlockD * kChunk]
   float *gdl_sh = dyn_smem + kBlockD * kChunk;   // [kBlockD * kChunk]
@@ -478,8 +407,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
           abar_it[i] = expf(dbar_it[i] * a_dn);
         }
 
-        // Forward recompute: exclusive scan seeded by the checkpoint gives the
-        // per-thread entering state; replay serially to h_{t-1} and h_t.
+        // Forward recompute: exclusive scan from the checkpoint gives entering state; replay to h_t.
         float2 fagg = make_float2(1.0f, 0.0f);
 #pragma unroll
         for (int i = 0; i < kNItems; ++i) {
@@ -509,8 +437,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
           }
         }
 
-        // Reverse adjoint: element_t = (abar_t, abar_t*dy_t*C_t) scanned high-t
-        // to low-t; exclusive value = abar_{t+1} g_{t+1}; g_t = dy*C + that.
+        // Reverse adjoint: scan (abar_t, abar_t*dy_t*C_t) high-to-low; g_t = dy*C_t + exclusive value.
         float2 rlocal[kNItems];
         float2 ragg = make_float2(1.0f, 0.0f);
 #pragma unroll
@@ -522,9 +449,7 @@ __global__ void backward_scan_kernel(const float *__restrict__ u,      // [B,D,L
           ragg = SSMScanOp()(ragg, make_float2(a_bar, val));
           rlocal[i] = ragg;
         }
-        // Reverse block scan: thread tid's future prefix = combine of threads
-        // tid+1..T-1 (+ cross-chunk ag_carry). Reverse the aggregates through
-        // shared, cub ExclusiveScan (low->high tid = oldest->newer), un-reverse.
+        // Reverse block scan: tid's future prefix = threads tid+1..T-1 combined, plus ag_carry.
         rev_xchg[kNThreads - 1 - tid] = ragg;
         __syncthreads();
         const float2 ragg_rev = rev_xchg[tid];
@@ -652,9 +577,7 @@ torch::Tensor forward_scan_2d(torch::Tensor u, torch::Tensor delta, torch::Tenso
   auto launch = [&](auto warps_tag) {
     constexpr int W = decltype(warps_tag)::value;
     const dim3 block(32, W);
-    // forward_scan_2d_kernel declares its y_red buffer statically, so it needs
-    // no dynamic shared memory (unlike the extern-__shared__ forward_scan and
-    // backward_scan kernels).
+    // forward_scan_2d_kernel's y_red buffer is static, so no dynamic shared memory is needed.
     forward_scan_2d_kernel<W><<<grid, block>>>(
         u.data_ptr<float>(), delta.data_ptr<float>(), A.data_ptr<float>(),
         Bmat.data_ptr<float>(), Cmat.data_ptr<float>(), Dskip.data_ptr<float>(),
@@ -699,10 +622,7 @@ torch::Tensor forward_scan_tiled(torch::Tensor u, torch::Tensor delta, torch::Te
   return y;
 }
 
-// d-major inputs: u,delta,dy [B,D,L]; B,C [B,N,L]; A [D,N]. Returns raw
-// (grad_u, grad_delta) [B,D,L] and the partials the launcher reduces:
-// ga_part [B,D,N], gb_part/gc_part [B,nDb,N,L], gd_part [B,D]. grad_u omits the
-// D*dy skip term (added in Python where Dskip is to hand).
+// d-major inputs: u,delta,dy [B,D,L]; B,C [B,N,L]; A [D,N].
 std::vector<torch::Tensor> backward_scan(torch::Tensor u, torch::Tensor delta, torch::Tensor A,
                                          torch::Tensor Bmat, torch::Tensor Cmat, torch::Tensor dy,
                                          int64_t items, int64_t block_d) {

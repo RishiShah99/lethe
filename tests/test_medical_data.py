@@ -1,9 +1,4 @@
-"""CPU tests for PTBXL label-building (Phase F.1).
-
-Synthetic ptbxl_database.csv + scp_statements.csv in tmp_path — no real WFDB
-records, so __getitem__ (wfdb.rdsamp) is never called; only the index/label
-construction is exercised.
-"""
+"""CPU tests for PTBXL label-building (Phase F.1)."""
 
 from __future__ import annotations
 
@@ -18,8 +13,7 @@ _SCP = pd.DataFrame(
     {
         "diagnostic": [1, 1, 1, 1, 1, 0],
         "diagnostic_class": ["NORM", "MI", "STTC", "CD", "HYP", "NORM"],
-        # code → diagnostic_subclass; NDT rolls up into STTC (differs from the
-        # raw code) so the subclass task is provably reading this column.
+        # NDT rolls up to STTC (differs from raw code), proving the subclass column is read.
         "diagnostic_subclass": ["NORM", "IMI", "STTC", "IRBBB", "LVH", "SR"],
     },
     index=["NORM", "IMI", "NDT", "IRBBB", "LVH", "SR"],
@@ -94,7 +88,7 @@ class TestSubclass:
 
     def test_subclass_label_rolls_up_to_subclass(self, root: Path) -> None:
         ds = PTBXL(root, sampling_rate=100, split="train", label_set="subclass")
-        # ecg_id 2: IMI (→IMI) and NDT (→STTC) — the label lands on the subclass
+        # ecg_id 2: IMI stays IMI, NDT rolls to STTC; both land as positive labels.
         label = ds._labels[1]
         assert label[ds._class_index["IMI"]] == 1.0
         assert label[ds._class_index["STTC"]] == 1.0
@@ -116,8 +110,7 @@ class TestValidation:
 
 
 class TestAugment:
-    """The train-only augmentation (_augment_signal) is a pure tensor op — testable
-    without WFDB records."""
+    """_augment_signal is a pure tensor op, testable without WFDB records."""
 
     def test_preserves_shape_and_finite(self) -> None:
         import torch

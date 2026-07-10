@@ -1,11 +1,4 @@
-"""Tests for the Gated DeltaNet-2 (GDN-2) reference oracle.
-
-Covers reference_gdn2_forward + reference_gdn2_backward: shape, determinism,
-finiteness, the b=w=beta reduction to the scalar gated delta rule (independent
-hand-rolled scan), grad existence/shape, and gradcheck (float64).
-
-All tests run on CPU only. No GPU markers.
-"""
+"""Tests for the Gated DeltaNet-2 (GDN-2) reference oracle."""
 
 import torch
 from torch import Tensor
@@ -46,12 +39,7 @@ def _make_gdn2_inputs(
 def _scalar_gated_delta_forward(
     q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, *, scale: float
 ) -> Tensor:
-    """Independent scalar gated-delta-rule scan (fla naive.py math).
-
-    Channel-wise log-decay g, SCALAR write strength beta. Shares no code path
-    with reference_gdn2_forward (uses beta directly, no b/w elementwise gates),
-    so equality is a real cross-check of the forward recurrence.
-    """
+    """Independent scalar gated-delta-rule scan (fla naive.py math)."""
     qh, kh, vh, gh = (t.transpose(1, 2).to(torch.float64) for t in (q, k, v, g))
     betah = beta.transpose(1, 2).to(torch.float64)
     batch, nheads, seqlen, d_k = kh.shape

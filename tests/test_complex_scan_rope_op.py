@@ -1,10 +1,4 @@
-"""CPU-side validation of the C4 complex-RoPE scan op (the eager path).
-
-The Triton path needs the box; everything here pins the eager path's
-contract — bitwise oracle parity on fp32/fp64, the mixed-precision
-rounding contract on half dtypes, a closed-form hand-computed rotation
-pin — so the GPU run only has to answer GPU-specific questions.
-"""
+"""CPU-side validation of the C4 complex-RoPE scan op (the eager path)."""
 
 from __future__ import annotations
 
@@ -70,8 +64,7 @@ class TestComplexScanRopeCpu:
             raise AssertionError("expected ValueError for rotary_dim > d_state")
 
     def test_closed_form_single_pair(self) -> None:
-        # Hand-computed L=2 pin of the full chain (tanh -> cumsum -> rotation
-        # -> decay scan -> readout), independent of the reference's code path.
+        # Hand-computed L=2 pin of the full chain, independent of the reference's code path.
         dt1, dt2 = 0.5, 1.0
         a = -1.0
         a1, a2 = 0.3, -0.7
@@ -109,8 +102,7 @@ class TestComplexScanRopeCpu:
         assert abs(y[0, 1, 0, 0].item() - y2) < 1e-12
 
     def test_identity_tail_beyond_rotary_dim(self) -> None:
-        # Lanes past 2*S must scan unrotated: zeroing the rotated lanes of
-        # B/C makes the op equal a plain decay scan on the tail lanes.
+        # Lanes past 2*S scan unrotated; zeroing B/C rotated lanes gives a plain decay scan.
         x, bb, cc, dt, a, angle = _rope_inputs(n=8, s=2, seed=3)
         bb[..., :4] = 0.0
         cc[..., :4] = 0.0
@@ -119,8 +111,7 @@ class TestComplexScanRopeCpu:
         assert torch.equal(got, want)
 
     def test_zero_angles_is_plain_decay_scan(self) -> None:
-        # S=0 is contract-legal (2*0 <= N): the op must degenerate to the
-        # plain decay scan, pinned here against an independent loop.
+        # S=0 is contract-legal (2*0 <= N); the op must degenerate to a plain decay scan.
         x, bb, cc, dt, a, angle = (t.to(torch.float64) for t in _rope_inputs(s=0, seed=7))
         got = complex_scan_rope(x, bb, cc, dt, a, angle)
         alpha = torch.exp(dt * a)

@@ -1,28 +1,4 @@
-"""Level-2 de-glue channel-wise K#1, GEMM + epilogue-fused tcgen05 kernels.
-
-Two batched kernels, each the ``gdn2_bwd_dhu._gemm_kernel_b`` mainloop/epilogue with
-the per-step SIMT glue appended after ``pipeline.sync``, before ``tmem.free``,
-collapse the Lever-B reverse step (2 ``_bmm_tc`` launches + ~6 torch ops) to exactly
-2 launches and 0 torch compute ops:
-
-  _kern_g1_epi: G1 GEMM (``a_g1[z] @ b_dhT[z]^T``) then SIMT: dh snapshot,
-                ``b_dv = raw[:C] + dv_local`` -> dv2 + b_ga second half
-                (``b_dv^T``), fence_proxy -> barrier (store->fence->barrier->TMA).
-  _kern_ga_epi: GA GEMM (``a_ga[z] @ b_ga[z]^T``) then SIMT carry:
-                ``b_dh = glast (.) b_dh + t`` -> fp32 b_dh + fp16 b_dhT
-                (next G1's TMA operand), fence_proxy -> barrier.
-
-Tile contract: ``_MNK_TILER`` bakes M=128, N=64, K=128, so C=64, d_k=128, d_v=64
-exactly (:func:`l2_dims_ok`); d_v=128 stays on the Lever-B batched path until the
-N-tiling increment. relinquish_alloc_permit sits AFTER acc_empty.commit() in both
-kernels (byte-fidelity to _gemm_kernel_b). Launches ride torch's current stream, so
-they are CUDA-graph-capturable; ``maybe_sync`` at the end only.
-
-Worst max_abs 7e-5 vs the fp64 cw bundle, bit-deterministic. Without the CuTe DSL
-toolchain this module still imports cleanly (guarded try/except -> _HAVE);
-``_modelled_l2`` (the kernel spec with fp16 round-trips modelled) runs anywhere and
-is CPU-pinned by ``tests/test_gdn2_l2.py``.
-"""
+"""Level-2 de-glue channel-wise K#1, GEMM + epilogue-fused tcgen05 kernels."""
 # NB: no `from __future__ import annotations`, PEP 563 stringizes @cute.struct fields.
 
 import torch
@@ -86,15 +62,6 @@ if _HAVE:
         acc_mbar: cute.struct.MemRange[cutlass.Int64, 2]
         tmem_buf: cutlass.Int32
 
-    # ------------------------------------------------------------------
-    # _kern_g1_epi: G1 GEMM + dh snapshot + dv2/b_ga glue
-    #
-    # a_g1[Z,128,128] @ b_dhT[Z,64,128]^T → raw[Z,128,64]
-    # SIMT: dh snapshot over 128*d_v elements (full d_k rows),
-    #       then glue over c*d_v elements writing dv2 + b_ga second half.
-    # fence_proxy (each writing thread) then barrier, after both loops.
-    # relinquish_alloc_permit: AFTER acc_empty.commit(), matching _gemm_kernel_b.
-    # ------------------------------------------------------------------
     @cute.kernel
     def _kern_g1_epi(
         tiled_mma: cute.TiledMma,
@@ -240,13 +207,6 @@ if _HAVE:
         cute.arch.fence_proxy("async.global")
         cute.arch.barrier()
 
-    # ------------------------------------------------------------------
-    # _kern_ga_epi: GA GEMM + b_dh carry update.
-    #
-    # a_ga[Z,128,128] @ b_ga[Z,64,128]^T → t[Z,128,64]
-    # SIMT carry over d_k*d_v elements; fence_proxy then barrier.
-    # relinquish_alloc_permit: AFTER acc_empty.commit().
-    # ------------------------------------------------------------------
     @cute.kernel
     def _kern_ga_epi(
         tiled_mma: cute.TiledMma,
@@ -514,13 +474,7 @@ def _modelled_l2(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Pure-torch model of _kern_g1_epi + _kern_ga_epi per step (the kernel spec).
-
-    Includes fp16 cast round-trips for all kernel I/O: operand casts, GEMM outputs
-    (bdv_raw, t_scr land fp16 in GMEM before SIMT re-reads), b_ga/b_dhT stores.
-    fp32 GEMM stand-ins (no tcgen05). In fp64 input tracks the cw bundle within the fp16
-    quantisation floor (~3e-4 relative).
-    """
+    """Pure-torch model of _kern_g1_epi + _kern_ga_epi per step (the kernel spec)."""
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
     n_bh = b * hv
@@ -573,11 +527,6 @@ def _modelled_l2(
     )
 
 
-# ------------------------------------------------------------------
-# Host launcher: run_k1_incB_l2
-# ------------------------------------------------------------------
-
-
 def run_k1_incB_l2(
     q: Tensor,
     k: Tensor,
@@ -588,15 +537,7 @@ def run_k1_incB_l2(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Level-2 channel-wise reverse scan: 2 kernel launches per step, 0 torch compute ops.
-
-    Pre-packs once with :func:`_incb2_pack_cw`, restages to step-major layout so per-step
-    slices are zero-copy contiguous views, then per reverse chunk ``it`` fires exactly:
-    - :func:`_kern_g1_epi`: G1 GEMM + dh snapshot + dv2 + b_ga glue.
-    - :func:`_kern_ga_epi`: GA GEMM + b_dh/b_dhT carry update.
-    compile-cache keyed (n_bh, c, D_V), static across all steps. Returns ``(dh, dv2, dh0)``
-    head-major chunked.
-    """
+    """Level-2 channel-wise reverse scan: 2 kernel launches per step, 0 torch compute ops."""
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
 
@@ -639,9 +580,7 @@ def run_k1_incB_l2(
     bdv_raw = torch.zeros(n_bh, D_K, D_V, dtype=f16, device=dev)
     t_scr = torch.zeros(n_bh, D_K, D_V, dtype=f16, device=dev)
 
-    # Constexpr args (c, D_V, d_k) are baked at cute.compile time and DROPPED from the
-    # runtime arg list by the executor; do NOT re-pass them at call time.
-    # Only marked cute.Tensors and the CUstream are runtime args (same as _gemm_batched).
+    # c/D_V/d_k are baked at compile time and dropped from the runtime args; don't re-pass them.
     key = (n_bh, c, D_V)
     stream = _cur_stream()
 

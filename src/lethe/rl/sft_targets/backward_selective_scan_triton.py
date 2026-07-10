@@ -1,9 +1,4 @@
-"""Triton kernel for the SISO selective-scan backward.
-
-No tl.dot, no MMA, no TMEM operands — register-only FMAs and tl.sum
-reductions. Parallelisation: one program per (batch, D-block). Cross-
-program reductions are deterministic torch.sum calls in the launcher.
-"""
+"""Triton kernel for the SISO selective-scan backward."""
 
 from __future__ import annotations
 
@@ -23,10 +18,7 @@ _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 # One CTA holds the whole state dim; N above this needs a multi-block design.
 MAX_BLOCK_N = 128
 
-# Recompute-chunk cap. Working set of the in-chunk state scratch is
-# B*D*K*N fp32 across all programs; K=16 keeps it ~34 MB at the training
-# shape (B=8, D=4096, N=16) — resident in B200's 126 MB L2, so the
-# store-then-reload round trip never pays DRAM.
+# Recompute-chunk cap.
 MAX_CHUNK_K = 16
 
 
@@ -70,8 +62,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
     mask_n = offs_n < n_state
     mask_dn = mask_d[:, None] & mask_n[None, :]
 
-    # Program-owned scratch tiles need no masks: padded lanes hold zeros by
-    # construction (every value stored there went through a mask_dn where).
+    # Scratch tiles need no mask here: padding lanes are already zero from prior masked stores.
     offs_tile = tl.arange(0, BLOCK_D)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
     pid_bd = (pid_b * n_d_blocks + pid_d).to(tl.int64)
     ckpt_prog = ckpt_ptr + pid_bd * n_chunks * BLOCK_D * BLOCK_N + offs_tile
@@ -88,8 +79,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
     uld_off = pid_b.to(tl.int64) * seq_len * d_model + offs_d
     bln_off = pid_b.to(tl.int64) * seq_len * n_state + offs_n
     for c in range(n_chunks):
-        # c is int32: promote before the tile-stride product (it crosses
-        # 2^31 once the per-program ckpt region exceeds 8 GiB).
+        # Promote c to int64 before the stride product; it can cross 2^31 past an 8 GiB ckpt region.
         tl.store(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N, h)  # type: ignore[attr-defined]
         for _j in range(CHUNK_K):
             u_t = tl.load(u_ptr + uld_off, mask=mask_d, other=0.0).to(tl.float32)
@@ -99,17 +89,13 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
             dbar = tl.where(dlt > _SOFTPLUS_THRESHOLD, dlt, libdevice.log1p(libdevice.exp(dlt)))
             abar = libdevice.exp(dbar[:, None] * a)
             bb = dbar[:, None] * b_t[None, :]
-            # Padding lanes must stay exactly zero through the whole update
-            # (C1 lesson): a NaN minted in a padded lane would poison the
-            # real lanes' N-reductions downstream.
+            # Padding lanes must stay zero (C1 lesson) or a stray NaN poisons the real N-reductions.
             h = tl.where(mask_dn, abar * h + bb * u_t[:, None], 0.0)
 
             uld_off += d_model
             bln_off += n_state
 
-    # ----- Phase 2: chunks newest-first; recompute in-chunk states, then
-    # reverse-sweep the chunk. ag_carry = abar_{t+1} * g_{t+1} crosses chunk
-    # boundaries in registers because t descends globally.
+    # ----- Phase 2: chunks newest-first, recompute states, then reverse-sweep for gradients.
     ag_carry = tl.zeros((BLOCK_D, BLOCK_N), dtype=tl.float32)
     ga_acc = tl.zeros((BLOCK_D, BLOCK_N), dtype=tl.float32)
     gd_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -118,14 +104,9 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
         c = n_chunks - 1 - ci
         t0 = c * CHUNK_K
 
-        # Forward recompute from the checkpoint, storing the PRE-update
-        # state h_{t-1} per step: the reverse sweep then reads h_{t-1}
-        # uniformly from the scratch (the j=0 entry is the checkpoint
-        # itself) and walks h_t backward in a register.
+        # Recompute from the checkpoint, storing each step's pre-update h_{t-1} for the reverse sweep.
         h_prev = tl.load(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N)
-        # Fold t0 into the int64 batch term before multiplying by the row
-        # stride: a bare int32 t0 * d_model overflows past L*D ~ 2^31 (the
-        # C1 invariant; j * d_model stays tiny, j < CHUNK_K).
+        # Fold t0 into int64 before the row-stride multiply; int32 t0*d_model overflows past L*D~2^31 (C1).
         uld_base = (pid_b.to(tl.int64) * seq_len + t0) * d_model + offs_d
         bln_base = (pid_b.to(tl.int64) * seq_len + t0) * n_state + offs_n
         for j in range(CHUNK_K):
@@ -157,8 +138,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
             bb = dbar[:, None] * b_t[None, :]
             h_tm1 = tl.load(hbuf_prog + j * BLOCK_D * BLOCK_N)
 
-            # g_t = dL/dh_t. dy in padded lanes loads as 0, but Inf*0 across
-            # the (d, n) broadcast would mint NaNs in padded n-lanes — mask.
+            # g_t = dL/dh_t.
             g = tl.where(mask_dn, dy_t[:, None] * c_t[None, :] + ag_carry, 0.0)
 
             # grad_C partial: sum over this program's D-slice of dy_t * h_t.
@@ -173,12 +153,7 @@ def _bwd_scan_kernel(  # type: ignore[no-untyped-def]
             gu_t = tl.sum(tl.where(mask_dn, g * bb, 0.0), axis=1) + d_skip * dy_t
             tl.store(grad_u_ptr + uld, gu_t.to(grad_u_ptr.dtype.element_ty), mask=mask_d)
 
-            # grad_delta_bar: two separate N-reductions, mirroring autograd's
-            # two AccumulateGrad paths (via exp and via b_bar) — the shared
-            # gm = (g*h_{t-1})*abar is also the grad_A integrand. gm needs no
-            # mask of its own: g and h_tm1 are both pre-masked to exact zero
-            # in padded lanes, so gm is 0 there regardless of abar — that
-            # zero-ness is load-bearing for the re-masked uses below.
+            # grad_delta_bar: two N-reductions (via exp, via b_bar); the shared gm also feeds grad_A.
             gm = (g * h_tm1) * abar
             ddbar = tl.sum(tl.where(mask_dn, gm * a, 0.0), axis=1) + tl.sum(
                 tl.where(mask_dn, (g * u_t[:, None]) * b_t[None, :], 0.0), axis=1
@@ -216,11 +191,7 @@ def launch_backward_scan(
     *,
     num_warps: int | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Launch the Triton backward scan. Inputs must be CUDA tensors of one dtype.
-
-    Returns ``(grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)`` in the
-    corresponding input dtypes. ``num_warps`` overrides the launch config.
-    """
+    """Launch the Triton backward scan."""
     batch, seq_len, d_model = u.shape
     n_state = a.shape[1]
 
@@ -243,9 +214,7 @@ def launch_backward_scan(
     dev = u.device
     grad_u = torch.empty_like(u_c)
     grad_delta = torch.empty_like(delta_c)
-    # Partials and scratch stay fp32 regardless of input dtype: internal
-    # compute is fp32, and the single round to the input dtype happens after
-    # the launcher's reduction (one round at the output, the PRC contract).
+    # Partials/scratch stay fp32; input dtype is rounded once after reduction (PRC contract).
     ga_part = torch.empty(batch, d_model, n_state, dtype=torch.float32, device=dev)
     gb_part = torch.empty(batch, n_d_blocks, seq_len, n_state, dtype=torch.float32, device=dev)
     gc_part = torch.empty(batch, n_d_blocks, seq_len, n_state, dtype=torch.float32, device=dev)
@@ -285,8 +254,7 @@ def launch_backward_scan(
         num_warps=warps,
     )
 
-    # Deterministic cross-program reductions (fixed shapes -> fixed reduction
-    # trees; byte-identical across runs, unlike float atomics).
+    # Deterministic reductions: fixed shapes give fixed reduction trees, byte-identical unlike atomics.
     grad_a = ga_part.sum(dim=0).to(a.dtype)
     grad_b = gb_part.sum(dim=1).to(b.dtype)
     grad_c = gc_part.sum(dim=1).to(c.dtype)
@@ -341,13 +309,7 @@ def backward_selective_scan(
     *,
     chunk_size: int = 64,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Selective-scan backward pass (SISO, Mamba-1 recurrence).
-
-    Args/semantics: ``u``/``delta``/``dy`` [B, L, D], ``A`` [D, N],
-    ``B``/``C`` [B, L, N], ``D`` [D]. Returns a 6-tuple
-    ``(grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)`` whose elements
-    match the corresponding input shapes and dtypes.
-    """
+    """Selective-scan backward pass (SISO, Mamba-1 recurrence)."""
     seq_len = u.shape[1]
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")

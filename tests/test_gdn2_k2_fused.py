@@ -1,13 +1,4 @@
-"""Fused K#2 — desk correctness of the kernel spec (campaign inc-1). CPU only.
-
-* ``_run_k2_fused_modelled`` (the fused kernel's dataflow: padded staged operands,
-  shared dT accumulator, chained s_dt/s_x landings, G6 mask-in-epilogue) reproduces
-  ``k2_wy_vjp_cw_ref`` in fp64 to roundoff — including at the kernel's native tile
-  (C=64, d_k=128, d_v=64).
-* The staged pack's zero-padding is exact: no padded lane leaks into a live output.
-* Drifted-regime (within-chunk log2 span > 128): fp32 stays finite (the masked-
-  unfactored exp2 discipline) and fp64 still pins to the ref.
-"""
+"""Fused K#2: desk correctness of the kernel spec (campaign inc-1)."""
 
 from __future__ import annotations
 

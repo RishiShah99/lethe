@@ -1,9 +1,4 @@
-"""Hand-written Triton kernels, one module per op.
-
-Each op mirrors its reference oracle's signature exactly and dispatches:
-CUDA + supported dtype -> the Triton kernel; everything else -> a
-differentiable eager-torch path that replicates the reference op-for-op.
-"""
+"""Hand-written Triton kernels, one module per op."""
 
 from .backward_selective_scan import backward_selective_scan, triton_bwd_scan_resource_meta
 from .complex_scan_rope import complex_scan_rope, triton_complex_rope_resource_meta

@@ -1,10 +1,4 @@
-"""CPU tests for the GRPO training loop with a stub trainable policy.
-
-The stub policy carries a real torch parameter so the full update path —
-advantages, loss, backward, clip, optimizer step — runs end to end and
-parameter movement is observable. The scorer is stubbed to map source
-content to rewards deterministically.
-"""
+"""CPU tests for the GRPO training loop with a stub trainable policy."""
 
 from __future__ import annotations
 
@@ -135,9 +129,7 @@ class TestStep:
         assert loop.step_idx == 1
 
     def test_saturated_all_equal_group_skips_despite_fp32_std(self, tmp_path: Any) -> None:
-        # Eight 0.1 rewards carry std ~7e-9 from fp32 mean rounding; a
-        # float-std guard would issue a spurious uniform-negative update
-        # (the toy-run review blocker). The exact-equality guard must skip.
+        # Eight 0.1 rewards carry std ~7e-9 from fp32 rounding; a float-std guard would spuriously update.
         assert torch.tensor([0.1] * 8).std(correction=0).item() > 0.0
         loop, policy = make_loop(tmp_path, [BAD], n_per_prompt=8)
         before = policy.theta.detach().clone()
@@ -241,8 +233,7 @@ class TestRunAndCheckpoint:
         assert path in policy.saved_paths
 
     def test_uncommitted_adapter_dir_never_referenced(self, tmp_path: Any) -> None:
-        # A half-written adapter dir from a preempted save must not be
-        # picked up: trainer_state.pt is the commit point.
+        # A half-written adapter dir from a preempted save must not be picked up; trainer_state.pt commits.
         loop, _ = make_loop(tmp_path, [GOOD, BAD])
         loop.step()
         loop.save_checkpoint()
@@ -251,9 +242,7 @@ class TestRunAndCheckpoint:
         assert path is not None and path.endswith("adapter_step_1")
 
     def test_resume_refuses_pickle_gadget(self, tmp_path: Any) -> None:
-        # weights_only=True must reject a __reduce__ gadget planted in a resumed
-        # trainer_state.pt (pickle-RCE on resume from a foreign run dir). Both the
-        # resume loader and the static latest_adapter_path reader must refuse it.
+        # weights_only=True must reject a __reduce__ gadget resumed here (pickle-RCE from a foreign run).
         import pickle
 
         from tests._sandbox_helpers import ReduceBomb

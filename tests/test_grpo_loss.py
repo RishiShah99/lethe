@@ -1,7 +1,4 @@
-"""Exhaustive unit tests for compute_group_advantages and compute_grpo_loss.
-
-All tests run on CPU; no model loading required.
-"""
+"""Exhaustive unit tests for compute_group_advantages and compute_grpo_loss."""
 
 from __future__ import annotations
 
@@ -11,10 +8,6 @@ import pytest
 import torch
 
 from lethe.rl.grpo import compute_group_advantages, compute_grpo_loss
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _lp(data: list[list[float]], *, requires_grad: bool = False) -> torch.Tensor:
@@ -29,18 +22,9 @@ def _adv(data: list[float]) -> torch.Tensor:
     return torch.tensor(data, dtype=torch.float64)
 
 
-# ---------------------------------------------------------------------------
-# compute_group_advantages
-# ---------------------------------------------------------------------------
-
-
 class TestComputeGroupAdvantages:
     def test_hand_computed_4_element(self) -> None:
-        # rewards = [1, 2, 3, 4]
-        # mean = 2.5, population std = sqrt(((1-2.5)^2+(2-2.5)^2+(3-2.5)^2+(4-2.5)^2)/4)
-        #                             = sqrt((2.25+0.25+0.25+2.25)/4) = sqrt(5/4) = sqrt(1.25)
-        # eps = 1e-4 (small relative to std ≈ 1.118)
-        # A_i = (r_i - 2.5) / (sqrt(1.25) + 1e-4)
+        # hand-computed: mean=2.5, population std=sqrt(1.25), A_i=(r_i-2.5)/(sqrt(1.25)+eps).
         rewards = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64)
         eps = 1e-4
         std = rewards.std(unbiased=False).item()
@@ -57,15 +41,13 @@ class TestComputeGroupAdvantages:
 
     def test_all_equal_rewards_returns_zeros(self) -> None:
         # All rewards identical: numerator = r_i - mean = 0 for every i.
-        # eps keeps denominator finite but every output is 0 / positive = 0.
         rewards = torch.tensor([3.0, 3.0, 3.0, 3.0], dtype=torch.float64)
         out = compute_group_advantages(rewards)
         assert out.shape == (4,)
         assert torch.all(out == 0.0), f"expected zeros, got {out}"
 
     def test_random_group_mean_near_zero_and_std_near_one(self) -> None:
-        # For a reasonably large K the normalised advantages should have
-        # mean ≈ 0 and population variance ≈ 1 (up to the eps shift).
+        # for large K, normalised advantages should have mean ≈ 0 and variance ≈ 1.
         torch.manual_seed(42)
         rewards = torch.randn(64, dtype=torch.float64)
         eps = 1e-4
@@ -91,54 +73,8 @@ class TestComputeGroupAdvantages:
         assert out[0].item() == pytest.approx(0.0, abs=1e-9)
 
 
-# ---------------------------------------------------------------------------
-# compute_grpo_loss
-# ---------------------------------------------------------------------------
-
-
 class TestComputeGrpoLossHandComputed:
-    """Hand-verified tiny case: K=2, T=2.
-
-    Setup
-    -----
-    advantages       = [1.0, -1.0]
-    new_log_probs    = [[-1.0, -2.0], [-1.0, -2.0]]
-    old_log_probs    = [[-1.0, -2.0], [-1.0, -2.0]]   <- ratio = 1 everywhere
-    ref_log_probs    = [[-2.0, -1.0], [-2.0, -1.0]]
-    clip_eps = 0.2,  kl_coef = 1.0,  no mask
-
-    Arithmetic
-    ----------
-    ratio_t = exp(new - old) = exp(0) = 1  for all (k, t).
-
-    PPO surrogate: clip(1, 0.8, 1.2) = 1; min(1*A, 1*A) = A.
-      seq 0 (A=1): surrogate_t = [1.0, 1.0]
-      seq 1 (A=-1): surrogate_t = [-1.0, -1.0]
-
-    KL k3: d = ref - new
-      token col 0: d = -2 - (-1) = -1  => kl = exp(-1) - (-1) - 1 = 1/e
-      token col 1: d = -1 - (-2) = +1  => kl = exp(1) - 1 - 1 = e - 2
-
-    per_token_obj = surrogate - 1.0 * kl:
-      seq 0, t=0: 1.0 - 1/e
-      seq 0, t=1: 1.0 - (e-2) = 3 - e
-      seq 1, t=0: -1.0 - 1/e
-      seq 1, t=1: -1.0 - (e-2) = 1 - e
-
-    seq masked means (T=2, both valid):
-      seq 0: ((1 - 1/e) + (3 - e)) / 2 = (4 - 1/e - e) / 2
-      seq 1: ((-1 - 1/e) + (1 - e)) / 2 = (-1/e - e) / 2
-
-    mean over seqs:
-      [(4 - 1/e - e)/2  +  (-1/e - e)/2] / 2
-      = [4 - 2/e - 2e] / 4
-      = 1 - (1/e + e) / 2
-
-    loss = -(1 - (1/e + e)/2) = (1/e + e)/2 - 1
-         = (exp(-1) + exp(1)) / 2 - 1
-         = cosh(1) - 1
-         ≈ (0.36788 + 2.71828) / 2 - 1 ≈ 0.54308
-    """
+    """Hand-verified K=2,T=2 case: ratio=1 everywhere, clip_eps=0.2, kl_coef=1.0, no mask."""
 
     def test_hand_computed_value(self) -> None:
         adv = _adv([1.0, -1.0])
@@ -185,7 +121,6 @@ class TestComputeGrpoLossClipping:
 
     def test_clip_upper_positive_advantage(self) -> None:
         # ratio >> 1+eps, A > 0 => clipped to (1+eps)*A.
-        # Increasing new_lp further should NOT change the loss.
         clip_eps = 0.2
         adv = _adv([1.0])
         old_lp = _lp([[-5.0]])  # new - old = 5 => ratio = exp(5) >> 1.2
@@ -206,14 +141,7 @@ class TestComputeGrpoLossClipping:
         )
 
     def test_clip_lower_negative_advantage(self) -> None:
-        # ratio << 1-eps, A < 0 => clipped to (1-eps)*A = 0.8 * (-1) = -0.8
-        # min(ratio*A, clipped*A): with A<0, ratio<<0.8 so ratio*A >> 0.8*A (less negative).
-        # surrogate = min(ratio*A, clip*A); ratio small & positive, A negative:
-        #   ratio*A is large negative, clip*A = 0.8*(-1) = -0.8
-        #   min(very_negative, -0.8) = very_negative ... wait, let me reconsider.
-        #
-        # ratio=0.1, A=-1: unclipped=0.1*(-1)=-0.1, clipped=0.8*(-1)=-0.8
-        # min(-0.1, -0.8) = -0.8  => clipped IS used (more conservative for neg A).
+        # ratio << 1-eps, A < 0: clip = (1-eps)*A = 0.8*(-1) = -0.8, the min-selected branch.
         clip_eps = 0.2
         adv = _adv([-1.0])
         # old_lp = 0, new_lp = log(0.1) + 0 = log(0.1) => ratio = 0.1
@@ -240,7 +168,6 @@ class TestComputeGrpoLossKL:
 
     def test_kl_nonnegative_random(self) -> None:
         # kl = exp(d) - d - 1 >= 0 for all real d (equality iff d=0).
-        # Verified via the loss: with zero advantages, loss = kl_coef * mean(kl) >= 0.
         torch.manual_seed(0)
         K, T = 8, 16
         adv = torch.zeros(K, dtype=torch.float64)
@@ -268,7 +195,6 @@ class TestComputeGrpoLossKL:
 
     def test_zero_advantages_loss_reduces_kl(self) -> None:
         # With advantages=0 the surrogate is 0; loss = +kl_coef * mean(kl).
-        # One gradient step on new_lp should move it toward ref_lp.
         K, T = 2, 4
         torch.manual_seed(7)
         adv = torch.zeros(K, dtype=torch.float64)
@@ -311,8 +237,6 @@ class TestComputeGrpoLossGradients:
 
     def test_gradient_direction_positive_advantage(self) -> None:
         # Single token, positive advantage, no KL (kl_coef=0).
-        # loss = -(ratio * A), so d(loss)/d(new_lp) = -A * ratio.
-        # With A > 0 and ratio > 0: gradient < 0 => gradient descent increases new_lp. Correct.
         adv = _adv([1.0])
         new_lp = _lp([[-1.0]], requires_grad=True)
         old_lp = _lp([[-1.0]])  # ratio=1, no clip
@@ -333,7 +257,6 @@ class TestComputeGrpoLossMask:
 
     def test_mask_half_tokens(self) -> None:
         # K=2, T=4: first 2 tokens valid, last 2 padded.
-        # Loss with mask should equal loss computed on the T=2 prefix alone.
         K, T = 2, 4
         torch.manual_seed(3)
         adv = _adv([1.0, -1.0])

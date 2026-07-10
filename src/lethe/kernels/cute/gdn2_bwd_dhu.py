@@ -1,28 +1,4 @@
-"""K#1, native Blackwell (sm_100) reverse inter-chunk state scan (GDN backward, B4).
-
-cuLA imports this from fla (Triton); no native sm_100 implementation exists elsewhere.
-Ground truth = ``references/gdn2_chunkwise.py``. One CTA owns one ``(b, hv)``;
-``b_dh∈[d_k,d_v]`` fp32 is the recurrent state-grad accumulator carried across the
-reverse chunk loop. Per chunk ``i_t=NT-1...0`` (gamma=exp2(g2), decay=exp2(g_last-g2),
-per-row over C):
-
-  1. dh[i_t] = b_dh
-  2. b_dv = (k @ b_dh)*decay + dv_local              store dv2[i_t]
-  3. b_dh = exp2(g_last)*b_dh
-  4. b_dh += (q*gamma)^T @ do - w^T @ b_dv           ;  dh0 = b_dh after the loop
-
-Three implementations of the recurrence live in this module, in increasing order of
-fusion: :func:`run_k1` handles NT=1 only (b_dh starts at 0, so dh=0, dv2=dv_local, and
-dh0 = (q*gamma)^T@do - w^T@dv_local = [qg | -w] @ [do | dv_local]^T is ONE tcgen05 GEMM,
-M=d_k=128, N=d_v=64, K=2C=128, per (b,hv)); :func:`run_k1_incB_host` and
-:func:`run_k1_incB_batched` run the general NT>1 reverse loop with ``b_dh`` carried
-host-side between GEMM launches; and the fused kernels further below keep ``b_dh``
-TMEM-resident across the whole reverse loop in one launch.
-
-Numerics: bf16 I/O, fp32 accumulate; exp2 on g pre-scaled by RCP_LN2; deterministic, no
-atomics. Without the CuTe DSL toolchain this module still imports cleanly and compiles
-nothing.
-"""
+"""K#1, native Blackwell (sm_100) reverse inter-chunk state scan (GDN backward, B4)."""
 # NB: no `from __future__ import annotations`, PEP 563 stringizes @cute.struct fields.
 
 import contextlib
@@ -47,14 +23,7 @@ except ImportError:  # pragma: no cover - CPU dev box
 
 
 def _cur_stream() -> "cuda_driver.CUstream":
-    """torch's current CUDA stream as a CuTe-DSL ``CUstream``.
-
-    Threading this into every ``.launch(stream=…)`` is what makes the launches
-    CUDA-graph-capturable: with ``stream=None`` the DSL creates its OWN stream and
-    SYNCS after each launch (``_execute_cuda``), so capture sees an empty graph and
-    eager pays a hidden per-launch sync. During ``torch.cuda.graph`` capture this
-    returns the (non-default) capture stream, so the launches record into the graph.
-    """
+    """torch's current CUDA stream as a CuTe-DSL ``CUstream``."""
     return cuda_driver.CUstream(torch.cuda.current_stream().cuda_stream)
 
 
@@ -63,13 +32,7 @@ GRAPH_CAPTURE = False  # True inside a CUDA-graph capture → kernel-boundary sy
 
 @contextlib.contextmanager
 def graph_capture() -> Iterator[None]:
-    """Mark the cw backward as inside a ``torch.cuda.graph`` capture.
-
-    A ``torch.cuda.synchronize()`` inside a capture region is illegal and aborts the
-    capture; ordering is instead carried by the stream and the caller syncs ONCE after
-    replay. Under this context :func:`maybe_sync` (the per-kernel syncs in the cw run
-    fns) becomes a no-op.
-    """
+    """Mark the cw backward as inside a ``torch.cuda.graph`` capture."""
     global GRAPH_CAPTURE
     prev = GRAPH_CAPTURE
     GRAPH_CAPTURE = True
@@ -255,29 +218,11 @@ if _HAVE:
             grid=grid, block=(THREADS, 1, 1)
         )
 
-    # cute.compile of _gemm_host, keyed by operand shape/dtype (callers use one
-    # fixed (128,128,64) tile today, so this is one entry; the key means a future
-    # off-tile caller recompiles rather than silently reusing the wrong kernel).
+    # Keyed by shape/dtype so an off-tile caller recompiles instead of reusing the wrong kernel.
     _gemm_aa_cache: dict[tuple[object, ...], object] = {}
 
     def _gemm_aa(a: Tensor, b: Tensor, out: Tensor) -> None:
-        """Run increment A's (128,64,128) GEMM: ``out[128,64] = a[128,128] @ b[64,128]^T``.
-
-        The whole increment-B reverse loop is expressed in this one config (natural
-        orientation): GA is increment A's stacked GEMM verbatim, and G1 (k@b_dh) pads
-        its M=C=64 output to 128, both land on the M=128 TMEM fragment the epilogue
-        targets (an M=64 accumulator trips ``make_tmem_copy``). ``out`` must be a
-        fresh, standalone, contiguous tensor.
-
-        Calling the ``@cute.jit`` ``_gemm_host`` directly re-traces its host body
-        (tiled-MMA, smem layouts, TMA atoms) on every call: ~190 ms to launch a ~5 us
-        kernel (measured on B200). Callers use one fixed (128,128,64) tile today, so
-        ``cute.compile`` runs once and the compiled executable is cached (keyed by
-        operand shape/dtype) and reused: ~190 ms/call down to ~0.04 ms/call. No
-        per-GEMM ``cuda.synchronize`` either: the launch is default-stream ordered
-        against the loop's torch ops that read this ``out`` and feed the next GEMM;
-        the caller syncs ONCE at the end of its reverse loop.
-        """
+        """Run increment A's (128,64,128) GEMM: ``out[128,64] = a[128,128] @ b[64,128]^T``."""
         ca, cb, cc = _mark(a.contiguous()), _mark(b.contiguous()), _mark(out)
         key = (a.shape, b.shape, out.shape, a.dtype, b.dtype, out.dtype)
         ex = _gemm_aa_cache.get(key)
@@ -286,13 +231,6 @@ if _HAVE:
             _gemm_aa_cache[key] = ex
         ex(ca, cb, cc)
 
-    # ------------------------------------------------------------------
-    # Lever B, batched (128,64,128) GEMM: L as grid-z, one CTA per batch element.
-    # Strict generalization of _gemm_kernel/_gemm_host: tensors gain an L mode
-    # ([M,K,L]/[N,K,L]/[M,N,L]); the coord gains bidz; the TMA atoms, proj, mainloop
-    # and epilogue are byte-identical (local_tile bakes the L offset into gA/gB/gC).
-    # Idiom: NVIDIA/cutlass CuTeDSL hopper/blackwell dense_gemm L-mode (grid-z).
-    # ------------------------------------------------------------------
     @cute.kernel
     def _gemm_kernel_b(
         tiled_mma: cute.TiledMma,
@@ -447,14 +385,7 @@ if _HAVE:
     _gemm_b_cache: dict[int, object] = {}  # cute.compile of _gemm_host_b, keyed by batch size Z
 
     def _gemm_batched(a: Tensor, b: Tensor, out: Tensor) -> None:
-        """Batched ``out[z]=a[z]@b[z]^T`` on the (128,64,128) config, L=z as grid-z.
-
-        ``a`` [Z,128,128], ``b`` [Z,64,128], ``out`` [Z,128,64], contiguous, batch-first.
-        Collapses Z single-CTA launches into ONE grid-z launch: ``cute.compile`` runs
-        ONCE per batch size Z (M/N/K fixed at 128/64/128) and is reused. ``out`` must be
-        a fresh contiguous tensor. The launch rides torch's current stream
-        (:func:`_cur_stream`) so it is CUDA-graph-capturable.
-        """
+        """Batched ``out[z]=a[z]@b[z]^T`` on the (128,64,128) config, L=z as grid-z."""
         z = int(a.shape[0])
         ca, cb, cc = _mark_b(a), _mark_b(b), _mark_b(out)
         ex = _gemm_b_cache.get(z)
@@ -464,30 +395,19 @@ if _HAVE:
         ex(ca, cb, cc, _cur_stream())
 
     def _mark_b(t: Tensor) -> object:
-        """Mark a batch-first [Z,R,S] tensor as a cute [R,S,L] tensor (L = largest stride).
-
-        ``t`` contiguous, permute(1,2,0) presents it as [R,S,Z] with S unit-stride and Z
-        the outermost (largest-stride) mode, the L-major batched layout the TMA
-        descriptor wants.
-        """
+        """Mark a batch-first [Z,R,S] tensor as a cute [R,S,L] tensor (L = largest stride)."""
         v = t.contiguous().permute(1, 2, 0)
         return from_dlpack(v, assumed_align=16).mark_layout_dynamic(leading_dim=1)
 
 
 def _bmm_tc(x: Tensor, y: Tensor) -> Tensor:
-    """Batched ``x[Z,M,K] @ y[Z,K,N] -> [Z,M,N]`` via the batched (128,64,128) a@b^T GEMM.
-
-    The batched twin of :func:`_mm_tc`: per batch element M-pads to 128, K-pads to 128, and
-    N-tiles by 64, every step lands on the one shared config; fp16 operands, fp32 accumulate.
-    Collapses the per-chunk Python loop into ONE launch per N-tile over all Z (Lever B). Looked
-    up via the module global so tests can swap in a plain fp32 stand-in.
-    """
+    """Batched ``x[Z,M,K] @ y[Z,K,N] -> [Z,M,N]`` via the batched (128,64,128) a@b^T GEMM."""
     f16, dev = torch.float16, x.device
     z, m, kk = x.shape
     n = y.shape[-1]
     if m > D_K or kk > D_K:
         raise ValueError(
-            f"_bmm_tc stages M,K into a ({D_K},{D_K}) buffer; got x[Z,{m},{kk}] — both must "
+            f"_bmm_tc stages M,K into a ({D_K},{D_K}) buffer; got x[Z,{m},{kk}], both must "
             f"be <= {D_K} (N tiles by D_V={D_V}; M,K below {D_K} zero-pad and stay correct)"
         )
     a = torch.zeros(z, D_K, D_K, dtype=f16, device=dev)
@@ -564,15 +484,7 @@ def run_k1_incB_host(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Increment B, host-orchestrated reverse inter-chunk state scan.
-
-    ``b_dh∈[d_k,d_v]`` fp32 is carried in a torch tensor across the reverse chunk loop
-    (natural orientation). Each chunk runs two tcgen05 GEMMs through increment A's
-    (128,64,128) config: GA is its stacked ``[qg|-w]@[do|b_dv]^T`` verbatim, and
-    G1 (``k@b_dh``) pads its M=C output to 128. Exercises the full recurrence and the
-    padded-G1 GEMM before the in-kernel loop. Returns ``(dh, dv2, dh0)`` head-major
-    chunked, matching the K#1 bundle's expected outputs.
-    """
+    """Increment B, host-orchestrated reverse inter-chunk state scan."""
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     b, hv, nt, c, d_k = q.shape
@@ -601,8 +513,7 @@ def run_k1_incB_host(
     for i in range(n_bh):
         for it in reversed(range(nt)):
             dh[i, it] = b_dh[i]
-            # G1: b_dv[C,d_v] = k[C,d_k] @ b_dh[d_k,d_v].  MMA out[128,d_v]=A[128,d_k]@B[d_v,d_k]^T
-            #   A = k padded M=C->128 ; B = b_dh^T [d_v,d_k] ; take rows [:C].
+            # G1: b_dv[C,d_v] = k[C,d_k] @ b_dh[d_k,d_v].
             a_g1 = torch.zeros(d_k, d_k, dtype=f16, device=dev)
             a_g1[:c] = kf[i, it].to(f16)
             out_g1 = torch.zeros(d_k, d_v, dtype=f16, device=dev)
@@ -634,14 +545,7 @@ def run_k1_incB_batched(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Lever B, reverse-state scan with the (b,hv) groups batched into one GEMM per step.
-
-    Same recurrence as :func:`run_k1_incB_host` (natural orientation, identical math), but the
-    ``for i in range(n_bh)`` host loop collapses into the batch dim: per reverse chunk ``it`` the
-    two GEMMs (G1 ``k@b_dh``, GA stacked ``[qg|−w]@[do|b_dv]^T``) run ONCE over all n_bh groups
-    via :func:`_bmm_tc`. The ``it`` loop stays sequential; it carries ``b_dh``. Returns
-    ``(dh, dv2, dh0)`` head-major chunked.
-    """
+    """Lever B, reverse-state scan with the (b,hv) groups batched into one GEMM per step."""
     if not is_available():
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     b, hv, nt, c, d_k = q.shape
@@ -683,24 +587,6 @@ def run_k1_incB_batched(
     )
 
 
-# ------------------------------------------------------------------
-# Lever D, inc-B2: the reverse it-loop fused into ONE persistent kernel per (b,hv).
-#
-# Lever B batched the (b,hv) groups but the reverse it-loop stays a sequential chain of
-# batched-GEMM launches + torch glue (a gap that grows with NT iterations). inc-B2
-# collapses that chain: one CTA owns one (b,hv) and runs the whole reverse scan
-# in-kernel, b_dh resident across chunks. Two GEMMs/chunk land on the same (128,64,128)
-# config as inc-A/inc-B-host: G1 (k@b_dh, M=C padded to 128) and GA ([qg|−w]@[do|b_dv]^T),
-# so the only new mechanics are loop fusion and the GMEM round-trip of b_dh / b_dv (no SIMT
-# smem-fill of an MMA operand exists on Blackwell).
-#
-# The packing and glue are identical in value to run_k1_incB_host; what is new is the
-# flat-L operand marshalling and the b_ga round-trip layout the kernel reads.
-# _run_k1_incB2_modelled runs that exact dataflow in torch, the spec the DSL kernel
-# transcribes.
-# ------------------------------------------------------------------
-
-
 def _incb2_pack_scalar(
     q: Tensor,
     k: Tensor,
@@ -710,19 +596,7 @@ def _incb2_pack_scalar(
     do: Tensor,
     dv_local: Tensor,
 ) -> dict[str, Tensor]:
-    """Host-precompute inc-B2's per-chunk operand buffers, flattened over L = n_bh·NT.
-
-    Returns the four static GEMM-operand / glue buffers the persistent kernel TMAs in its
-    reverse loop (chunk ``it`` of group ``i`` is the flat tile ``i·NT + it``):
-
-      a_g1  [L, 128, 128]  k padded M=C→128, K=d_k          (G1 operand A)
-      a_ga  [L, 128, 128]  [qg | −w]^T = [d_k, 2C]          (GA operand A)
-      b_ga  [L, d_v, 2C]   [do^T | 0]; the 0 half is b_dv^T written in-kernel (GA operand B)
-      decay [L, C] · dv_local [L, C, d_v] · glast [L]       (the per-chunk SIMT glue)
-
-    Everything is the same orientation run_k1_incB_host feeds ``_gemm_aa`` (out = a @ b^T),
-    so the kernel inherits the same packing; only the flat-L stacking is new.
-    """
+    """Host-precompute inc-B2's per-chunk operand buffers, flattened over L = n_bh·NT."""
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
     n_bh = b * hv
@@ -765,14 +639,7 @@ def _run_k1_incB2_modelled(
     dv_local: Tensor,
     dht: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Pure-torch model of inc-B2's exact in-kernel dataflow (the kernel's spec).
-
-    Runs the reverse scan on the flat-L packed buffers in the same statement order the
-    persistent kernel uses, with the b_ga round-trip (write b_dv^T into b_ga's second half,
-    then read the full [do^T | b_dv^T] tile back as GA's B operand). The two ``@`` stand in
-    for the kernel's two tcgen05 GEMMs (out = a @ b^T). Device/dtype-agnostic; in fp64 it
-    reproduces the K#1 bundle to roundoff. Returns ``(dh, dv2, dh0)`` head-major chunked.
-    """
+    """Pure-torch model of inc-B2's exact in-kernel dataflow (the kernel's spec)."""
     b, hv, nt, c, d_k = q.shape
     d_v = do.shape[-1]
     dev = q.device
@@ -804,30 +671,7 @@ def _run_k1_incB2_modelled(
 
 
 if _HAVE:
-    # ------------------------------------------------------------------
-    # inc-B2, the fused persistent reverse-loop kernel (early variant).
-    #
-    # One CTA per (b,hv) (grid-z = n_bh); the reverse it-loop runs INSIDE. Each chunk fires
-    # the two (128,64,128) GEMMs (G1, GA) through _gemm_step, byte-identical mainloop and
-    # epilogue to _gemm_kernel_b, only the L coordinate is selected dynamically per chunk.
-    # b_dh is resident across chunks via a GMEM round-trip: the SIMT carry writes it back
-    # (natural b_dh for output/carry + transposed b_dhT for G1's TMA operand), and b_dv^T
-    # is written into b_ga's second half for GA, both re-read by TMA next, so a proxy fence
-    # and barrier gates each round-trip (no SIMT smem-fill of an MMA operand exists on
-    # Blackwell). Values match run_k1_incB_host and the fp64 oracle; the kernel only
-    # transcribes that flow.
-    #
-    # This variant hits a host-side SIGSEGV at launch on hardware. Root cause: the launcher
-    # re-passed the trailing Constexpr arguments the executor already drops from the runtime
-    # signature, which shifts pointer slots and crashes regardless of kernel content (see
-    # :func:`_incb2_launch` below, which now calls ``ex(*args[:16])``). Superseded by the
-    # Level-2 (:mod:`gdn2_bwd_dhu_l2`) and Level-3 (:mod:`gdn2_bwd_dhu_l3`) kernels, both
-    # validated on hardware.
-    # ------------------------------------------------------------------
-    # The two GEMMs are INLINED in _incb2_kernel's loop (below): the DSL's if->scf.if AST
-    # preprocess only reaches the @cute.kernel's own body, so `if warp_idx == 0` cannot live
-    # in a plain device helper called from inside the scf.for (it raises "dynamic Boolean").
-    # ------------------------------------------------------------------
+
     @cute.kernel
     def _incb2_kernel(
         tiled_mma: cute.TiledMma,
@@ -858,13 +702,7 @@ if _HAVE:
         d_v: cutlass.Constexpr,
         bisect: cutlass.Constexpr,
     ) -> None:
-        # bisect: 0 full · 1 G1-only · 2 G1+GA no round-trips · 3 G1 plain-bh coord · 4 G1
-        # relinquish-after-mainloop. The TMEM accumulator handle is bound IN-LOOP and
-        # unconditionally (an outside-bound handle was not the launch fault; wrapping a GEMM
-        # in a loop is fine on its own). The bisect knob isolates the residual launch-SIGSEGV
-        # across the per-chunk feature set.
-        # m_bdhT / m_bga / m_bdv / m_t are the TMA / epilogue views (mark_b, permuted [R,S,L]);
-        # the _s twins are natural-layout SIMT views over the SAME storage (the glue indexes [L,R,S]).
+        # bisect: 0 full, 1 G1-only, 2 G1+GA no-rt, 3 G1 plain-bh, 4 relinquish-after-mainloop.
         tidx, _, _ = cute.arch.thread_idx()
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         _, _, bh = cute.arch.block_idx()
@@ -907,11 +745,7 @@ if _HAVE:
         if cutlass.const_expr(bisect != 4):
             tmem.relinquish_alloc_permit()
 
-        # range_constexpr UNROLLS the reverse loop (nt is Constexpr) → NO dynamic scf.for. The
-        # tcgen05 epilogue copy atom (make_tmem_copy) cannot live in a dynamic scf.for in this DSL
-        # (inside → launch-SIGSEGV; hoisted-and-used-inside → "live after conversion" ICE).
-        # Unrolling makes each chunk a straight-line body; the b_dh carry rides through GMEM
-        # (m_bdh) across the unrolled iterations.
+        # range_constexpr UNROLLS the reverse loop (nt is Constexpr) → NO dynamic scf.for.
         for it in cutlass.range_constexpr(nt):
             tCtAcc = cute.make_tensor(tmem.retrieve_ptr(_acc), tCtAcc_frag.layout)
             i_t = nt - 1 - it
@@ -963,11 +797,7 @@ if _HAVE:
                 tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
                 for _kt in cutlass.range(cute.size(gA, mode=[2]), prefetch_stages=AB_STAGES - 1):
                     ab_e = ab_prod.acquire_and_advance()
-                    # gmem K coordinate is literal 0, NOT ab_e.count: the K-rest extent is
-                    # statically 1 and count grows monotonically across the 2·nt unrolled
-                    # mainloops on the one persistent ab pipeline (mamba2_ssd resets its
-                    # producer state per work tile for exactly this reason); count as the
-                    # coordinate is OOB from the second GEMM onward.
+                    # gmem K coord is literal 0; ab_e.count grows across mainloops, goes OOB.
                     cute.copy(
                         tma_ag1,
                         tAgA[(None, 0)],
@@ -1189,19 +1019,12 @@ def _incb2_launch(
     *,
     bisect: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Mark the inc-B2 operands, compile-cache :func:`_incb2_host`, launch once, return flat.
-
-    Shared by the scalar and channel-wise launchers; the regime difference lives entirely in
-    the packed buffers (cw folds decay into ``a_g1`` and passes ``decay = 1``; ``glast`` is
-    [L, d_k] in both, broadcast for scalar). ``b_dh`` is the resident state (mutated in place).
-    """
+    """Mark the inc-B2 operands, compile-cache :func:`_incb2_host`, launch once, return flat."""
     dev = a_g1.device
     f16, f32 = torch.float16, torch.float32
     ll = n_bh * nt
 
-    # The 4 dual-use scratch tensors (bdhT/bga TMA operands + glue-written; bdv/t epilogue
-    # outputs + glue-read) get BOTH a _mark_b (permuted [R,S,L]) TMA view and a _mark_simt
-    # (natural [L,R,S]) glue view over the SAME contiguous f16 storage.
+    # The 4 dual-use scratch tensors get both a TMA view and a SIMT glue view over the same storage.
     a_g1_16 = a_g1.to(f16).contiguous()  # [L,128,128] TMA operand A (G1)
     a_ga_16 = a_ga.to(f16).contiguous()  # [L,128,128] TMA operand A (GA)
     b_ga_16 = b_ga.to(f16).contiguous()  # [L,d_v,2C] TMA operand B (GA); 2nd half written in-kernel
@@ -1239,11 +1062,7 @@ def _incb2_launch(
     if ex is None:
         ex = cute.compile(_incb2_host, *args)
         _incb2_cache[key] = ex
-    # Constexpr args (n_bh, nt, c, d_v, bisect) are baked at compile and DROPPED from
-    # the runtime signature; re-passing them shifts the executor's result/kernel pointer
-    # slots -> host SIGSEGV at launch. The bisect matrix (SIGSEGV at every bisect value)
-    # is plausibly this launcher fault, not kernel machinery (wheel source: jit_executor
-    # generate_execution_args appends extras to exe_args).
+    # n_bh/nt/c/d_v/bisect are baked at compile, dropped from the call; pass 16 tensors + stream.
     ex(*args[:16])
     torch.cuda.synchronize()
     return (
@@ -1265,14 +1084,7 @@ def run_k1_incB2(
     *,
     bisect: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Lever D, the fused persistent reverse-state scan (one CTA per (b,hv), loop in-kernel).
-
-    Host-packs the flat-L operand buffers (:func:`_incb2_pack_scalar`) and launches
-    :func:`_incb2_kernel` ONCE for all n_bh groups; the reverse it-loop and the b_dh / b_dv
-    round-trips run in-kernel. The per-chunk values match the inc-B-host packing, bit-exact
-    vs the fp64 oracle. Returns ``(dh, dv2, dh0)`` head-major chunked. Not yet validated on
-    hardware (see the SIGSEGV note above); ``run_k1_incB`` stays the default.
-    """
+    """Lever D, the fused persistent reverse-state scan (one CTA per (b,hv), loop in-kernel)."""
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     b, hv, nt, c, d_k = q.shape
@@ -1303,8 +1115,5 @@ def run_k1_incB2(
     )
 
 
-# Lever B is the default reverse-state path (batched over the (b,hv) groups). The per-group
-# host loop (run_k1_incB_host) stays as the fallback; --mode incB_host exercises it.
-# inc-B2 (the fused persistent reverse loop, run_k1_incB2 above) supersedes both once
-# validated on hardware.
+# Lever B is the default reverse-state path (batched over the (b,hv) groups).
 run_k1_incB = run_k1_incB_batched

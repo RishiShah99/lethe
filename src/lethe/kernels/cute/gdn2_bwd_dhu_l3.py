@@ -1,46 +1,4 @@
-"""Level-3 de-glue K#1, fused reverse-scan kernel: offset-partition lifecycle + unrolled chunks.
-
-ONE launch for the whole reverse chunk scan: the entire ``it`` loop lives in-kernel
-with ``b_dh`` TMEM-resident per chunk, vs Level-2's 2 launches/chunk. Worst scale_rel
-~6.5e-4 vs the fp64 bundles, deterministic.
-
-An earlier attempt kept a real ``scf.for`` over chunks and hoisted the epilogue
-``make_tmem_copy`` atoms pre-loop: this ICEs ("failed to legalize unresolved
-materialization ... remained live after conversion") because the mamba2_ssd
-pre-loop-atom idiom covers its STORE atoms, not the LOAD ``tmem_copy`` this config
-needs. The fix: ``cutlass.range_constexpr(nt)`` unrolls the chunk loop so every chunk
-is a straight-line body (atoms consumed outside any scf region); the K-tile mainloops
-stay real dynamic loops. Otherwise: ONE tmem.allocate(128), acc0/acc1 at column
-offsets 0/64, one relinquish + one free at the end, hoisted L-free TMA partitions
-sliced per chunk, two mma objects + two acc mbarrier sets, epilogue sync on
-barrier_id=2, store->fence->barrier ordering on both GMEM round-trips (b_ga second
-half; b_dh/b_dhT carry).
-
-Cost model: one executable per (n_bh, nt, c, d_v, cw); nt is baked, so IR size and
-compile time grow with nt. Per-chunk TMEM readback is structural (the carry feeds the
-next chunk's GEMM operands through SMEM/GMEM), so unrolling, not a dynamic loop, is
-the only legal shape for it on this DSL version.
-
-TMEM column budget (total = 128 <= 512):
-  acc0  (128,64) fp32 G1 accumulator, cols  0 .. 63   (_NCOLS0 = 64)
-  acc1  (128,64) fp32 GA accumulator, cols 64 .. 127  (_NCOLS0 + _NCOLS1 = 128)
-
-Tile contract: single-N-tile only, C=64, d_k=128, d_v=64 exactly (:func:`l3_dims_ok`);
-``gB``/``gC`` are tiled at fixed coords with ``_MNK_TILER`` N=64, so for d_v=128 only
-the first 64 value-columns would ever be written. d_v=128 stays on the Level-2/Lever-B
-paths until the N-tiling increment (acc2/acc3 at TMEM cols 128/192, budget 256 <= 512).
-
-Launches ride torch's current stream (:func:`_cur_stream`), so they are
-CUDA-graph-capturable, and the trailing ``torch.cuda.synchronize()`` is
-``maybe_sync()`` (capture-aware). Executor contract: the compile tuple keeps the full
-signature; the call tuple passes ONLY the 16 marked cute.Tensors + the CUstream
-(Constexprs are baked and dropped from the runtime arg list; re-passing them shifts
-pointer slots and crashes at launch).
-
-Without the CuTe DSL toolchain this module still imports cleanly (guarded
-try/except -> _HAVE). The kernel spec is ``gdn2_bwd_dhu_cw._run_k1_incB2_modelled``
-(fp64-pinned).
-"""
+"""Level-3 de-glue K#1, fused reverse-scan kernel: offset-partition lifecycle + unrolled chunks."""
 # NB: no `from __future__ import annotations`, PEP 563 stringizes @cute.struct fields.
 
 import torch
@@ -194,10 +152,7 @@ if _HAVE:
 
         tmem.wait_for_alloc()
 
-        # ── Pre-loop hoisting ───────────────────────────────────────────────
-        # Epilogue copy atoms + partitions built ONCE; with the chunk loop UNROLLED
-        # they are consumed in straight-line context (no scf region -> the v2 ICE
-        # class is structurally gone).
+        # Pre-loop hoisting: copy atoms built once, so the unrolled loop stays scf-free (no v2 ICE).
         base_pre = tmem.retrieve_ptr(_acc)
         tCtAcc0_pre = cute.make_tensor(base_pre, tCtAcc0_frag.layout)
         tCtAcc1_pre = cute.make_tensor(base_pre + _NCOLS0, tCtAcc1_frag.layout)
@@ -236,7 +191,6 @@ if _HAVE:
         )
 
         # L-free A/B partitions for lid-varying operands (sliced by lid inside copy calls).
-        # Mirrors the ab_e.count slicing idiom used in the K-mainloop (mamba2_ssd ~901-909).
         gA_g1_all = cute.local_tile(m_ag1, _MNK_TILER, (0, 0, None, None), proj=(1, None, 1))
         gA_ga_all = cute.local_tile(m_aga, _MNK_TILER, (0, 0, None, None), proj=(1, None, 1))
         gB_ga_all = cute.local_tile(m_bga, _MNK_TILER, (0, 0, None, None), proj=(None, 1, 1))
@@ -277,12 +231,7 @@ if _HAVE:
         tCrAcc1 = cute.make_rmem_tensor(tDgC1_pre[None, None, 0].shape, _acc)
         tCrC1 = cute.make_rmem_tensor(tDgC1_pre[None, None, 0].shape, _io)
 
-        # ── REVERSE CHUNK LOOP: range_constexpr UNROLL ──
-        # The dynamic scf.for made the pre-loop tmem_copy atoms illegal ("failed to
-        # legalize unresolved materialization ... remained live after conversion").
-        # Unrolling makes every chunk a straight-line body; the only dynamic loops
-        # left are the K-tile mainloops + SIMT element loops. nt is Constexpr and
-        # cache-keyed, so one executable per nt is the contract.
+        # Chunk loop is range_constexpr-unrolled: dynamic scf.for made tmem_copy atoms illegal.
         for it in cutlass.range_constexpr(nt):
             tCtAcc0 = cute.make_tensor(base_pre, tCtAcc0_frag.layout)
             tCtAcc1 = cute.make_tensor(base_pre + _NCOLS0, tCtAcc1_frag.layout)
@@ -307,12 +256,7 @@ if _HAVE:
                     cute.size(gA_g1_all, mode=[2]), prefetch_stages=AB_STAGES - 1
                 ):
                     ab_e = ab_prod.acquire_and_advance()
-                    # gmem K coordinate is literal 0: the K-rest extent is statically 1
-                    # (tiler K=128 over 128-deep operands) and ab_e.count grows
-                    # MONOTONICALLY across the 2*nt unrolled mainloops (mamba2_ssd
-                    # resets its producer state per work tile for exactly this reason);
-                    # count as the coordinate is OOB from chunk-0's GA onward.
-                    # ab_e.index (SMEM stage) and ab_e.barrier stay.
+                    # gmem K coord is literal 0; ab_e.count grows across mainloops, goes OOB.
                     cute.copy(
                         tma_ag1,
                         tAgA_g1_all[(None, 0, lid)],
@@ -342,7 +286,6 @@ if _HAVE:
             pipeline.sync(barrier_id=2)
 
             # SIMT glue: b_dv = bdv_raw[:C]·decay + dv_local; write dv2 + b_ga 2nd half.
-            # PTX order: stores → fence_proxy (each writing thread) → barrier → TMA re-read.
             for e in cutlass.range(tidx, c * d_v, THREADS):
                 r, col = e // d_v, e % d_v
                 val = m_bdv_s[bh, r, col].to(_acc) * m_decay[lid, r] + m_dvl[lid, r, col]
@@ -391,7 +334,6 @@ if _HAVE:
             pipeline.sync(barrier_id=2)
 
             # SIMT carry: b_dh = exp2(g_last)·b_dh + t; write b_dh + b_dhT.
-            # PTX order: stores → fence_proxy → barrier → next-chunk G1 TMA re-read.
             for e in cutlass.range(tidx, 128 * d_v, THREADS):
                 r, col = e // d_v, e % d_v
                 val = m_glast[lid, r] * m_bdh[bh, r, col] + m_t_s[bh, r, col].to(_acc)
@@ -499,13 +441,7 @@ def run_k1_incB2_v3(
     *,
     cw: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Fused K#1 reverse scan on the TMEM offset-partition lifecycle, ONE launch.
-
-    Packs via ``_incb2_pack_scalar`` (scalar) or ``_incb2_pack_cw`` (cw), launches
-    ``_kern_incb2_v3`` once for all n_bh groups on torch's current stream. Returns
-    ``(dh, dv2, dh0)`` head-major. Single-N-tile only: d_v=64, d_k=128, c=64
-    (:func:`l3_dims_ok`).
-    """
+    """Fused K#1 reverse scan on the TMEM offset-partition lifecycle, ONE launch."""
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
 
@@ -579,8 +515,7 @@ def run_k1_incB2_v3(
     if ex is None:
         ex = cute.compile(_incb2_v3_host, *args)
         _v3_cache[key] = ex
-    # Constexpr args (n_bh, nt, c, d_v) are baked at compile and DROPPED from the
-    # runtime signature; the call tuple is the 16 marked tensors + the CUstream.
+    # n_bh/nt/c/d_v are baked at compile and dropped; the call is the 16 marked tensors + stream.
     ex(*args[:16], stream)
     maybe_sync()
     return (

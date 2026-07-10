@@ -1,7 +1,4 @@
-"""Tests for the lethe verifier scaffolding.
-
-All tests are CPU-safe: no CUDA, no Triton, no GPU required.
-"""
+"""Tests for the lethe verifier scaffolding."""
 
 from __future__ import annotations
 
@@ -30,10 +27,6 @@ from lethe.verifier.contracts import (
 from lethe.verifier.reward import compute_reward
 from lethe.verifier.sandbox import run_in_subprocess
 from lethe.verifier.timing import TimingResult, benchmark
-
-# ---------------------------------------------------------------------------
-# compile.py
-# ---------------------------------------------------------------------------
 
 
 class TestCompileKernel:
@@ -81,12 +74,7 @@ class TestCompileKernel:
         assert result.blackwell_failure is True
 
     def test_detects_tmem_budget_in_stderr(self) -> None:
-        """The triton >= 3.7 surface form of the Blackwell TMEM failure.
-
-        Fixture is VERBATIM from our B200 reproduction of
-        state-spaces/mamba#904 (mamba3_siso_bwd_kernel_dqkv, num_warps=4):
-        no C7907 string appears, so C7907-only detection would miss it.
-        """
+        """The triton >= 3.7 surface form of the Blackwell TMEM failure."""
         fake_stderr = (
             b"Autotuning failed with out of resource: tensor memory, "
             b"Required: 544, Hardware limit: 512. Reducing block sizes or "
@@ -116,12 +104,7 @@ class TestCompileKernel:
         assert result.error_class == ErrorClass.TMEM_BUDGET
 
     def test_tmem_detected_on_success_autotune_masked_form(self) -> None:
-        """rc=0 with TMEM strings on stderr = the autotune-masked #904 form.
-
-        The reference kernel 'succeeds' on crippled num_warps=2 survivors
-        while the overflowing configs print TMEM failures — the flag must be
-        set even though success=True, or the perf-cliff form is invisible.
-        """
+        """rc=0 with TMEM strings on stderr = the autotune-masked #904 form."""
         fake_stderr = (
             b"Autotuning failed with out of resource: tensor memory, "
             b"Required: 544, Hardware limit: 512.\n"
@@ -200,11 +183,6 @@ class TestCompileKernel:
         assert result.error_class == ErrorClass.PTXAS_C7907
 
 
-# ---------------------------------------------------------------------------
-# Helpers shared by contract tests
-# ---------------------------------------------------------------------------
-
-
 def _identity(t: torch.Tensor) -> torch.Tensor:
     return t.clone()
 
@@ -222,18 +200,13 @@ def _return_wrong_shape(t: torch.Tensor) -> torch.Tensor:
 
 
 def _nondeterministic(t: torch.Tensor) -> torch.Tensor:
-    """Adds random noise — not deterministic."""
+    """Adds random noise, not deterministic."""
     return t + torch.randn_like(t) * 0.1
 
 
 def _alias_input(t: torch.Tensor) -> torch.Tensor:
-    """Returns its input storage verbatim — a view, never a fresh output buffer."""
+    """Returns its input storage verbatim, a view, never a fresh output buffer."""
     return t
-
-
-# ---------------------------------------------------------------------------
-# contracts.py — implemented gates (pass / fail)
-# ---------------------------------------------------------------------------
 
 
 class TestGateCmp01InputVariation:
@@ -289,11 +262,7 @@ class TestGateOrd01ReductionOrderTolerance:
         assert result.details["atol_used"] > 0.0
 
     def test_default_reduction_elements_uses_sequence_extent(self) -> None:
-        # (4, 512, 32) is (batch, seq, width); the scan reduction extent is the
-        # seq dim (512), not the row width (32). The old shape[-1] default made
-        # atol ~sqrt(512/32)=4x too tight and could false-reject honest scans.
-        # Seed identically so both draw the same input → same output scale → the
-        # atol ratio is exactly the sqrt(N) ratio, sqrt(512/32) = 4.
+        # (4, 512, 32) is (batch, seq, width); the reduction extent is seq (512), not width (32).
         torch.manual_seed(0)
         default = gate_ord_01_reduction_order_tolerance(_identity, _identity)
         torch.manual_seed(0)
@@ -316,9 +285,7 @@ class TestGateOrd02AtomicDeterminism:
         assert result.details["n_runs"] == 3
 
     def test_fail_when_output_aliases_input(self) -> None:
-        # A candidate that returns a view of its input scores a fresh data_ptr
-        # per call (each call gets a distinct input clone) so it slips the
-        # cross-call distinctness check — the input-aliasing check catches it.
+        # A view of the input slips distinctness (fresh clone per call); the aliasing check catches it.
         result = gate_ord_02_atomic_determinism(_alias_input, _identity)
         assert result.passed is False
         assert "input" in result.reason
@@ -358,18 +325,13 @@ class TestGateExc01ExceptionalValues:
         assert result.passed is False
 
 
-# ---------------------------------------------------------------------------
-# contracts.py — stubbed gates raise NotImplementedError
-# ---------------------------------------------------------------------------
-
-
 class TestGateCmp02GradientCorrectness:
     def test_pass_for_identity(self) -> None:
         result = gate_cmp_02_gradient_correctness(_identity, _identity)
         assert result.passed is True
 
     def test_fail_when_gradient_graph_broken(self) -> None:
-        """A kernel that detaches inputs has zero gradient — gradcheck fails."""
+        """A kernel that detaches inputs has zero gradient, so gradcheck fails."""
 
         def _detached(t: torch.Tensor) -> torch.Tensor:
             return t.detach().clone().requires_grad_(False) + 0.0 * t
@@ -408,7 +370,7 @@ class TestGatePrc02MixedPrecisionAccumulation:
             return t.float().sum(dim=-1, keepdim=True)
 
         def _cand(t: torch.Tensor) -> torch.Tensor:
-            # Manual fp16 loop accumulation — known precision loss.
+            # Manual fp16 loop accumulation, known precision loss.
             acc = torch.zeros(*t.shape[:-1], 1, dtype=t.dtype, device=t.device)
             for i in range(t.shape[-1]):
                 acc = acc + t[..., i : i + 1]
@@ -434,12 +396,7 @@ class TestGateExc02SubnormalHandling:
         assert result.passed is False
 
     def test_fail_when_candidate_mints_nan_matching_zero_mask(self) -> None:
-        """Regression: NaN minted where the reference is non-zero used to pass.
-
-        The zero-mask still agrees (NaN != 0) and ``max_err`` becomes NaN, which
-        slips past ``NaN > atol == False``. The non-finite mask-agreement check
-        must reject it.
-        """
+        """Regression: NaN minted where the reference is non-zero used to pass."""
 
         def _nan_mint(t: torch.Tensor) -> torch.Tensor:
             return torch.where(t == 0, t, torch.full_like(t, float("nan")))
@@ -515,11 +472,6 @@ class TestGateRes02ResourceLimits:
         assert result.details["spill_bytes"] == 48 * 1024
 
 
-# ---------------------------------------------------------------------------
-# run_all_gates aggregate
-# ---------------------------------------------------------------------------
-
-
 class TestRunAllGates:
     def test_returns_12_entries(self) -> None:
         results = run_all_gates(_identity, _identity)
@@ -531,8 +483,7 @@ class TestRunAllGates:
             assert result.passed is True, f"{name} should pass for identity"
 
     def test_seeded_inputs_make_verdicts_deterministic(self) -> None:
-        """Default per-gate seeding pins input-dependent gate details across
-        independent runs, and the caller's global RNG state is restored."""
+        """Default per-gate seeding pins gate details across runs; caller's global RNG is restored."""
 
         def _wrong(x: torch.Tensor) -> torch.Tensor:
             return x + 0.1  # fails CMP-01's value comparison vs identity
@@ -549,18 +500,12 @@ class TestRunAllGates:
         assert first[cmp01].details == second[cmp01].details, "seeded draws must repeat"
 
     def test_seed_none_keeps_legacy_unseeded_draws(self) -> None:
-        """seed=None leaves the global RNG advancing (no reseed / no restore) —
-        the closed audit path's behavior is unchanged."""
+        """seed=None leaves the global RNG advancing; the closed audit path's behavior is unchanged."""
         torch.manual_seed(0)
         before = torch.get_rng_state()
         run_all_gates(_identity, _identity, seed=None)
         after = torch.get_rng_state()
         assert not torch.equal(before, after), "unseeded gates advance the global RNG"
-
-
-# ---------------------------------------------------------------------------
-# timing.py
-# ---------------------------------------------------------------------------
 
 
 class TestTimingOnCpu:
@@ -597,12 +542,7 @@ class TestTimingOnCpu:
     def test_empty_inputs_uses_cuda_path_when_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Closure-style calls with inputs=() must use CUDA events when CUDA is available.
-
-        Without this fix, benchmark(fn, ()) falls to the unsynchronized wall-clock
-        path even on a CUDA host, measuring host enqueue time instead of device
-        execution time for async closures.
-        """
+        """Closure-style calls with inputs=() must use CUDA events when CUDA is available."""
         sync_calls: list[str] = []
         event_records: list[str] = []
 
@@ -630,15 +570,9 @@ class TestTimingOnCpu:
         assert result.n_trials == 2
 
 
-# ---------------------------------------------------------------------------
-# sandbox.py
-# ---------------------------------------------------------------------------
-
-
 class TestSandboxStdoutShield:
     def test_candidate_stdout_does_not_corrupt_result(self) -> None:
-        # A kernel that prints (Python and raw fd-1 writes) must not poison the
-        # pickle channel — the result rides a private fd, fd 1 goes to stderr.
+        # Printing (Python or raw fd-1 writes) must not poison the pickle channel; fd 1 goes to stderr.
         result = run_in_subprocess(
             "tests._sandbox_helpers", "noisy_identity", (21,), timeout_s=30.0
         )
@@ -674,11 +608,6 @@ class TestSandboxTimeout:
 
         assert result.success is False
         assert result.error_class == ErrorClass.TIMEOUT
-
-
-# ---------------------------------------------------------------------------
-# reward.py
-# ---------------------------------------------------------------------------
 
 
 class TestRewardBranches:
@@ -778,8 +707,7 @@ class TestRewardBranches:
         assert above - below == pytest.approx(math.log(1.001) - math.log(0.999), abs=1e-6)
 
     def test_very_slow_hits_floor(self) -> None:
-        # Below e**-0.5 ≈ 0.61 the ramp saturates at the 0.5 floor — a correct
-        # kernel always clears the 0.1 contract-fail level by a clear margin.
+        # Below e**-0.5 ~ 0.61 the ramp saturates at 0.5, well clear of the 0.1 contract-fail floor.
         for s in (0.6, 0.1, 0.007, 1e-9):
             r = compute_reward(compiled=True, contracts_passed=True, speedup_vs_handwritten=s)
             assert r == pytest.approx(0.5)

@@ -16,15 +16,8 @@ from pathlib import Path
 
 
 def kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Kill *proc* and its descendants (e.g. ptxas / CUDA grandchildren).
-
-    POSIX children are spawned as session leaders (``start_new_session``), so
-    ``killpg`` reaps the whole group; ``proc.kill`` alone would orphan the
-    grandchildren, which accumulate over repeated compile timeouts. Windows
-    has no process group here; the direct kill is all that is available.
-    """
-    # sys.platform (not os.name) so mypy narrows the POSIX-only calls away on
-    # Windows, where they don't exist.
+    """Kill *proc* and its descendants (e.g. ptxas / CUDA grandchildren)."""
+    # sys.platform (not os.name) so mypy narrows the POSIX-only calls away on Windows.
     if sys.platform != "win32":
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -53,19 +46,10 @@ _C7907_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"ptxas.*error.*C\d{4}", re.IGNORECASE),
 ]
 
-# The Blackwell TMEM-budget overflow as it actually surfaces in triton >= 3.7:
-# a clean OutOfResources exception, NOT a raw ptxas C7907. Verbatim from our
-# B200 reproduction of state-spaces/mamba#904 (mamba3_siso_bwd_kernel_dqkv,
-# num_warps >= 4):
-#   "out of resource: tensor memory, Required: 544, Hardware limit: 512.
-#    Reducing block sizes or `num_stages` may help."
-# C7907 was the surface symptom in older toolchains; both signatures map to
-# the same eager TMEM-promotion failure mode and both must trip bug-routing.
+# TMEM overflow (mamba#904): OutOfResources Required=544 > Hardware limit=512; C7907 pre-3.7.
 _TMEM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"out of resource:\s*tensor memory", re.IGNORECASE),
-    # Anchored on the OutOfResources prefix so candidate-emitted prose can't
-    # match incidentally; the structured tail keeps it specific to the
-    # budget-overflow form.
+    # Anchored on the OutOfResources prefix plus a structured tail so it can't match incidentally.
     re.compile(
         r"out of resource.*tensor memory.*Required:\s*\d+.*Hardware limit:\s*\d+",
         re.IGNORECASE,
@@ -84,16 +68,7 @@ _TYPE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"IncompatibleType", re.IGNORECASE),
 ]
 
-# Subprocess script template: exec + optional __warmup__ launch under triton,
-# fall back to ast.parse on CPU-only hosts.
-#
-# The __warmup__ convention: Triton compiles PTX lazily at first *launch*, so
-# merely exec'ing a module (JIT registration) can never surface ptxas errors,
-# including the C7907 / TMEM-budget class this project's reward signal depends
-# on. A candidate module may therefore define a zero-arg ``__warmup__()`` that
-# launches its kernel(s) once on small inputs; any ptxas/launch failure then
-# lands in stderr and gets classified. Without __warmup__, success only means
-# "module exec'd and JIT-registered".
+# Subprocess template: exec + optional __warmup__ under triton, else ast.parse on CPU-only hosts.
 _COMPILE_SCRIPT = textwrap.dedent(
     """\
     # -*- coding: utf-8 -*-
@@ -109,8 +84,8 @@ _COMPILE_SCRIPT = textwrap.dedent(
 
     if _have_triton:
         # Real path: exec the module (JIT registration), then run __warmup__
-        # if defined so PTX actually compiles. Candidate errors — including
-        # the candidate's own ImportError — must propagate, not fall through
+        # if defined so PTX actually compiles. Candidate errors, including
+        # the candidate's own ImportError, must propagate, not fall through
         # to the AST check.
         import tempfile, importlib.util, os
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8") as f:
@@ -156,20 +131,7 @@ class CompileResult:
 
     @property
     def blackwell_failure(self) -> bool:
-        """True if either signature of the Blackwell TMEM-promotion failure
-        family was observed (raw ptxas C7907 in older toolchains, or the
-        OutOfResources tensor-memory message in triton >= 3.7).
-
-        Deliberately may be True alongside ``success=True``: the
-        autotune-masked form of #904 prunes the TMEM-overflowing configs and
-        completes on crippled survivors; the failure strings appear on
-        stderr while the run "succeeds". That perf-cliff form IS the bug.
-
-        Reward-gaming note: the bug-routing bonus is keyed on the
-        *hand-written reference* tripping this flag, never on a candidate's
-        own flag, so a policy emitting these strings to its own stderr
-        marks itself failure-prone and earns nothing.
-        """
+        """True if either TMEM-overflow signature fired: ptxas C7907 (older) or OutOfResources (triton>=3.7)."""
         return self.ptxas_c7907 or self.tmem_budget
 
 
@@ -187,8 +149,7 @@ def _classify_stderr(stderr: str, return_code: int) -> ErrorClass:
     """Map subprocess stderr + return code to an ErrorClass."""
     if return_code == 0:
         return ErrorClass.OK
-    # Order matters: the Blackwell-failure signatures outrank generic OOM,
-    # which outranks OTHER.
+    # Order matters: the Blackwell-failure signatures outrank generic OOM, which outranks OTHER.
     if _scan_for_c7907(stderr):
         return ErrorClass.PTXAS_C7907
     if _scan_for_tmem(stderr):
@@ -203,29 +164,7 @@ def _classify_stderr(stderr: str, return_code: int) -> ErrorClass:
 
 
 def compile_kernel(source: str, *, timeout_s: float = 30.0) -> CompileResult:
-    """Compile *source* as a Triton kernel (or syntax-check on CPU-only hosts).
-
-    Spawns a child process so that compiler crashes cannot kill the caller.
-    On hosts where ``triton`` is not importable, falls back to ``ast.parse``.
-
-    Triton compiles PTX lazily at first launch, so sources that define a
-    zero-arg ``__warmup__()`` get it called after module exec: that is the
-    only way ptxas-level failures (the C7907 / TMEM-budget class) can be
-    detected at "compile" time. Sources without ``__warmup__`` are only
-    exec'd (JIT registration).
-
-    Parameters
-    ----------
-    source:
-        Python/Triton source code string.
-    timeout_s:
-        Wall-clock timeout for the subprocess.
-
-    Returns
-    -------
-    CompileResult
-        Frozen dataclass with outcome details.
-    """
+    """Compile *source* as a Triton kernel (or syntax-check on CPU-only hosts)."""
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".py",

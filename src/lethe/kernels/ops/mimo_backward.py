@@ -1,19 +1,4 @@
-"""C3, hand-written MIMO selective-scan backward (Mamba-3, Eqs. 12-14).
-
-Drop-in for ``reference_mimo_backward`` with the same signature and
-semantics, widened to more dtypes and devices:
-
-- CUDA + {fp32, fp16, bf16} with triton installed -> the Triton kernel
-  (``_triton_mimo_bwd``): analytic adjoint, no ``tl.dot``, no atomics.
-- everything else (CPU, fp64, missing triton) -> autograd through
-  ``reference_mimo_forward``. For fp32/fp64 the leaves feed the reference
-  directly, gradients bitwise-equal to the oracle. The reference rejects
-  half dtypes, so half inputs upcast to fp32 at the leaves and each
-  gradient rounds once at the end (the mixed-precision contract). When
-  ``dy.requires_grad`` the eager path builds the double-backward graph
-  (``create_graph``), the VJP is linear in ``dy``, which is what CMP-02's
-  gradcheck differentiates.
-"""
+"""C3, hand-written MIMO selective-scan backward (Mamba-3, Eqs. 12-14)."""
 
 from __future__ import annotations
 
@@ -59,13 +44,7 @@ def mimo_backward(
     *,
     config: KernelConfig | None = None,
 ) -> MimoGrads:
-    """Mamba-3 MIMO SSM backward pass.
-
-    Args/semantics mirror ``reference_mimo_backward``: ``x``/``dy``
-    [B, L, H, P], ``B``/``C`` [B, L, R, H, N], ``dt``/``alpha`` [B, L, H],
-    ``mimo_x``/``mimo_o`` [H, R, P]; returns a ``MimoGrads`` named tuple
-    whose fields match the corresponding input shapes and dtypes.
-    """
+    """Mamba-3 MIMO SSM backward pass."""
     if x.is_cuda and x.dtype in _TRITON_DTYPES and _triton_usable():
         from lethe.kernels.ops import _triton_mimo_bwd
 
@@ -78,11 +57,7 @@ def mimo_backward(
 
 
 def triton_mimo_bwd_resource_meta() -> dict[str, int] | None:
-    """Resource metadata of the compiled Triton MIMO backward kernel, if any.
-
-    Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
-    """
+    """Resource metadata of the compiled Triton MIMO backward kernel, if any."""
     if not _triton_usable():
         return None
     from lethe.kernels.ops import _triton_mimo_bwd

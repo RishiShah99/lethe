@@ -1,12 +1,4 @@
-"""Cheating kernel: correct in FP32, wildly wrong in FP16 / BF16.
-
-Mimics a kernel that uses an FP32-only intermediate path correctly but
-falls back to a coarse mantissa-truncating path on lower precision —
-the kind of bug you see in hand-tuned reduced-precision kernels.
-
-Expected rejector: PRC-01 (precision regime). FP32 passes, FP16 and
-BF16 fail badly.
-"""
+"""Cheating kernel: correct in FP32, mantissa-truncated (wrong) in FP16/BF16."""
 
 from __future__ import annotations
 
@@ -26,6 +18,6 @@ def _truncate_mantissa(x: Tensor) -> Tensor:
 def cheating_op(u: Tensor) -> Tensor:
     if u.dtype == torch.float32:
         return reference_op(u)
-    # FP16 / BF16 / FP64 / etc. — break it.
+    # FP16 / BF16 / FP64 / etc. - break it.
     out = reference_op(u.float()).to(u.dtype)
     return _truncate_mantissa(out) * 0.5  # also scale-bias for extra wrongness

@@ -1,11 +1,4 @@
-"""CPU tests for the E2.c config-emitting GRPO path.
-
-Covers the action representation (extract/parse), the parse-then-score bridge
-on CPU (where a config runs the eager path -> the 0.5 correct-but-slow floor,
-no speedup measured), the config-emission prompt, and the GRPOTrainingLoop
-reuse through its extractor + scorer hooks with a stub policy (so the full
-advantages -> loss -> update path runs and parameter movement is observable).
-"""
+"""CPU tests for the E2.c config-emitting GRPO path."""
 
 from __future__ import annotations
 
@@ -140,8 +133,7 @@ class TestConfigPrompt:
         prompt = build_config_prompt("mimo_backward", ShapeSpec(2, 8192, 2048))
         assert "chunk_k" in prompt
         assert "divide seq_len" in prompt
-        # block_p is a correctness floor for mimo (no p axis in the grid) —
-        # it must no longer be offered to the policy.
+        # block_p is a correctness floor for mimo (no p axis); must not be offered to the policy.
         assert "block_p" not in prompt
 
 
@@ -284,8 +276,7 @@ class TestSerialSeedCompletions:
 
 class TestSerialSeedingInLoop:
     def test_unseeded_single_mode_group_is_degenerate(self, tmp_path: Any) -> None:
-        # The #14 failure: a chunk_parallel-only group has one reward value, so
-        # the update skips (loss=None) and no serial gradient ever forms.
+        # The #14 failure: chunk_parallel-only group has one reward, so the update skips.
         policy = StubTrainablePolicy([CHUNK_PARALLEL])
         config = TrainLoopConfig(
             op="forward_chunked_scan",

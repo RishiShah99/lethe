@@ -1,13 +1,4 @@
-"""SFT warm-start targets: token screen, registry coverage, reference parity.
-
-The targets mirror the references statement-for-statement, so fp32 parity
-is asserted bitwise wherever the op graph is identical (C1-C5); the fused
-backward replaces the conv primitive with a shifted sum (determinism by
-construction on CUDA) and is asserted at tight tolerance instead. The
-full gate battery runs once on CPU for the cheapest op to pin the whole
-score_candidate_source path; all six run on CUDA via scratch/sft_validate.py
-before any SFT step consumes them.
-"""
+"""SFT warm-start targets: token screen, registry coverage, reference parity."""
 
 from __future__ import annotations
 
@@ -86,8 +77,7 @@ def test_registry_covers_curriculum_ops() -> None:
 
 
 def test_targets_pass_the_candidate_screen() -> None:
-    # Every target must clear the same AST screen candidates face: no package
-    # imports, no dynamic-import / builtins-reflection machinery.
+    # Every target must clear the same AST screen candidates face: no imports, no reflection tricks.
     for op in available_targets():
         for variant in target_variants(op):
             violations = _ast_screen(target_source(op, variant))
@@ -96,14 +86,7 @@ def test_targets_pass_the_candidate_screen() -> None:
 
 @pytest.fixture()
 def stub_triton() -> Iterator[None]:
-    """Importable stand-in for triton so the CUDA targets load on CPU.
-
-    Only module-level surface is needed: @triton.jit wraps (never runs),
-    tl.constexpr is called once for a module constant, libdevice is an
-    attribute. Annotations stay strings (future import in every target).
-    Stubs are removed afterwards so the kernels' find_spec dispatch is
-    unaffected for the rest of the session.
-    """
+    """Importable stand-in for triton so the CUDA targets load on CPU."""
     if importlib.util.find_spec("triton") is not None:
         yield
         return
@@ -139,8 +122,7 @@ def _load_triton_target(op: str) -> Any:
 
 
 class TestTritonVariantCpuFallback:
-    """RES-01 always probes a CPU leg; the CUDA targets must dispatch to
-    their eager fallback there and match the reference."""
+    """RES-01 always probes CPU; the CUDA targets must fall back to eager there and match."""
 
     def test_c1_cpu_fallback_bitwise(self, stub_triton: None) -> None:
         mod = _load_triton_target("forward_chunked_scan")
@@ -203,10 +185,7 @@ class TestTritonVariantCpuFallback:
             torch.testing.assert_close(g, w, rtol=1e-5, atol=1e-6)
 
     def test_scan_targets_enforce_chunk_divisibility(self, stub_triton: None) -> None:
-        # The triton scan SFT targets must raise on a non-dividing chunk_size on
-        # the CPU-fallback path too — matching the eager variants, the fused
-        # triton siblings, and the production ops (else the warm-start label
-        # teaches a looser contract than the op it stands in for).
+        # The triton CPU-fallback must raise on a non-dividing chunk_size too, like production ops.
         inputs = _scan_inputs()  # seq_len = 64
         fwd = _load_triton_target("forward_chunked_scan")
         with pytest.raises(ValueError, match="divisible"):
@@ -218,8 +197,7 @@ class TestTritonVariantCpuFallback:
 
 
 def test_triton_variants_parse_and_self_contained() -> None:
-    # Triton is absent on the dev box, so the CUDA targets are pinned at the
-    # source level here: they must parse and import only torch/triton/math.
+    # Triton is absent here; CUDA targets are pinned at the source level to torch/triton/math imports.
     import ast
 
     for op in available_targets():
@@ -308,8 +286,7 @@ def test_c5_matches_reference_bitwise() -> None:
 
 
 def test_c6_matches_autograd_including_nonfinite_dy() -> None:
-    # The target's shifted-sum conv reorders the K-term accumulation vs
-    # F.conv1d, so parity is tight-tolerance rather than bitwise.
+    # The shifted-sum conv reorders K-term accumulation vs F.conv1d, so parity is tight-tolerance.
     inputs = _fused_inputs()
     gen = torch.Generator().manual_seed(23)
     dy = torch.randn(2, 32, 8, generator=gen)
@@ -324,8 +301,7 @@ def test_c6_matches_autograd_including_nonfinite_dy() -> None:
 
 
 def test_fused_eager_targets_enforce_chunk_divisibility() -> None:
-    # The eager SFT targets must enforce the SAME divisibility contract as the
-    # reference + triton sibling — else the warm-start teaches a looser contract.
+    # The eager SFT targets must match the reference's divisibility contract, not a looser one.
     inputs = _fused_inputs(l_out=32)
     with pytest.raises(ValueError, match="divisible"):
         fused_block_forward(*inputs, conv_kernel_size=4, chunk_size=64)
@@ -335,8 +311,7 @@ def test_fused_eager_targets_enforce_chunk_divisibility() -> None:
 
 
 def test_scan_eager_targets_enforce_chunk_divisibility() -> None:
-    # The eager scan SFT targets must raise on a non-dividing seq_len, exactly
-    # like the reference — not run a flat loop that silently accepts it.
+    # The eager scan SFT targets must raise on a non-dividing seq_len, exactly like the reference.
     inputs = _scan_inputs()  # seq_len = 64
     with pytest.raises(ValueError, match="divisible"):
         forward_chunked_scan(*inputs, chunk_size=48)
@@ -362,14 +337,7 @@ def test_c1_target_passes_full_battery() -> None:
 
 
 def test_mimo_triton_target_int64_checkpoint_offset() -> None:
-    """Pin that mimo_backward_triton promotes checkpoint-tile offsets to int64.
-
-    At large B*L*D the flattened offset (c * BLOCK_P * BLOCK_N) overflows int32;
-    the production kernel (_triton_mimo_bwd.py) applies `c.to(tl.int64)` before
-    the multiplication. The SFT target must match so training data teaches the
-    correct (overflow-safe) pattern. Source-level assertion — the overflow
-    itself requires CUDA at huge shapes.
-    """
+    """Pins mimo_backward_triton's checkpoint offset promoted to int64 (avoids int32 overflow)."""
     source = target_source("mimo_backward", "triton")
     assert "c.to(tl.int64) * BLOCK_P * BLOCK_N" in source, (
         "mimo_backward_triton must promote `c` to int64 before checkpoint-tile "

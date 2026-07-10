@@ -1,21 +1,4 @@
-"""C5, hand-written Mamba fused-block forward.
-
-Drop-in for ``reference_fused_block_forward`` with the same signature and
-semantics, widened to more dtypes and devices:
-
-- CUDA + {fp32, fp16, bf16} with triton installed -> the two-kernel fused
-  path (``_triton_fused_block``: conv1d + SiLU + selective scan in one
-  serial-L kernel, deterministic RMSNorm in a second; the why-not-one-
-  kernel rationale lives on that module), wrapped in an autograd.Function
-  whose backward is the C6 Triton pipeline (first-order only, see
-  ``_FusedBlockCuda``).
-- everything else (CPU, fp64, missing triton) -> ``_fused_eager``, a
-  differentiable eager-torch path replicating the reference op-for-op.
-  For fp32 on the same device it is bitwise-equal to the reference.
-  fp64 is a verification-only dtype (gradcheck); half dtypes upcast once
-  and round once at the output (the mixed-precision contract, the
-  reference rejects non-fp32).
-"""
+"""C5, hand-written Mamba fused-block forward."""
 
 from __future__ import annotations
 
@@ -56,24 +39,14 @@ def _fused_eager(
 
     conv_out = F.conv1d(xc.transpose(1, 2), wc, bc, groups=xc.shape[-1]).transpose(1, 2)
     z = F.silu(conv_out)
-    # The reference's scan output inherits z's transposed-conv strides, and
-    # torch's last-dim mean reduction rounds differently on strided vs
-    # contiguous memory; restore that layout so the norm is bit-identical.
+    # torch mean rounds differently on strided vs contiguous; restore layout for bit-identical norm.
     y_scan = _scan_eager(z, dc, ac, bpc, cpc, dsc).transpose(1, 2).contiguous().transpose(1, 2)
     rms = y_scan.pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt()
     return (y_scan / rms * nwc).to(x.dtype)
 
 
 class _FusedBlockCuda(torch.autograd.Function):
-    """Triton forward; backward is the hand-written Triton pipeline (C6).
-
-    First-order only: the Triton backward returns plain tensors with no
-    graph, so double-backward through the CUDA path is silently absent
-    rather than an error. Route through the eager path (CPU or fp64)
-    when higher-order gradients are needed. All nine gradients are
-    computed unconditionally; ``needs_input_grad`` is not consulted
-    (autograd drops the extras, C2's convention).
-    """
+    """Triton forward; backward is the hand-written Triton pipeline (C6)."""
 
     @staticmethod
     def forward(
@@ -166,25 +139,7 @@ def fused_block_forward(
     chunk_size: int = 64,
     config: KernelConfig | None = None,
 ) -> Tensor:
-    """Mamba fused-block forward: conv1d -> SiLU -> selective scan -> RMSNorm.
-
-    Args/semantics mirror ``reference_fused_block_forward``: ``x`` [B, L, D]
-    carries the causal left-padding (valid conv, L_out = L - (K-1)),
-    ``conv_weight`` [D, 1, K], ``conv_bias``/``D``/``norm_weight`` [D],
-    ``delta`` [B, L_out, D], ``A`` [D, N], ``B``/``C`` [B, L_out, N];
-    returns ``y`` [B, L_out, D] in ``x``'s dtype. All floating inputs share
-    ``x``'s dtype (dispatch keys on ``x`` alone, the C1-C4 family contract).
-    ``chunk_size`` is validated identically to the scan ops but is a
-    blocking hint only, the result does not depend on it.
-
-    Raises:
-        ValueError: If ``conv_kernel_size`` disagrees with ``conv_weight``'s
-            trailing dim (the reference silently keys on the weight; a
-            mismatch would shift every downstream shape), if x's channel dim
-            disagrees with ``conv_weight``'s (the Triton path would silently
-            emit x-channel-wide output where the reference upweights), or if
-            L_out is not divisible by ``chunk_size``.
-    """
+    """Mamba fused-block forward: conv1d -> SiLU -> selective scan -> RMSNorm."""
     conv_k = conv_weight.shape[-1]
     if conv_k != conv_kernel_size:
         raise ValueError(
@@ -209,11 +164,7 @@ def fused_block_forward(
 
 
 def triton_fused_block_resource_meta() -> dict[str, int] | None:
-    """Resource metadata over both compiled fused-block kernels, if any.
-
-    Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
-    """
+    """Resource metadata over both compiled fused-block kernels, if any."""
     if not _triton_usable():
         return None
     from lethe.kernels.ops import _triton_fused_block

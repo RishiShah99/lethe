@@ -1,29 +1,4 @@
-"""Family oracles: independent token-serial references for the GDN-2 family gates.
-
-Each member of the gated linear-recurrence family
-
-    S_t = (I - k_t (b_t ⊙ k_t)^T) Diag(exp g_t) S_{t-1} + k_t (w_t ⊙ v_t)^T
-
-is implemented here FROM ITS OWN DEFINITION, not by feeding gate settings into
-``reference_gdn2_forward``: a GLA oracle that never forms an erase term is
-independent evidence that the GDN-2 assembly's reduction algebra is right, where
-the same oracle at ``b = 0`` would only be self-consistency.
-
-    GLA  (per-channel decay, no erase):   S_t = Diag(exp g_t) S_{t-1} + k_t v_t^T
-    LA   (plain linear attention):        S_t = S_{t-1} + k_t v_t^T
-    SSD-class (scalar per-head decay):    S_t = exp(g_t) S_{t-1} + k_t v_t^T
-    KDA  (per-channel decay, scalar β):   S_t = (I - β_t k_t k_t^T) Diag(exp g_t) S_{t-1}
-                                                + β_t k_t v_t^T
-
-Conventions match ``reference_gdn2_forward``: read is post-write ``o_t = S_t^T q_t``;
-``q``/``k`` L2-normalized (eps 1e-6) then ``q`` scaled ``d_k**-0.5`` when
-``use_qk_l2norm``; fp32/fp64 only; backwards delegate to ``torch.autograd``
-(correct by construction). Machine-precision (fp64) parity with the GDN-2 oracle
-at the corresponding gate settings is pinned in ``tests/test_gdn2_family.py``.
-
-SSD-the-model plumbing (dt-softplus, D-skip, GVA) is external by design; these
-oracles cover the core recurrence only (H == HV).
-"""
+"""Family oracles: independent token-serial references for the GDN-2 family gates."""
 
 from typing import NamedTuple
 
@@ -46,11 +21,6 @@ def _prep_qk(
         q = _l2norm(q)
         k = _l2norm(k)
     return q * s, k
-
-
-# ---------------------------------------------------------------------------
-# GLA: per-channel decay, no erase
-# ---------------------------------------------------------------------------
 
 
 class GlaGrads(NamedTuple):
@@ -105,11 +75,6 @@ def reference_gla_backward(
     return GlaGrads(*grads)
 
 
-# ---------------------------------------------------------------------------
-# LA: plain linear attention
-# ---------------------------------------------------------------------------
-
-
 class LaGrads(NamedTuple):
     """Gradients of the plain linear-attention oracle."""
 
@@ -156,11 +121,6 @@ def reference_la_backward(
     o = reference_la_forward(*leaves, scale=scale, use_qk_l2norm=use_qk_l2norm)
     grads = torch.autograd.grad(o, leaves, do)
     return LaGrads(*grads)
-
-
-# ---------------------------------------------------------------------------
-# SSD-class: scalar per-head decay, no erase
-# ---------------------------------------------------------------------------
 
 
 class SsdGrads(NamedTuple):
@@ -214,11 +174,6 @@ def reference_ssd_backward(
     o = reference_ssd_forward(*leaves, scale=scale, use_qk_l2norm=use_qk_l2norm)
     grads = torch.autograd.grad(o, leaves, do)
     return SsdGrads(*grads)
-
-
-# ---------------------------------------------------------------------------
-# KDA: per-channel decay, scalar erase/write β
-# ---------------------------------------------------------------------------
 
 
 class KdaGrads(NamedTuple):

@@ -1,12 +1,4 @@
-"""Cheating kernel: memoises the very first input's output forever.
-
-On the first call, computes the reference and caches the result. Every
-subsequent call returns that cached tensor regardless of new input
-(reshaped to fit the new input).
-
-Expected rejector: CMP-01 (input variation). The output is identical
-across random inputs, while the reference output varies.
-"""
+"""Cheating kernel: memoises the very first input's output forever."""
 
 from __future__ import annotations
 

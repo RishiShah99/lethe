@@ -1,28 +1,4 @@
-"""Six-level curriculum over the six-op kernel suite with promotion gates.
-
-Level order is forward ops first (single gate view, densest reward
-signal), then backward ops by view count: the dependency structure of
-the kernels themselves, not the order they were built in.
-
-Promotion: the group's contract-pass rate >= ``promote_contract_rate``
-for ``promote_window`` consecutive steps. The gate deliberately reads
-contract passes, not rewards: with ``view_fraction`` shaping a backward
-group can sit at mean reward ~0.39 without a single fully-passing
-kernel, and a reward threshold would call that "promoted" while the
-same number means >60% full passes on a forward level. A level that
-exhausts ``max_steps_per_level`` without promotion advances anyway with
-``promoted=False`` recorded: the kill criterion is evaluated per-op over
-the whole run, and a stuck level must not starve later levels of
-training signal: the honest negative stays in the level record.
-
-``CurriculumSchedule`` is pure bookkeeping (no torch); ``CurriculumRunner``
-drives one ``GRPOTrainingLoop`` per level over a shared policy: LoRA
-weights carry across levels, the optimizer restarts fresh per level
-(stale Adam moments from one task are noise for the next). Schedule
-state is written atomically to ``curriculum_state.json`` after every
-step so a spot preemption resumes mid-level: the schedule names the
-level, the level's own trainer_state.pt names the step and adapter.
-"""
+"""Six-level curriculum over the six-op kernel suite with promotion gates."""
 
 from __future__ import annotations
 
@@ -133,13 +109,7 @@ class CurriculumSchedule:
 
 @dataclass
 class CurriculumRunner:
-    """Drives one GRPO loop per curriculum level over a shared policy.
-
-    ``scorer_factory`` (op name -> scorer callable) replaces the default
-    sandboxed scorer in tests; ``batch_scorer_factory`` (op name -> batch
-    scorer, e.g. a :class:`~lethe.rl.parallel_scoring.ParallelScorer`)
-    farms a step's candidates across scoring GPUs.
-    """
+    """Drives one GRPO loop per curriculum level over a shared policy."""
 
     base_config: TrainLoopConfig
     policy: TrainablePolicy
@@ -147,9 +117,7 @@ class CurriculumRunner:
     scorer_factory: Any = None
     batch_scorer_factory: Any = None
     gen_pool: Any = None
-    # Called with the op name as each level opens (incl. on resume), before its
-    # loop is built: the hook retunes per-level generation (e.g. longer
-    # max_new_tokens for the backward ops, whose targets run thousands of tokens).
+    # Fires when a level opens; lets callers retune generation per op (e.g. longer max_new_tokens).
     on_level_start: Any = None
 
     def __post_init__(self) -> None:
@@ -208,9 +176,7 @@ class CurriculumRunner:
         while not self.schedule.done:
             idx = self.schedule.level_idx
             level = self.schedule.current_level
-            # A restored state can point at an already-closed level (e.g.
-            # the op list changed between resumes): advance instead of
-            # spinning on a level whose inner loop can never run.
+            # A resumed state may point at an already-closed level; skip it, don't loop forever.
             if level.closed:
                 self.schedule.level_idx += 1
                 self._write_state()
@@ -218,8 +184,7 @@ class CurriculumRunner:
             if self.on_level_start is not None:
                 self.on_level_start(level.op)
             loop = self._make_loop(idx)
-            # A resumed level replays its already-recorded steps inside
-            # trainer_state; the schedule only counts new ones.
+            # A resumed level replays recorded steps from trainer_state; schedule counts new ones.
             while not level.closed and loop.step_idx < loop.config.total_steps:
                 metrics = loop.step()
                 contract_rate = metrics.n_contracts_passed / loop.config.n_per_prompt
@@ -239,8 +204,7 @@ class CurriculumRunner:
                 if closed:
                     break
             if not level.closed:
-                # Trainer hit total_steps without the schedule closing the
-                # level (resume drift): close it as unpromoted.
+                # Trainer hit total_steps without closing (resume drift); close as unpromoted.
                 level.closed = True
                 self.schedule.level_idx += 1
                 self._write_state()

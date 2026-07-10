@@ -1,22 +1,4 @@
-"""PTB-XL multi-label training loop.
-
-Framework-free: a plain AdamW + ``BCEWithLogitsLoss`` loop over a
-``Mamba3ECGClassifier``, with macro-AUC evaluation and spot-resilient
-checkpoint/resume. DDP-aware but DDP-optional: single-process on CPU (the
-test path), data-parallel across multiple GPUs when launched under
-``torch.distributed``.
-
-Checkpointing mirrors ``rl/train.py``: a step-stamped immutable model file
-plus the atomically replaced ``trainer_state.pt`` as the commit point that
-names the valid model (step, optimizer, RNG ride along). A preemption
-mid-save leaves the previous checkpoint fully consistent. Only rank 0
-writes; all ranks barrier so resume is collective.
-
-macro-AUC is owned here (rank-based Mann-Whitney, ties averaged) rather than
-pulled from sklearn: it must skip degenerate classes (all-positive or
-all-negative in the eval split) which ``roc_auc_score`` raises on, and the
-loop stays import-light.
-"""
+"""PTB-XL multi-label training loop."""
 
 from __future__ import annotations
 
@@ -62,10 +44,7 @@ def _binary_auc(scores: Tensor, labels: Tensor) -> float | None:
 
 
 def macro_auc(logits: Tensor, labels: Tensor) -> float:
-    """Mean per-class ROC-AUC over classes with both labels present.
-
-    logits, labels: ``[N, C]``. Returns ``nan`` if no class is evaluable.
-    """
+    """Mean per-class ROC-AUC over classes with both labels present."""
     per_class = [
         auc
         for c in range(logits.shape[1])
@@ -85,9 +64,7 @@ class MedicalTrainConfig:
     warmup_steps: int = 500
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
-    # #19: cosine LR decay after warmup, peak -> min_lr_ratio*peak over the
-    # remaining steps. Default off keeps the flat-after-warmup schedule the
-    # existing tests pin.
+    # #19: cosine LR decay after warmup, peak -> min_lr_ratio*peak over the remaining steps.
     lr_decay: bool = False
     min_lr_ratio: float = 0.1
     device: str = "cpu"
@@ -98,13 +75,7 @@ class MedicalTrainConfig:
 
 
 class MedicalTrainer:
-    """Owns the model, optimizer and loss; drives step → eval → checkpoint.
-
-    Under ``torch.distributed`` the model is wrapped in ``DistributedDataParallel``
-    and only rank 0 writes checkpoints/metrics; evaluation all-gathers per-rank
-    logits so the macro-AUC is over the full eval split. Off distributed it is a
-    plain single-process loop.
-    """
+    """Owns the model, optimizer and loss; drives step → eval → checkpoint."""
 
     def __init__(self, model: nn.Module, config: MedicalTrainConfig) -> None:
         self.config = config
@@ -127,18 +98,14 @@ class MedicalTrainer:
             self._core.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
         )
         self.criterion = nn.BCEWithLogitsLoss()
-        # The model may be cast to bf16; the fp32 ECG inputs must match its
-        # dtype or the first Linear's matmul dtype-mismatches. Loss is
-        # computed in fp32 regardless (logits upcast) for stable BCE.
+        # The model may be cast to bf16; ECG inputs must match its dtype or the first matmul mismatches.
         self._in_dtype = next(self._core.parameters()).dtype
         self.step_idx = 0
 
     def train_step(self, ecg: Tensor, labels: Tensor) -> tuple[float, float]:
         """One optimizer step. Returns ``(loss, grad_norm)``."""
         self.model.train()
-        # Stateless schedule (derived from the checkpointed step_idx): linear
-        # warmup (a 1.1B SSM from scratch at full LR spikes the first updates
-        # into NaN), then optional cosine decay to min_lr_ratio*peak (#19).
+        # Stateless schedule: linear warmup (1.1B SSM at full LR spikes into NaN), then cosine decay (#19).
         cfg = self.config
         warm = cfg.warmup_steps
         step = self.step_idx + 1
@@ -161,10 +128,7 @@ class MedicalTrainer:
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self._core.parameters(), self.config.max_grad_norm
         )
-        # Skip the update on a non-finite grad: one bad batch (forward overflow on
-        # an outlier ECG) otherwise applies a NaN step that poisons every weight,
-        # and the loss is NaN forever after. Skipping keeps the model in the
-        # last-good state; the next batch recovers.
+        # Skip the update on a non-finite grad: one bad batch would poison every weight with NaN forever.
         if torch.isfinite(grad_norm):
             self.optimizer.step()
         self.step_idx += 1
@@ -172,13 +136,7 @@ class MedicalTrainer:
 
     @torch.no_grad()
     def evaluate(self, loader: Iterable[tuple[Tensor, Tensor]]) -> dict[str, float]:
-        """Mean BCE loss + macro-AUC over *loader* (all-gathered across ranks).
-
-        Under DDP the caller MUST pass a non-overlapping shard per rank (e.g. a
-        ``DistributedSampler`` with ``drop_last`` or a manual slice). This gathers
-        and concatenates each rank's logits with no dedupe, so a default padded
-        sampler double-counts the eval tail and biases the metrics.
-        """
+        """Mean BCE loss + macro-AUC over *loader* (all-gathered across ranks)."""
         self.model.eval()
         logits_chunks: list[Tensor] = []
         label_chunks: list[Tensor] = []
@@ -199,8 +157,7 @@ class MedicalTrainer:
         if self._dist:
             logits = torch.cat(self._all_gather(logits), dim=0)
             labels = torch.cat(self._all_gather(labels), dim=0)
-            # all_reduce must run on the NCCL device: a CPU tensor raises
-            # "No backend type associated with device type cpu" under nccl.
+            # all_reduce must run on the NCCL device: a CPU tensor raises 'No backend' under nccl.
             totals = torch.tensor([loss_sum, float(n)], dtype=torch.float64, device=self.device)
             torch.distributed.all_reduce(totals)
             loss_sum, n = float(totals[0].item()), int(totals[1].item())
@@ -234,10 +191,6 @@ class MedicalTrainer:
         if self.step_idx % cfg.save_every != 0:
             self.save_checkpoint()
 
-    # ------------------------------------------------------------------
-    # Checkpointing (preemption-resilient: model + optimizer + step + RNG)
-    # ------------------------------------------------------------------
-
     def _local_rng_state(self) -> dict[str, Tensor]:
         """This rank's CPU RNG (+ its *own* CUDA device's RNG, if on cuda)."""
         rng: dict[str, Tensor] = {"cpu": torch.get_rng_state()}
@@ -257,10 +210,7 @@ class MedicalTrainer:
     def save_checkpoint(self) -> None:
         """Step-stamped model file + atomic ``trainer_state.pt`` commit point."""
         cfg = self.config
-        # Per-rank RNG is gathered on every rank (a collective), then written by
-        # rank 0, restoring the *current device's* stream per rank, so resume
-        # neither depends on the machine's GPU count nor collapses all ranks onto
-        # rank 0's RNG (identical dropout masks).
+        # RNG is gathered on every rank, written by rank 0, so ranks don't share rank 0's RNG/dropout masks.
         rng_states = self._all_rng_states()
         if self.rank == 0:
             os.makedirs(cfg.checkpoint_dir, exist_ok=True)
@@ -284,16 +234,11 @@ class MedicalTrainer:
         path = os.path.join(self.config.checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return False
-        # weights_only=True: the checkpoint holds only step/model_name plus the
-        # optimizer state_dict and per-rank RNG tensors, all tensors + primitive
-        # containers, which the safe loader accepts. It closes the pickle-RCE if
-        # checkpoint_dir ever points at a run dir this process did not write.
+        # weights_only=True: the checkpoint holds only tensors + primitive containers, safe-loader accepted.
         state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])
         model_path = os.path.join(self.config.checkpoint_dir, str(state["model_name"]))
-        # Explicit weights_only=True on the separate model file too: torch>=2.6
-        # already defaults to the safe loader, but pinning it keeps the safety from
-        # regressing to an explicit weights_only=False (matches the load above).
+        # Explicit weights_only=True here too: torch>=2.6 defaults safe, but pinning avoids a regression.
         self._core.load_state_dict(
             torch.load(model_path, map_location=self.device, weights_only=True)
         )

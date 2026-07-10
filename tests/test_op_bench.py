@@ -91,9 +91,7 @@ class TestPerTrialInputs:
         assert res.n_trials == 3
 
     def test_content_memoizer_recomputes_under_varying_inputs(self) -> None:
-        # A candidate that caches by an O(1) content fingerprint stays correct
-        # under the gates (varying inputs) AND now under timing — it can never
-        # serve a cache hit, because every trial's input content is new.
+        # A content-fingerprint cache can never hit here since every trial's input is fresh.
         cache: dict[float, torch.Tensor] = {}
 
         def memoizer(x: torch.Tensor) -> torch.Tensor:
@@ -103,7 +101,7 @@ class TestPerTrialInputs:
             return cache[key]
 
         measure_speedup(memoizer, "elementwise_silu", "cpu", warmup=1, trials=5, **TINY)
-        assert len(cache) >= 5  # one fresh entry per trial — no reuse
+        assert len(cache) >= 5  # one fresh entry per trial, no reuse
 
 
 class TestBenchShapeCorrectness:
@@ -142,9 +140,7 @@ class TestBenchShapeCorrectness:
         assert not correct_at_bench_shape(lambda x: x, "elementwise_silu", "cpu", **TINY)
 
     def test_calibration_seed_keyed_cheat_is_caught(self) -> None:
-        # Correct at the two correctness-check seeds but degenerate on the
-        # timed seed range: the timed-input probe must refuse the speedup —
-        # the bench never pays for outputs it does not inspect.
+        # Correct at the correctness seeds but degenerate at timed seeds: the probe must refuse.
         from lethe.verifier.op_bench import _CORRECTNESS_SEED_BASE
 
         shape = {"batch": 1, "seq_len": 8, "width": 32}
@@ -169,13 +165,7 @@ class TestBenchShapeCorrectness:
         assert r["speedup"] == 0.0
 
     def test_partial_timed_range_whitelist_is_caught(self) -> None:
-        # The exact hole the single-probe left open: a candidate correct at the
-        # correctness-gate seeds AND at the first timed seed — all source
-        # constants an adversary can read — but a free no-op on the rest of the
-        # timed range. The old code value-checked only the first timed seed, so
-        # this banked a fabricated median. Every timed trial's output is now
-        # captured and value-checked, so the no-op'd trials are caught even
-        # though the whitelisted seeds pass.
+        # Closes the single-probe hole: correct at known seeds but a no-op on the rest of the timed range.
         from lethe.verifier.op_bench import _BENCH_SEED, _CORRECTNESS_SEED_BASE
 
         shape = {"batch": 1, "seq_len": 8, "width": 32}
@@ -198,9 +188,7 @@ class TestBenchShapeCorrectness:
         assert r["speedup"] == 0.0
 
     def test_stateful_counter_cheat_is_caught(self) -> None:
-        # A candidate that computes correctly for its first calls (covering the
-        # bench-shape gate) then no-ops cannot survive: capture-and-verify tests
-        # the actual timed outputs, not a probe fixed earlier in the call order.
+        # Correct-then-no-op candidates can't survive: capture-and-verify checks the real timed outputs.
         calls = {"n": 0}
 
         def counter(x: torch.Tensor) -> torch.Tensor:

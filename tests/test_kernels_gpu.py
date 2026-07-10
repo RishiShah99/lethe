@@ -1,12 +1,4 @@
-"""GPU validation for the hand-written Phase C kernels.
-
-Runs on the fleet box (``bash scratch/detach.sh bash scratch/c2_gpu_suite.sh``).
-Skips cleanly on CPU-only hosts. The headline tests are the per-kernel
-contract-gate suites — C1's 12/12 and C2's 6x12/12 exit criteria — with
-parity-vs-official as the independent oracle checks, plus C2's
-num_warps>=4 compile assertion (the config family where the official
-Mamba-3 backward dies on sm_100, #904).
-"""
+"""GPU validation for the hand-written Phase C kernels."""
 
 from __future__ import annotations
 
@@ -99,8 +91,7 @@ class TestC1TritonParity:
         y_triton = forward_chunked_scan(*args, chunk_size=8)
         y_ref = reference_forward_chunked_scan(*args, chunk_size=8)
         max_err = (y_triton - y_ref).abs().max().item()
-        # Same standard as the official-kernel parity test: fp32 reorder
-        # noise grows ~eps*sqrt(L)*|y| (measured 2.6e-4 at L=256, N=32).
+        # fp32 reorder noise grows ~eps*sqrt(L)*|y| (measured 2.6e-4 at L=256, N=32).
         assert torch.allclose(y_triton, y_ref, atol=1e-4, rtol=1e-3), f"max_err={max_err:.3e}"
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -161,8 +152,7 @@ class TestC1ContractGates:
 @pytest.mark.skipif(not _HAS_MAMBA, reason="mamba_ssm not installed")
 class TestC1VsOfficialMamba:
     def test_matches_selective_scan_fn(self) -> None:
-        # Independent oracle: the official Mamba-1 CUDA kernel computes the
-        # same SISO recurrence in [B, D, L] layout with delta_softplus=True.
+        # independent oracle: official Mamba-1 CUDA kernel, same SISO recurrence, [B,D,L] layout.
         u, delta, a, b_proj, c_proj, d_skip = _scan_inputs(2, 256, 64, 16, seed=7)
         y_ours = forward_chunked_scan(u, delta, a, b_proj, c_proj, d_skip, chunk_size=8)
 
@@ -231,9 +221,7 @@ class TestC2TritonParity:
         ref = reference_backward_selective_scan(*args, dy, chunk_size=8)
         for field, got, want in zip(BWD_GRAD_FIELDS, ours, ref, strict=True):
             max_err = (got.float() - want.float()).abs().max().item()
-            # Cross-implementation reorder noise; grad_A accumulates over
-            # batch*L chains so it carries the widest spread (provisional,
-            # tightened from B200 measurement like C1's parity bounds).
+            # grad_A accumulates over batch*L chains, so it carries the widest reorder-noise spread.
             assert torch.allclose(got, want, atol=1e-3, rtol=1e-3), (
                 f"{field}: max_err={max_err:.3e}"
             )
@@ -259,9 +247,7 @@ class TestC2TritonParity:
                 assert torch.equal(a_, b_), field
 
     def test_forward_op_autograd_uses_this_kernel(self) -> None:
-        # The C1 forward op's autograd backward now dispatches to the C2
-        # kernel: differentiating it must reproduce the public backward op
-        # bit-for-bit (same launcher, same inputs, deterministic kernel).
+        # C1's autograd backward dispatches to C2; differentiating must reproduce it bit-for-bit.
         args, dy = _bwd_inputs(2, 64, 32, 16, seed=5)
         direct = backward_selective_scan(*args, dy, chunk_size=8)
         leaves = tuple(t.detach().requires_grad_(True) for t in args)
@@ -275,11 +261,7 @@ class TestC2TritonParity:
 @requires_gpu
 class TestC2NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
-        # The #904 contrast: the official Mamba-3 Triton backward fails to
-        # compile at every num_warps >= 4 config on sm_100 (TMEM budget).
-        # Ours carries the recurrence without tl.dot, so the TMEM-promotion
-        # pass never engages — these launches raising OutOfResources would
-        # falsify the C2 story outright.
+        # #904 contrast: official Mamba-3 Triton backward fails num_warps>=4 on sm_100 (TMEM).
         from lethe.kernels.ops import _triton_bwd_scan
 
         args, dy = _bwd_inputs(2, 256, 128, 16)
@@ -287,8 +269,7 @@ class TestC2NumWarpsCompile:
         for warps in (4, 8):
             got = _triton_bwd_scan.launch_backward_scan(*args, dy, num_warps=warps)
             for field, g, want in zip(BWD_GRAD_FIELDS, got, base, strict=True):
-                # Reduction trees shift with the warp layout; values must
-                # stay within reorder noise of the num_warps=2 run.
+                # reduction trees shift with warp layout; values stay within num_warps=2 reorder noise.
                 assert torch.allclose(g, want, atol=1e-4, rtol=1e-4), (warps, field)
         meta = triton_bwd_scan_resource_meta()
         assert meta is not None
@@ -298,10 +279,7 @@ class TestC2NumWarpsCompile:
 @pytest.mark.gpu
 @requires_gpu
 class TestChunkKOverrideGuard:
-    """Config overrides that would silently corrupt grads must raise: a
-    chunk_k that does not divide seq_len drops the tail chunk, and a mimo
-    block_p below headdim truncates the p-sums (the grid has no p axis).
-    The shipped defaults always satisfy both."""
+    """Config overrides that would corrupt grads (bad chunk_k or block_p) must raise."""
 
     def test_bwd_scan_launcher_rejects_indivisible_chunk_k(self) -> None:
         from lethe.kernels.ops import _triton_bwd_scan
@@ -329,8 +307,7 @@ class TestChunkKOverrideGuard:
 @requires_gpu
 class TestC2ContractGates:
     def test_all_gates_all_grads_pass_on_cuda(self) -> None:
-        # C2's exit criterion: 12/12 gates on every gradient view, with the
-        # compiled kernel's resource envelope feeding RES-02.
+        # C2's exit criterion: 12/12 gates on every gradient view, resource envelope for RES-02.
         args, dy = _bwd_inputs(1, 8, 4, 16)
         backward_selective_scan(*args, dy, chunk_size=8)  # warm the cache
         meta = triton_bwd_scan_resource_meta()
@@ -359,9 +336,7 @@ class TestC2ContractGates:
 @pytest.mark.skipif(not _HAS_MAMBA, reason="mamba_ssm not installed")
 class TestC2VsOfficialMamba:
     def test_grads_match_selective_scan_fn(self) -> None:
-        # Independent oracle: the official Mamba-1 CUDA backward (healthy on
-        # Blackwell, unlike the Mamba-3 Triton path) computes the same VJP in
-        # [B, D, L] layout.
+        # independent oracle: official Mamba-1 CUDA backward (healthy on Blackwell), same VJP layout.
         u, delta, a, b_proj, c_proj, d_skip = _scan_inputs(2, 256, 64, 16, seed=7)
         torch.manual_seed(11)
         dy = torch.randn(2, 256, 64, device="cuda")
@@ -469,9 +444,7 @@ class TestC3TritonParity:
         for field, got, want in zip(MIMO_FIELDS, ours, ref, strict=True):
             max_err = (got.float() - want.float()).abs().max().item()
             scale = want.float().abs().max().clamp(min=1.0).item()
-            # scale_rel is the C2-honest metric: bare absolute parity
-            # misleads at near-integrator scales. Provisional bounds,
-            # tightened from B200 measurement like C1/C2's.
+            # scale_rel is the C2-honest metric: bare absolute parity misleads at near-integrator scales.
             assert torch.allclose(got, want, atol=1e-3 * scale, rtol=1e-3), (
                 f"{field}: max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
             )
@@ -496,8 +469,7 @@ class TestC3TritonParity:
                 assert torch.equal(a_, b_), field
 
     def test_noncontiguous_inputs_match_contiguous(self) -> None:
-        # Pins the launcher's .contiguous() normalisation: a strided view of
-        # the same values must produce byte-identical gradients.
+        # pins .contiguous() normalisation: a strided view must give byte-identical grads.
         args, dy = _mimo_inputs(2, 64, 2, 4, 16, 16)
         base = mimo_backward(*args, dy)
         x, b_p, c_p, dt, alpha, mimo_x, mimo_o = args
@@ -510,8 +482,7 @@ class TestC3TritonParity:
             assert torch.equal(a_, b_), field
 
     def test_nonfinite_dy_masks_match_oracle(self) -> None:
-        # EXC-01's contract on the real kernel: non-finites through dy mint
-        # NaN/Inf exactly where the autograd oracle does.
+        # EXC-01: non-finites through dy must mint NaN/Inf exactly where the oracle does.
         args, dy = _mimo_inputs(2, 64, 2, 2, 8, 16, seed=5)
         dy[0, 9, 0, 1] = float("inf")
         dy[1, 33, 1, 2] = float("nan")
@@ -535,8 +506,7 @@ class TestC3NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(
         self, b: int, seq: int, rank: int, h: int, p: int, n: int
     ) -> None:
-        # Same #904 framing as C2: no tl.dot anywhere, so the TMEM-promotion
-        # pass never engages and every warp config must compile on sm_100.
+        # same #904 framing as C2: no tl.dot, so TMEM-promotion never engages; must compile.
         from lethe.kernels.ops import _triton_mimo_bwd
 
         args, dy = _mimo_inputs(b, seq, rank, h, p, n)
@@ -554,8 +524,7 @@ class TestC3NumWarpsCompile:
 @requires_gpu
 class TestC3ContractGates:
     def test_all_gates_all_grads_pass_on_cuda(self) -> None:
-        # C3's exit criterion: 12/12 gates on every gradient view, with the
-        # compiled kernel's resource envelope feeding RES-02.
+        # C3's exit criterion: 12/12 gates on every gradient view, resource envelope for RES-02.
         args, dy = _mimo_inputs(1, 8, 4, 1, 4, 16)
         mimo_backward(*args, dy)  # warm the cache
         meta = triton_mimo_bwd_resource_meta()
@@ -620,9 +589,7 @@ class TestC4TritonParity:
         want = reference_complex_scan_rope(*args)
         max_err = (got - want).abs().max().item()
         scale = want.abs().max().clamp(min=1.0).item()
-        # scale_rel is the C2-honest metric. B200-measured worst over these
-        # shapes x 5 seeds: 1.2e-6 of scale (4.2e-6 at the L=2048 training
-        # shape; probe scratch/c4_parity_measure.py) — 1e-4 keeps ~80x margin.
+        # scale_rel is the C2-honest metric.
         assert torch.allclose(got, want, atol=1e-4 * scale, rtol=1e-4), (
             f"max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
         )
@@ -663,9 +630,7 @@ class TestC4TritonParity:
         assert torch.equal(torch.isinf(got), torch.isinf(want))
 
     def test_cuda_backward_matches_reference_grads(self) -> None:
-        # Exercises _ComplexRopeCuda's autograd plumbing (saved-tensor
-        # re-leafing, 6-grad arity) — the backward recomputes through the
-        # eager path, so grads must match autograd through the reference.
+        # exercises _ComplexRopeCuda's autograd (re-leafing, 6-grad arity); must match autograd.
         args = _rope_inputs(2, 64, 2, 16, 16, 4, seed=9)
         ours = tuple(t.detach().clone().requires_grad_(True) for t in args)
         ref = tuple(t.detach().clone().requires_grad_(True) for t in args)
@@ -683,8 +648,7 @@ class TestC4TritonParity:
 @requires_gpu
 class TestC4NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
-        # Same #904 framing as C1-C3: no tl.dot anywhere, so the
-        # TMEM-promotion pass never engages on sm_100.
+        # same #904 framing as C1-C3: no tl.dot, TMEM-promotion never engages on sm_100.
         from lethe.kernels.ops import _triton_complex_rope
 
         args = _rope_inputs(2, 256, 4, 32, 16, 8)
@@ -763,9 +727,7 @@ class TestC5TritonParity:
         want = reference_fused_block_forward(*args, conv_kernel_size=k, chunk_size=chunk)
         max_err = (got - want).abs().max().item()
         scale = want.abs().max().clamp(min=1.0).item()
-        # B200-measured worst over these shapes x 5 seeds: 4.4e-7 of scale
-        # (2.4e-6 at the B8/L2048/D4096 training shape; probe
-        # scratch/c5_parity_measure.py) — 1e-4 keeps ~40x margin.
+        # B200-measured worst: 4.4e-7 of scale (2.4e-6 at B8/L2048/D4096); 1e-4 keeps ~40x margin.
         assert torch.allclose(got, want, atol=1e-4 * scale, rtol=1e-4), (
             f"max_err={max_err:.3e} scale_rel={max_err / scale:.3e}"
         )
@@ -796,9 +758,7 @@ class TestC5TritonParity:
         assert torch.equal(fused_block_forward(*nc_args, chunk_size=8), base)
 
     def test_nonfinite_x_masks_match_oracle(self) -> None:
-        # NaN/Inf must smear over the conv window, ride the scan carry,
-        # and poison the whole D row through the RMSNorm — exactly as the
-        # reference composition does.
+        # NaN/Inf smears over conv window, rides scan carry, poisons the D row via RMSNorm.
         args = _fused_inputs(2, 64, 16, 8, seed=5)
         args[0][0, 9, 1] = float("inf")
         args[0][1, 33, 2] = float("nan")
@@ -809,10 +769,7 @@ class TestC5TritonParity:
         assert torch.equal(torch.isinf(got), torch.isinf(want))
 
     def test_cuda_backward_matches_reference_grads(self) -> None:
-        # Exercises _FusedBlockCuda's autograd plumbing (saved-tensor
-        # unpacking, 9-grad + eps arity) — the backward dispatches to the
-        # C6 Triton pipeline, so grads must match autograd through the
-        # reference within kernel reorder noise.
+        # exercises _FusedBlockCuda's autograd (9-grad + eps arity); dispatches to C6, must match.
         args = _fused_inputs(2, 32, 16, 8, seed=9)
         ours = tuple(t.detach().clone().requires_grad_(True) for t in args)
         ref = tuple(t.detach().clone().requires_grad_(True) for t in args)
@@ -830,8 +787,7 @@ class TestC5TritonParity:
 @requires_gpu
 class TestC5NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
-        # Same #904 framing as C1-C4: no tl.dot anywhere, so the
-        # TMEM-promotion pass never engages on sm_100.
+        # same #904 framing as C1-C4: no tl.dot, TMEM-promotion never engages on sm_100.
         from lethe.kernels.ops import _triton_fused_block
 
         args = _fused_inputs(2, 256, 128, 32)
@@ -940,9 +896,7 @@ class TestC6TritonParity:
             assert torch.equal(got, want), field
 
     def test_nonfinite_dy_masks_match_oracle(self) -> None:
-        # Non-finites in dy flow through the norm backward (whole-D rows via
-        # the sdw reduction) and ride the reverse carry to every earlier
-        # step's gradients — masks must match autograd's grouping exactly.
+        # non-finites flow through norm backward's sdw reduction; masks must match autograd's grouping.
         args, dy = _fused_bwd_inputs(2, 64, 16, 8, seed=5)
         dy[0, 9, 1] = float("inf")
         dy[1, 33, 2] = float("nan")
@@ -954,9 +908,7 @@ class TestC6TritonParity:
             assert torch.equal(got.isinf(), want.isinf()), field
 
     def test_forward_op_autograd_uses_this_kernel(self) -> None:
-        # The C5 forward op's CUDA autograd backward now dispatches to the
-        # C6 pipeline: differentiating it must reproduce the public backward
-        # op bit-for-bit (same launcher, same inputs, deterministic kernels).
+        # C5's autograd backward dispatches to C6; differentiating must reproduce it bit-for-bit.
         args, dy = _fused_bwd_inputs(2, 64, 32, 16, seed=5)
         direct = fused_block_backward(*args, dy, chunk_size=8)
         leaves = tuple(t.detach().requires_grad_(True) for t in args)
@@ -970,9 +922,7 @@ class TestC6TritonParity:
 @requires_gpu
 class TestC6NumWarpsCompile:
     def test_compiles_and_matches_at_num_warps_4_and_8(self) -> None:
-        # Same #904 framing as C1-C5: no tl.dot in any of the four kernels,
-        # so the TMEM-promotion pass never engages on sm_100 — where the
-        # official Mamba-3 Triton *backward* is exactly the op that dies.
+        # same #904 framing: no tl.dot, so TMEM-promotion never engages on sm_100 (the op #904 kills).
         from lethe.kernels.ops import _triton_fused_block_bwd
 
         args, dy = _fused_bwd_inputs(2, 256, 128, 32)
@@ -993,8 +943,7 @@ class TestC6NumWarpsCompile:
 @requires_gpu
 class TestC6ContractGates:
     def test_all_gates_all_grads_pass_on_cuda(self) -> None:
-        # C6's exit criterion: 12/12 gates on every gradient view, with the
-        # four compiled kernels' resource envelope feeding RES-02.
+        # C6's exit criterion: 12/12 gates on every gradient view, four kernels' envelope for RES-02.
         args, dy = _fused_bwd_inputs(1, 8, 4, 8)
         fused_block_backward(*args, dy, chunk_size=8)  # warm the cache
         meta = triton_fused_block_bwd_resource_meta()
@@ -1019,10 +968,6 @@ class TestC6ContractGates:
 
 
 # --- Chunk-parallel scan_mode for the backward kernels (C2 + C6) ----------------
-# The reverse-carry reassociation must (a) reproduce the serial backward within
-# the reorder band on every gradient and (b) pass the full per-grad-view gate
-# battery — the CPU replicas pin the algebra, but the Triton offsets, EXC-01
-# masked lanes, and deterministic-reduction layout only run on CUDA.
 _CP = KernelConfig(scan_mode="chunk_parallel")
 
 

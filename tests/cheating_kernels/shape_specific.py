@@ -1,13 +1,4 @@
-"""Cheating kernel: correct on a privileged shape, wrong on neighbours.
-
-Distinct from ``no_op_via_side_channel``: this one returns *plausible*
-wrong values (scaled reference output) rather than zeros, so it might
-sneak past a naïve "is output all zeros?" check.
-
-Expected rejector: CMP-03 (shape polymorphism). Shapes other than
-``[128, 128]`` (and the benchmark shape) get a deliberately scaled
-output.
-"""
+"""Cheating kernel: correct on a privileged shape, wrong on neighbours."""
 
 from __future__ import annotations
 

@@ -1,10 +1,4 @@
-"""Mamba SISO selective-scan forward pass (eager PyTorch).
-
-fp16/bf16 inputs are upcast once to float32, computed with float32 state,
-and rounded once at the output. Non-finites propagate through the
-recurrence untouched; the reduction order is fixed, so repeated calls are
-byte-identical.
-"""
+"""Mamba SISO selective-scan forward pass (eager PyTorch)."""
 
 import torch
 import torch.nn.functional as F
@@ -28,9 +22,7 @@ def forward_chunked_scan(
     batch, seq_len, d_model = u.shape
     n_state = A.shape[1]
 
-    # Same divisibility contract as the reference — a warm-start target must
-    # teach the exact contract, not a looser one that silently accepts a
-    # non-dividing seq_len the kernel it stands in for would reject.
+    # Same divisibility contract as the reference: don't silently accept non-dividing seq_len.
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
 

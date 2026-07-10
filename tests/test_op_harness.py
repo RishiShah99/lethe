@@ -1,9 +1,4 @@
-"""CPU-side validation of the C1 op and the op-harness gate adapters.
-
-The Triton path needs the box; everything here exercises the eager path,
-the adapter layer, and the contracts plumbing (device threading + per-gate
-overrides) so the GPU run only has to answer GPU-specific questions.
-"""
+"""CPU-side validation of the C1 op and the op-harness gate adapters."""
 
 from __future__ import annotations
 
@@ -72,8 +67,7 @@ from lethe.verifier.op_harness import (
     verify_scan_op,
 )
 
-# Every gate is implemented as of RES-02; on CPU, RES-02 passes as
-# not-applicable (no compiled artifact) and the other 11 run for real.
+# On CPU, RES-02 passes as not-applicable (no compiled artifact); the other 11 gates run for real.
 _ALL_GATES_COUNT = 12
 
 
@@ -114,13 +108,7 @@ def _unguarded_softplus_scan(
     *,
     chunk_size: int = 8,
 ) -> torch.Tensor:
-    """Cheating scan: softplus written naively as log1p(exp(x)).
-
-    The single most natural way to write softplus, and exactly correct for
-    every delta below ~89 — but exp overflows to Inf above that, so the
-    saturated aux entries blow up where torch's thresholded softplus stays
-    linear. Without the saturation probe this kernel passes every gate.
-    """
+    """Cheating scan: softplus written naively as log1p(exp(x))."""
     import torch.nn.functional as F  # noqa: F401  (parallel structure with reference)
 
     delta_bar = torch.log1p(torch.exp(delta.float()))  # no large-x guard
@@ -147,12 +135,7 @@ def _cumprod_trick_scan(
     *,
     chunk_size: int = 8,
 ) -> torch.Tensor:
-    """Cheating scan: 'parallelises' the recurrence as P_t * cumsum(bu_t / P_t).
-
-    Algebraically exact, numerically catastrophic: P_t underflows over long
-    near-integrator sequences and the ratio cumsum amplifies tiny terms.
-    The classic wrong way to vectorise a selective scan — ORD-03's target.
-    """
+    """Cheating scan: 'parallelises' the recurrence as P_t * cumsum(bu_t / P_t)."""
     import torch.nn.functional as F
 
     delta_bar = F.softplus(delta.float())
@@ -175,13 +158,7 @@ def _reordered_reduction_scan(
     *,
     chunk_size: int = 8,
 ) -> torch.Tensor:
-    """Honest scan whose N-state readout sums in REVERSED index order.
-
-    A numerically-valid reduction reordering (associativity): the output
-    differs from the reference only by float reassociation noise (~1e-7),
-    well inside ORD-03's scan tolerance. ORD-03 must ACCEPT this — the
-    positive half of its discrimination, paired with the cumprod-trick reject.
-    """
+    """Honest scan whose N-state readout sums in REVERSED index order."""
     import torch.nn.functional as F
 
     delta_bar = F.softplus(delta.float())
@@ -295,48 +272,30 @@ class TestScanHarness:
         assert not failed, f"gates failed on CPU: {failed}"
 
     def test_raw_reference_as_candidate_fails_precision_gate(self) -> None:
-        # The raw oracle rejects non-fp32 inputs, so as a *candidate* it must
-        # fail PRC-01 — candidates own their mixed-precision handling.
+        # The raw oracle rejects non-fp32 inputs, so as a candidate it must fail PRC-01.
         results = verify_scan_op(reference_forward_chunked_scan)
         assert not results["gate_prc_01_precision_regime"].passed
 
     def test_fp16_accumulator_cheat_caught_by_prc02(self) -> None:
-        # Discriminative-power check for PRC-02 at the scan's override shape:
-        # a scan that keeps h (and the N-dot) in fp16 must be rejected, while
-        # the honest fp32-accumulating op passes (test_all_gates_pass_on_cpu).
-        # With the Mamba-realistic delta in the aux distribution the measured
-        # floors are ~6e-3 honest vs ~1.5e-1 cheat against atol=2e-2.
+        # PRC-02 discriminative check: a scan keeping h in fp16 must be rejected at the override shape.
         results = verify_scan_op(_fp16_accumulator_scan)
         prc02 = results["gate_prc_02_mixed_precision_accumulation"]
         assert not prc02.passed, "PRC-02 lost its discriminative power for the scan op"
 
     def test_unguarded_softplus_caught(self) -> None:
-        # Review finding (C1 phase): without saturation-regime delta in the
-        # aux distribution, a softplus with no large-x guard — the most
-        # natural way to write it — passed all 12 gates. The saturated
-        # entries (delta=95 > fp32 exp overflow at ~89) force it to Inf
-        # where the reference stays linear.
+        # Review finding: without a saturation probe, an unguarded softplus passed all 12 gates.
         results = verify_scan_op(_unguarded_softplus_scan)
         cmp01 = results["gate_cmp_01_input_variation"]
         assert not cmp01.passed, "saturation probe lost: unguarded softplus passed CMP-01"
 
     def test_cumprod_trick_caught_by_ord03_with_scan_tolerances(self) -> None:
-        # ORD-03 runs with a tolerance for the scan op (hardware kernels
-        # cannot be bitwise against torch eager); this pins that the
-        # relaxation keeps rejecting numerically unstable scan orderings.
-        # The cumprod-ratio trick tracks the oracle to ~3e-5 up to L=4096,
-        # then its decay products underflow: at the override length L=8192
-        # it NaNs out while honest reorder noise stays ~1e-4 vs atol 1e-3.
+        # ORD-03 tolerates scan kernels not being bitwise vs eager, but still rejects unstable orderings.
         results = verify_scan_op(_cumprod_trick_scan)
         ord03 = results["gate_ord_03_noncommutative_reduction"]
         assert not ord03.passed, "ORD-03 lost its discriminative power for the scan op"
 
     def test_ord03_discriminates_correct_reorder_from_wrong(self) -> None:
-        # Closes the gap that ORD-03 "never shows it discriminates correct
-        # reorder from wrong": a gate that rejected ALL reorderings (e.g. an
-        # accidental bitwise comparison) would still pass the reject-only test
-        # above. This pins BOTH directions — a valid reversed-N-sum reorder
-        # (~1e-7 noise) is ACCEPTED while the cumprod-ratio trick is REJECTED.
+        # Closes the gap that ORD-03 never proves it accepts a correct reorder, not just rejects all.
         good = verify_scan_op(_reordered_reduction_scan)["gate_ord_03_noncommutative_reduction"]
         bad = verify_scan_op(_cumprod_trick_scan)["gate_ord_03_noncommutative_reduction"]
         assert good.passed, f"ORD-03 rejected a valid reduction reorder: {good.reason}"
@@ -367,20 +326,12 @@ class TestScanHarness:
         assert res02.details.get("applicable") is True
 
     def test_chunk_size_divides_all_gate_sequence_lengths(self) -> None:
-        # Gate default shapes: CMP-02 L=8 is the smallest; PRC-02 override
-        # L=1024 the largest. The harness chunk size must divide them all,
-        # or gates fail on the ValueError instead of testing the kernel.
+        # Gate default shapes: CMP-02 L=8 is the smallest; PRC-02 override L=1024 the largest.
         for seq_len in (8, 16, 32, 64, 128, 256, 512, 1024):
             assert seq_len % SCAN_CHUNK_SIZE == 0
 
     def test_prc02_rerun_is_rng_deterministic_and_neutral(self) -> None:
-        # Regression (review HIGH): the saturation-free PRC-02 re-run must
-        # inherit the per-gate seed + RNG save/restore bracket (it now routes
-        # through run_all_gates), not draw its probe from the ambient global
-        # stream. Calling the gate directly made the AUTHORITATIVE PRC-02
-        # verdict — which gates the speedup reward — a function of ambient RNG
-        # (max_err drifts across rollouts, flipping thin-margin candidates) and
-        # leaked RNG state past the verify() call.
+        # Regression: PRC-02's rerun must inherit the per-gate seed/RNG bracket via run_all_gates.
         gate = "gate_prc_02_mixed_precision_accumulation"
 
         def prc02_under(seed: int) -> tuple[bool, float]:
@@ -403,13 +354,7 @@ class TestScanHarness:
 def _bwd_via_autograd(
     fwd_fn: Callable[..., torch.Tensor],
 ) -> Callable[..., tuple[torch.Tensor, ...]]:
-    """Backward-signature wrapper differentiating through a (cheating) forward.
-
-    The forward cheats above carry their pathologies into their gradients —
-    fp16 state means an fp16 backward carry, an unguarded softplus NaNs the
-    whole graph at saturated delta — so autograd through them yields the
-    matching *backward* cheats for the per-gradient gate views.
-    """
+    """Backward-signature wrapper differentiating through a (cheating) forward."""
 
     def bwd(
         u: torch.Tensor,
@@ -470,8 +415,7 @@ class TestBackwardSelectiveScanCpu:
             reference_backward_selective_scan(*args, dy, chunk_size=3)
 
     def test_consistent_with_public_forward_autograd(self) -> None:
-        # The op pair must be self-consistent: differentiating the public
-        # forward must give the same gradients the public backward returns.
+        # The op pair must be self-consistent: forward autograd must match the public backward.
         args = _scan_inputs(seed=11)
         dy = torch.randn(2, 8, 4)
         direct = backward_selective_scan(*args, dy, chunk_size=4)
@@ -483,8 +427,7 @@ class TestBackwardSelectiveScanCpu:
             assert torch.equal(got, want), field
 
     def test_differentiable_wrt_dy_when_required(self) -> None:
-        # CMP-02's gradcheck differentiates the op w.r.t. dy; the eager path
-        # must build that graph (the VJP is linear in dy).
+        # CMP-02's gradcheck differentiates w.r.t. dy, so the eager path must build that graph.
         args = _scan_inputs()
         dy = torch.randn(2, 8, 4, requires_grad=True)
         grads = backward_selective_scan(*args, dy, chunk_size=4)
@@ -524,13 +467,7 @@ class TestBackwardScanHarness:
             assert out.shape == shape, field
 
     def test_all_gates_pass_on_cpu_grad_u_view(self) -> None:
-        # One full-suite view exercises every gate against the backward op on
-        # CPU (the eager path). The remaining five views run the full suite
-        # on the GPU box, where the Triton kernel — the actual target — is
-        # live; re-running all six against the eager path here would only
-        # re-verify autograd against autograd at ~6x the suite cost.
-        # resource_meta rides along to pin that the verify wrapper forwards
-        # it into RES-02 (applicable instead of not-applicable).
+        # One full-suite view exercises every gate against the backward op on CPU (the eager path).
         results = verify_bwd_scan_op(
             backward_selective_scan,
             grad_field="grad_u",
@@ -542,11 +479,7 @@ class TestBackwardScanHarness:
         assert results["gate_res_02_resource_limits"].details.get("applicable") is True
 
     def test_grad_a_prc02_scale_aware_separates_honest_from_cheat(self) -> None:
-        # grad_A's PRC-02 runs scale-aware (error carries the magnitude of
-        # large cancelling intermediates; B200-measured honest floors are
-        # 4.9e-4 Triton / 9.0e-4 eager of output scale vs 1.25e-2 for an
-        # fp16 carry). This pins both sides of the 3e-3 unit atol on the
-        # eager path.
+        # grad_A's PRC-02 is scale-aware; honest floors 4.9e-4 Triton / 9.0e-4 eager vs 1.25e-2 fp16 carry.
         kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_A"]["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             bwd_scan_candidate_adapter(backward_selective_scan, "grad_A", saturate=False),
@@ -564,12 +497,7 @@ class TestBackwardScanHarness:
         assert not cheat.passed, "scale-aware PRC-02 lost its discriminative power on grad_A"
 
     def test_grad_d_prc02_scale_aware_separates_honest_from_cheat(self) -> None:
-        # grad_D is a flat batch*L product sum (|out| ~ sqrt(B*L) ~ 100 at
-        # the gate shape): the flat 2e-2 atol sat below the honest fp16
-        # input-rounding floor, so the view runs scale-aware. B200-measured
-        # (scratch/c2_gradd_floor.py): honest <= 5.9e-4 of scale vs
-        # fp16-accumulation cheat >= 3.8e-3; this pins both sides of the
-        # 1.5e-3 unit atol on the eager path.
+        # grad_D's flat 2e-2 atol sits below the honest fp16 floor, so this view runs scale-aware.
         kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_D"]["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             bwd_scan_candidate_adapter(backward_selective_scan, "grad_D", saturate=False),
@@ -587,9 +515,7 @@ class TestBackwardScanHarness:
         assert not cheat.passed, "scale-aware PRC-02 lost its discriminative power on grad_D"
 
     def test_fp16_accumulator_bwd_cheat_caught_by_prc02(self) -> None:
-        # Autograd through an fp16-state forward keeps the backward carry in
-        # fp16 too; PRC-02 on the grad_u view must reject it while the honest
-        # op passes (test_all_gates_pass_on_cpu_grad_u_view).
+        # Autograd through an fp16-state forward keeps the backward carry fp16; PRC-02 must reject it.
         kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_u"]["gate_prc_02_mixed_precision_accumulation"])
         result = gate_prc_02_mixed_precision_accumulation(
             bwd_scan_candidate_adapter(
@@ -601,9 +527,7 @@ class TestBackwardScanHarness:
         assert not result.passed, "PRC-02 lost its discriminative power for the backward op"
 
     def test_unguarded_softplus_bwd_cheat_caught_by_cmp01(self) -> None:
-        # The saturation probe carries over to the backward: an unguarded
-        # softplus turns delta=95 into Inf, and every gradient inherits the
-        # NaN where the reference stays finite.
+        # The saturation probe carries to backward: unguarded softplus turns delta=95 into Inf/NaN.
         result = gate_cmp_01_input_variation(
             bwd_scan_candidate_adapter(_bwd_via_autograd(_unguarded_softplus_scan), "grad_delta"),
             bwd_scan_reference_adapter("grad_delta"),
@@ -611,9 +535,7 @@ class TestBackwardScanHarness:
         assert not result.passed, "saturation probe lost for the backward op"
 
     def test_cumprod_trick_bwd_cheat_caught_by_ord03(self) -> None:
-        # The ratio-cumsum 'parallelisation' underflows its decay products at
-        # ORD-03's L=8192 and the gradients NaN out, while honest reorder
-        # noise stays within the view tolerance.
+        # The ratio-cumsum trick underflows its decay products at ORD-03's L=8192, NaNing the grads.
         kwargs = dict(SCAN_BWD_GATE_OVERRIDES["grad_u"]["gate_ord_03_noncommutative_reduction"])
         result = gate_ord_03_noncommutative_reduction(
             bwd_scan_candidate_adapter(_bwd_via_autograd(_cumprod_trick_scan), "grad_u"),
@@ -625,8 +547,7 @@ class TestBackwardScanHarness:
 
 class TestMimoBackwardHarness:
     def test_factoring_covers_every_gate_d_model(self) -> None:
-        # CMP-03's five shapes plus CMP-02's (2, 8, 4): every d_model the
-        # gates drive must factor as (nheads, MIMO_HEADDIM).
+        # Every gate d_model (CMP-03's five shapes plus CMP-02's) must factor as nheads * MIMO_HEADDIM.
         for d_model in (4, 8, 16, 32, 64, 1024):
             assert d_model % MIMO_HEADDIM == 0
             adapted = mimo_bwd_candidate_adapter(reference_mimo_backward, "grad_x")
@@ -677,10 +598,7 @@ class TestMimoBackwardHarness:
             assert out.dtype == dtype
 
     def test_all_gates_pass_on_cpu_grad_x_view(self) -> None:
-        # One full-suite view on CPU, like the scan's grad_u choice: the
-        # remaining six views run on the GPU box where the Triton kernel —
-        # the actual target — is live. resource_meta rides along to pin the
-        # RES-02 forwarding.
+        # One full-suite view on CPU; the remaining six views run on GPU where the Triton kernel is live.
         results = verify_mimo_bwd_op(
             mimo_backward,
             grad_field="grad_x",
@@ -702,12 +620,7 @@ def _fp16_state_mimo_bwd(
     mimo_o: torch.Tensor,
     dy: torch.Tensor,
 ) -> tuple[torch.Tensor, ...]:
-    """Cheating MIMO backward: discretisation in fp32, running state in fp16.
-
-    Autograd through the fp16-state forward keeps the backward carry in
-    fp16 too — the canonical missing-fp32-accumulator failure PRC-02
-    exists to reject.
-    """
+    """Cheating MIMO backward: discretisation in fp32, running state in fp16."""
     inputs = (x, b_in, c_in, dt, alpha, mimo_x, mimo_o)
     with torch.enable_grad():
         leaves = [t.detach().float().requires_grad_(True) for t in inputs]
@@ -734,10 +647,7 @@ def _fp16_state_mimo_bwd(
 
 class TestMimoPrc02Discrimination:
     def test_scale_aware_prc02_separates_honest_from_cheat(self) -> None:
-        # All seven MIMO views run PRC-02 scale-aware at L=4096 (see
-        # _mimo_prc02): measured honest floor 2.2e-3..3.7e-3 of output scale
-        # on grad_x vs the fp16-state cheat at >= 1.0e-2. This pins both
-        # sides of the 6e-3 unit atol on the eager path.
+        # PRC-02 at L=4096: honest floor 2.2e-3-3.7e-3 vs fp16-state cheat >=1.0e-2; unit atol 6e-3.
         kwargs = dict(MIMO_BWD_GATE_OVERRIDES["grad_x"]["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             mimo_bwd_candidate_adapter(mimo_backward, "grad_x"),
@@ -902,12 +812,7 @@ def _fp16_state_fused(
 
 class TestFusedPrc02Discrimination:
     def test_prc02_separates_honest_from_fp16_state_cheat(self) -> None:
-        # Measured at the gate shape (1, 4096, 32), scale-normalised:
-        # honest <= 1.26e-3 of output scale vs fp16-state cheat >= 1.95e-2
-        # on CPU (3 draws, scratch/c5_prc02_floor.py); B200 Triton kernel
-        # <= 9.75e-4 vs cheat >= 2.08e-2 (scratch/c5_b200_floor.py). The
-        # scale-aware unit atol 5e-3 sits between with >= 3.9x margin on
-        # both sides on both backends.
+        # At (1,4096,32): honest <=1.26e-3 vs cheat >=1.95e-2 (CPU); B200 <=9.75e-4 vs >=2.08e-2.
         kwargs = dict(FUSED_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             fused_candidate_adapter(fused_block_forward, saturate=False),
@@ -925,12 +830,7 @@ class TestFusedPrc02Discrimination:
 
 class TestRopePrc02Discrimination:
     def test_prc02_separates_honest_from_fp16_state_cheat(self) -> None:
-        # Measured at the gate shape (2, 1024, 32), scale-normalised:
-        # honest <= 7.3e-4 of output scale vs fp16-state cheat >= 8.6e-3 on
-        # CPU (3 draws, scratch/c4_prc02_floor.py); B200 Triton kernel
-        # <= 6.3e-4 vs cheat >= 1.05e-2 (scratch/c4_b200_floor.py). The
-        # scale-aware unit atol 3e-3 sits between with >= 2.9x margin on
-        # both sides on both backends.
+        # At (2,1024,32): honest <=7.3e-4 vs cheat >=8.6e-3 (CPU); B200 <=6.3e-4 vs >=1.05e-2.
         kwargs = dict(ROPE_GATE_OVERRIDES["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
             rope_candidate_adapter(complex_scan_rope),
@@ -1016,11 +916,7 @@ class TestFusedBackwardHarness:
             assert out.dtype == dtype
 
     def test_all_gates_pass_on_cpu_grad_x_view(self) -> None:
-        # One full-suite view exercises every gate against the backward op
-        # on CPU (the eager path); the other eight views run the full suite
-        # on the box where the Triton pipeline — the actual target — is
-        # live (the C2 convention). resource_meta rides along to pin the
-        # verify wrapper's forwarding into RES-02.
+        # One full-suite view runs on CPU; the other eight run on GPU where the Triton pipeline is live.
         results = verify_fused_bwd_op(
             fused_block_backward,
             grad_field="grad_x",
@@ -1051,22 +947,13 @@ class TestFusedBwdPrc02Discrimination:
         assert not cheat.passed, f"PRC-02 lost its discriminative power on {field}"
 
     def test_grad_a_view_widest_corridor(self) -> None:
-        # CPU floors at (1, 4096, 32), scale-normalised, 3 draws
-        # (scratch/c6_prc02_floor.py): honest <= 9.4e-4 vs fp16-scan-state
-        # cheat >= 4.2e-2 — a 44x corridor; unit atol 5e-3.
+        # CPU floor at (1,4096,32): honest <=9.4e-4 vs cheat >=4.2e-2 (44x corridor); unit atol 5e-3.
         self._check_view("grad_A")
 
     def test_grad_conv_bias_view_thinnest_corridor(self) -> None:
-        # The thin view: honest <= 1.6e-3 vs cheat >= 5.3e-3 (3.4x) — the
-        # bias path touches the fp16 state only through dconv, so the
-        # cheat's compounding is diluted. Unit atol 3e-3 sits 1.9x over
-        # honest / 1.8x under cheat; this pin is the flake canary — if it
-        # ever goes, re-measure on B200 before touching the atol.
+        # Thinnest view: honest <=1.6e-3 vs cheat >=5.3e-3 (3.4x); bias only touches fp16 via dconv.
         self._check_view("grad_conv_bias")
 
     def test_grad_d_view_thinnest_b200_margin(self) -> None:
-        # CPU: honest <= 1.3e-3 vs cheat >= 6.4e-3 (5.0x), unit atol 3e-3;
-        # on B200 this view carries the thinnest cheat-side margin of all
-        # nine (1.8x over, scratch/c6_b200_floor.py) — same canary rule as
-        # conv_bias: re-measure on B200 before touching the atol.
+        # CPU: honest <=1.3e-3 vs cheat >=6.4e-3, atol 3e-3 (5.0x); B200 margin 1.8x, re-measure first.
         self._check_view("grad_D")

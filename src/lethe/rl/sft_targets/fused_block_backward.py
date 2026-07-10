@@ -1,14 +1,4 @@
-"""Fused Mamba block backward via autograd (eager PyTorch).
-
-The full forward (depthwise causal conv + SiLU + selective scan + RMSNorm)
-is rebuilt with leaf tensors and differentiated with torch.autograd.grad,
-so all nine gradients' non-finite dataflow matches autograd's grouping.
-The conv is an explicit K-term shifted sum rather than a conv primitive:
-its autograd backward is then composed purely of deterministic slice/sum
-ops, keeping every gradient byte-identical across calls. fp16/bf16 inputs
-are upcast once to float32, differentiated in float32, and each gradient
-is rounded once at return.
-"""
+"""Fused Mamba block backward via autograd (eager PyTorch)."""
 
 import torch
 import torch.nn.functional as F
@@ -68,8 +58,7 @@ def fused_block_backward(
     eps: float = 1e-5,
     chunk_size: int = 64,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    # Same divisibility contract as the reference + triton sibling — a warm-start
-    # target must not teach a looser contract than ground truth.
+    # Same divisibility contract as the reference and triton sibling: don't teach a looser one.
     l_out = x.shape[1] - (conv_kernel_size - 1)
     if l_out % chunk_size != 0:
         raise ValueError(f"output length {l_out} must be divisible by chunk_size {chunk_size}")

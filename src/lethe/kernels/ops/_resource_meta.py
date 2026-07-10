@@ -1,18 +1,4 @@
-"""Resource-envelope extraction shared by the hand-written Triton kernels.
-
-Walks a ``triton.jit`` function's compilation cache and returns the
-*maximum* ``n_regs`` / ``spill_bytes`` / ``shared_bytes`` over every cached
-specialisation (dtypes, block sizes, num_warps), in the shape
-``gate_res_02_resource_limits`` expects: a conservative envelope, so the
-gate checks the worst specialisation rather than whichever cache entry
-happens to iterate last. Callers should warm the kernel at the heaviest
-shapes they care about before reading. Returns None when nothing has been
-compiled yet or the (version-dependent) cache layout has drifted, absence
-of evidence must not fabricate evidence.
-
-This module deliberately does not import ``triton``: it only attribute-walks
-the jit object handed to it, so it stays importable on CPU-only hosts.
-"""
+"""Resource-envelope extraction shared by the hand-written Triton kernels."""
 
 from __future__ import annotations
 
@@ -25,9 +11,7 @@ def collect_resource_meta(jit_fn: Any) -> dict[str, int] | None:
     compiled: list[Any] = []
     if isinstance(caches, dict):
         for entry in caches.values():
-            # 3.x: device_caches[device] is a tuple whose first slot is the
-            # signature -> CompiledKernel dict. An empty tuple is cache drift,
-            # skip it (indexing would raise, violating the return-None contract).
+            # 3.x: device_caches[device] is a tuple whose first slot is the signature -> CompiledKernel dict.
             cache_dict = entry[0] if isinstance(entry, tuple) and entry else entry
             if isinstance(cache_dict, dict):
                 compiled.extend(cache_dict.values())
@@ -56,12 +40,7 @@ def collect_resource_meta(jit_fn: Any) -> dict[str, int] | None:
 
 
 def max_resource_meta(a: dict[str, int] | None, b: dict[str, int] | None) -> dict[str, int] | None:
-    """Elementwise-max envelope over two resource metas (None = no evidence).
-
-    Used when dispatch resolves the scan mode by shape (config unset): the
-    audited envelope must bound *whichever* kernel could run, so RES-02 sees
-    the worst of both instead of the serial one only.
-    """
+    """Elementwise-max envelope over two resource metas (None = no evidence)."""
     if a is None:
         return b
     if b is None:

@@ -1,16 +1,4 @@
-"""Phase-2 integration: the native scalar-GDN backward ASSEMBLY.
-
-The two hard kernels (K#1 reverse-state scan, K#2 WY-VJP) are validated in isolation
-by their on-box micro-gates; here the assembly that wires them into the six grads is
-validated end-to-end, off-box, by routing both kernels to their pure-torch references.
-
-Three layers:
-* the scalar assembly is bit-exact (fp64) vs the token-serial oracle, across shapes
-  and at the kernels' production tile dims (d_k=128, d_v=64);
-* the GDN-2-signature wrapper's channel-sum reproduces the oracle (the scalar-regime
-  reduction), and the native dispatch honours the regime + tile-dim + availability gates;
-* the assembly passes all 12 contract gates through the scalar reduction gate.
-"""
+"""Phase-2 integration: the native scalar-GDN backward ASSEMBLY."""
 
 from __future__ import annotations
 
@@ -125,8 +113,7 @@ class TestWrapperAndDispatch:
         assert gdn2_native.native_gdn2_backward(q, k, v, g_ch, b_g, w_g, do) is None
 
     def test_native_routes_channelwise_to_crown(self, monkeypatch) -> None:
-        # Phase 3: genuinely channel-wise input dispatches to the crown assembly (was
-        # None in Phase 2). Inject the channel-wise refs for the box kernels.
+        # Phase 3: genuinely channel-wise input dispatches to crown assembly (was None in Phase 2).
         monkeypatch.setattr(gdn2_native, "is_available", lambda device=None: True)
         monkeypatch.setattr(
             gdn2_native, "_load_box_kernels_cw", lambda: (k1_reverse_state_cw_ref, k2_wy_vjp_cw_ref)
@@ -166,8 +153,7 @@ class TestWrapperAndDispatch:
         assert gdn2_native.native_gdn2_backward(q, k, v, g_ch, b_g, w_g, do) is None
 
     def test_native_runs_assembly_with_injected_refs(self, monkeypatch) -> None:
-        # Stand the pure-torch refs in for the box kernels: exercises native's full
-        # path (regime + dims gates -> assembly) at the production tile dims.
+        # Pure-torch refs stand in for box kernels; exercises native's full dispatch path.
         monkeypatch.setattr(gdn2_native, "is_available", lambda device=None: True)
         monkeypatch.setattr(
             gdn2_native, "_load_box_kernels", lambda: (k1_reverse_state_ref, k2_wy_vjp_ref)

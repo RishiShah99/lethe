@@ -1,27 +1,4 @@
-"""End-to-end GRPO training loop over verifier-scored kernel generation.
-
-One step: sample K completions for the op prompt → extract the final
-fenced code block → score each source through the sandboxed op-harness
-battery (``score_candidate_source``) → group-relative advantages →
-clipped surrogate + KL loss → one optimizer step on the LoRA adapter.
-
-Degenerate groups (all rewards identical: e.g. every candidate fails the
-same way, or all saturate at the compile ceiling) carry no policy-gradient
-signal; the step skips the log-prob forward passes and the update
-entirely, recording ``loss=None``. The test is exact value equality, not a
-float-std threshold: fp32 mean rounding gives an all-0.1 group a std of
-~7e-9, which would otherwise turn every saturated group into a spurious
-uniform-negative update.
-
-Checkpointing is preemption-resilient: step-stamped immutable adapter dirs via
-peft ``save_pretrained``, with the atomically replaced ``trainer_state.pt``
-as the commit point naming the valid adapter (step counter, optimizer
-state, RNG states ride along). Resume = ``HFPolicy.from_pretrained(
-adapter_path=GRPOTrainingLoop.latest_adapter_path(dir))`` +
-:meth:`GRPOTrainingLoop.load_trainer_state`. Per-step metrics and
-per-candidate rollout rows append to JSONL files in the checkpoint dir so
-a running job can be polled with ``tail``; both use 1-based step ids.
-"""
+"""End-to-end GRPO training loop over verifier-scored kernel generation."""
 
 from __future__ import annotations
 
@@ -133,27 +110,15 @@ class GRPOTrainingLoop:
     ) -> None:
         self.config = config
         self.policy = policy
-        # Generation is the bottleneck at 32B; an optional data-parallel
-        # GenerationPool samples across replica GPUs. The trainer policy
-        # still owns the log-prob streams and the update: only sampling is
-        # pooled, and the pool's LoRA is refreshed from this policy each
-        # step so the sampled distribution is the current behaviour policy.
+        # Generation is the bottleneck at 32B; GenerationPool samples across replica GPUs.
         self._gen_pool = gen_pool
         self.prompt = prompt if prompt is not None else build_op_prompt(config.op)
         self._scorer = scorer if scorer is not None else self._default_scorer
         self._batch_scorer = batch_scorer
         self._entry_point = _OP_ENTRY_POINTS[config.op]
-        # The action representation is pluggable: the default pulls the final
-        # fenced code block (source-generation track); the config-emission
-        # track passes an extractor that pulls the fenced KernelConfig JSON
-        # instead.
+        # Action representation is pluggable: default extracts the fenced code block.
         self._extractor = extractor if extractor is not None else self._default_extractor
-        # Forced-exploration seeds (#14): each step replaces the first
-        # len(seed_completions) sampled completions with these fixed strings,
-        # so a group the policy would fill with one mode always carries the
-        # other. Sound because old_lp = new_lp.detach() makes the step-0 ratio
-        # 1 for the injected (off-policy) samples; their log-probs/advantages
-        # then flow exactly like sampled ones.
+        # Forced-exploration seeds (#14): overrides the first N sampled completions each step.
         self._seed_completions = list(seed_completions) if seed_completions else []
         self.optimizer = torch.optim.AdamW(
             list(policy.trainable_parameters()), lr=config.learning_rate
@@ -177,8 +142,7 @@ class GRPOTrainingLoop:
         )
 
     def step(self) -> TrainStepMetrics:
-        """One GRPO update. Dropout must be off: sampling and scoring
-        log-probs must agree at step 0 (ratio identity)."""
+        """One GRPO update."""
         cfg = self.config
         self.policy.eval_mode()
         if self._gen_pool is not None:
@@ -230,21 +194,15 @@ class GRPOTrainingLoop:
         mean_kl: float | None = None
         grad_norm: float | None = None
 
-        # Exact-equality test, not a float-std compare: eight identical 0.1
-        # rewards carry std ~7e-9 from fp32 mean rounding, which would turn
-        # every saturated group into a spurious uniform-negative update.
+        # Exact-equality, not float-std compare: fp32 rounding leaves identical rewards std ~7e-9.
         if rewards.max().item() != rewards.min().item():
             advantages = compute_group_advantages(rewards)
-            # EOS joins the scored trajectory only where the policy actually
-            # stopped (last_terminated, from whichever sampled: pool or
-            # policy); stubs without it score all.
+            # EOS joins the trajectory only where generation stopped; stubs score all.
             terminated = getattr(generator, "last_terminated", None)
             append_eos: bool | list[bool] = (
                 list(terminated) if terminated and len(terminated) == len(completions) else True
             )
-            # A seed is a complete emission (it ends with a closed fence), so
-            # the stop decision is part of its trajectory: override the
-            # generator's terminated flag for the positions we overwrote.
+            # A seed is a complete emission (closed fence); override terminated for its positions.
             if n_seed and isinstance(append_eos, list):
                 for i in range(n_seed):
                     append_eos[i] = True
@@ -255,9 +213,7 @@ class GRPOTrainingLoop:
             new_lp, mask = self.policy.completion_log_probs(
                 self.prompt, completions, append_eos=append_eos
             )
-            # One update per rollout = on-policy: the behaviour log-probs are
-            # the current ones, detached. A multi-iteration update would need
-            # a separate pre-update old pass.
+            # One update per rollout = on-policy: log-probs are the current ones, detached.
             old_lp = new_lp.detach()
             device = new_lp.device
             loss = compute_grpo_loss(
@@ -317,15 +273,8 @@ class GRPOTrainingLoop:
             self.save_checkpoint()
         return history
 
-    # ------------------------------------------------------------------
-    # Checkpointing (preemption-resilient: adapter + optimizer + step + RNG)
-    # ------------------------------------------------------------------
-
     def save_checkpoint(self) -> None:
-        """Adapter dirs are step-stamped and immutable; the atomically
-        replaced ``trainer_state.pt`` is the commit point naming the valid
-        one: a preemption mid-save leaves the previous checkpoint fully
-        consistent (a half-written adapter dir is never referenced)."""
+        """The commit point is an atomic trainer_state.pt replace; stale writes are unused."""
         cfg = self.config
         os.makedirs(cfg.checkpoint_dir, exist_ok=True)
         adapter_name = f"adapter_step_{self.step_idx}"
@@ -344,15 +293,11 @@ class GRPOTrainingLoop:
         self._prune_adapters(keep=adapter_name)
 
     def load_trainer_state(self) -> bool:
-        """Restore step/optimizer/RNG if a checkpoint exists. Adapter weights
-        are restored separately via ``HFPolicy.from_pretrained(adapter_path=
-        latest_adapter_path(...))``."""
+        """Restore step/optimizer/RNG if a checkpoint exists."""
         path = os.path.join(self.config.checkpoint_dir, "trainer_state.pt")
         if not os.path.exists(path):
             return False
-        # weights_only=True: the payload is only step/adapter_name/optimizer/RNG
-        # (tensors + primitive containers), so the safe loader suffices and closes a
-        # pickle-RCE if checkpoint_dir points at a run dir this process did not write.
+        # weights_only=True closes a pickle-RCE from a checkpoint_dir we didn't write.
         state = torch.load(path, map_location="cpu", weights_only=True)
         self.step_idx = int(state["step"])
         self.optimizer.load_state_dict(state["optimizer"])

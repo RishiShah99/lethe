@@ -1,10 +1,4 @@
-"""Stage-B einsum kernel wiring — CPU pins (the squeeze after the K#2 fusion).
-
-The kernel itself is box-only; these pin what is CPU-checkable: import-clean off-box,
-the dim lock, and that the FMR_DISABLE_SBE kill-switch actually flips the selector
-away from the SBE kernel path. Silicon: scratch/sbe_microgate.py + the burst-6
-integration gates.
-"""
+"""Stage-B einsum kernel wiring: CPU pins (the squeeze after the K#2 fusion)."""
 
 from __future__ import annotations
 
@@ -37,13 +31,7 @@ def test_module_imports_cleanly_off_box() -> None:
 
 
 def test_kill_switch_bypasses_sbe_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin that FMR_DISABLE_SBE=1 flips the selector AWAY from run_sb_einsum.
-
-    Monkeypatch is_available/sbe_dims_ok so the selector logic runs on CPU, and
-    run_sb_einsum to a stub that tracks invocation. With the kill-switch unset the
-    selector routes to the kernel (hit=1); with FMR_DISABLE_SBE=1 it routes to the
-    torch einsum fallback (hit=0). Mirrors the pattern in test_gdn2_l3.py.
-    """
+    """Pin that FMR_DISABLE_SBE=1 flips the selector AWAY from run_sb_einsum."""
     hit = {"sbe": 0}
 
     def _stub_run_sb_einsum(

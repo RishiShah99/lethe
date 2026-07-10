@@ -1,10 +1,4 @@
-"""Regression: the C1 forward bench reports scale-normalized parity.
-
-c1 previously stored a bare absolute ``max_err`` (bf16 included, no scale
-normalization), unlike c2-c6's ``_parity_stats``. The bench parity block runs
-only under mamba_ssm + CUDA, so this is a source-level check that c1 routes both
-parity comparands through the shared ``_parity_stats`` helper.
-"""
+"""Regression: the C1 forward bench reports scale-normalized parity."""
 
 from __future__ import annotations
 

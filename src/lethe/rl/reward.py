@@ -1,11 +1,4 @@
-"""Bridge between the verifier outputs and the GRPO reward signal.
-
-``score_callable`` is the canonical hook the trainer calls per
-candidate: it runs every implemented gate, decides whether the
-candidate "passes contracts" (every implemented gate passed), and
-feeds the result into the staged reward function from
-``lethe.verifier.reward``.
-"""
+"""Bridge between the verifier outputs and the GRPO reward signal."""
 
 from __future__ import annotations
 
@@ -18,9 +11,7 @@ from lethe.rl.rollout import Candidate, ScoredCandidate
 from lethe.verifier.contracts import GateResult, run_all_gates
 from lethe.verifier.reward import compute_reward
 
-# Gates that are implemented today. Stubbed gates report
-# ``passed=False, reason="not_implemented"`` and do not block the
-# contracts_passed verdict.
+# Gates that are implemented today.
 _IMPLEMENTED_GATES: tuple[str, ...] = (
     "gate_cmp_01_input_variation",
     "gate_cmp_02_gradient_correctness",
@@ -51,32 +42,7 @@ def score_callable(
     bug_routing: bool = False,
     gate_kwargs: dict[str, Any] | None = None,
 ) -> ScoredCandidate:
-    """Score a candidate against the reference and return a ``ScoredCandidate``.
-
-    Parameters
-    ----------
-    candidate:
-        Metadata about the generated candidate (source, target op, etc.).
-    candidate_fn:
-        Imported callable for the candidate. Pass through ``import_candidate``
-        from ``lethe.kernels.loader`` to construct.
-    reference_fn:
-        The corresponding reference op.
-    compiled:
-        Whether the candidate compiled (caller has already determined this).
-    speedup_vs_handwritten:
-        ``t_reference / t_candidate``; pass ``None`` if not benchmarked.
-    bug_routing:
-        Set when the candidate compiles where the hand-written reference
-        triggered ``ptxas C7907`` (or the broader TMEM-promotion failure).
-    gate_kwargs:
-        Forwarded to ``run_all_gates`` for per-gate shape / dtype overrides.
-
-    Returns
-    -------
-    ScoredCandidate
-        Bundle of reward + per-gate booleans + headline flags.
-    """
+    """Score a candidate against the reference and return a ``ScoredCandidate``."""
     if not compiled:
         return ScoredCandidate(
             candidate=candidate,

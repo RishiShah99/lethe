@@ -1,25 +1,4 @@
-"""Stage-B intra-einsum kernel, replaces the ``decay_rel`` einsums after the K#2 fusion.
-
-The closed stage-B chain's pair of ``decay_rel`` einsums (gdn2_assemble._stage_b_vjp_cw_closed):
-
-    dq_intra[i,d] = sum_{s<=i} da_qk[i,s] * k[s,d] * exp2(g2[i,d] - g2[s,d])
-    dk_intra[s,d] = sum_{i>=s} da_qk[i,s] * q[i,d] * exp2(g2[i,d] - g2[s,d])
-
-cost a 1.07 GB ``masked_decay_rel`` materialization plus two streamed reads over it.
-This kernel computes both sums SIMT with on-the-fly exp2 on the lower-inclusive
-triangle only (the loop range is the mask, so exp2 arguments are structurally <= 0
-and no secondary overflow guard is needed), so the materialization and both streamed
-reads disappear.
-
-It is a transplant of the fused K#2 kernel's SIMT tail, with inclusive bounds (the
-diagonal's exp2(0)=1 is live here, matching lower_incl da_qk). No GEMMs, no TMEM, no
-TMA, no smem: grid-z over Z=B·H·NT, 128 threads, two independent passes of serial
-per-thread fp32 accumulation (fixed order, deterministic).
-
-Executor discipline: call tuple = the 6 marked cute.Tensors + CUstream (Constexprs
-baked and dropped from the runtime signature). Kill-switch at the wiring site:
-``FMR_DISABLE_SBE=1`` keeps the torch einsum path.
-"""
+"""Stage-B intra-einsum kernel, replaces the ``decay_rel`` einsums after the K#2 fusion."""
 # NB: no `from __future__ import annotations`, keep consistent with the DSL kernel files.
 
 import torch
@@ -117,12 +96,7 @@ if _HAVE:
 
 
 def run_sb_einsum(da_qk: Tensor, k: Tensor, q: Tensor, g2: Tensor) -> tuple[Tensor, Tensor]:
-    """Both stage-B intra einsums in ONE grid-z launch, no ``decay_rel`` materialized.
-
-    Inputs head-major chunked: ``da_qk`` [B,H,NT,C,C] (lower-incl masked),
-    ``k``/``q``/``g2`` [B,H,NT,C,d_k]. Returns ``(dq_intra, dk_intra)`` fp32
-    [B,H,NT,C,d_k]. Tile contract: C=64, d_k=128 (:func:`sbe_dims_ok`).
-    """
+    """Both stage-B intra einsums in ONE grid-z launch, no ``decay_rel`` materialized."""
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     bsz, hh, nt, c, d_k = k.shape

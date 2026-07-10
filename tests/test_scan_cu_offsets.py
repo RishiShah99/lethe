@@ -1,10 +1,4 @@
-"""Regression: scan.cu offset arithmetic is 64-bit (int64_t), not ``long``.
-
-``long`` is 32-bit under LLP64 (Windows/MSVC), so large-tensor flat offsets
-would overflow there; the Linux B200 build target (LP64) is unaffected, but the
-explicit ``int64_t`` makes the width correct everywhere. Source-level check —
-the ``.cu`` compiles only on-box via ``load_inline``.
-"""
+"""Regression: scan.cu offset arithmetic is 64-bit (int64_t), not ``long``."""
 
 from __future__ import annotations
 

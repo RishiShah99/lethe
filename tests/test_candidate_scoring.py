@@ -127,9 +127,7 @@ def test_forbidden_import_rejected() -> None:
     assert _score_source_body(modules_fishing, {})["status"] == "forbidden_import"
 
 
-# The exact reward-hack the AST screen + import guard exist to kill: build the
-# oracle import name from split strings so a substring screen never sees it,
-# reach it through __builtins__, and bind the reference as the entry point.
+# The reward-hack the screen exists to kill: split-string oracle import via __builtins__.
 REFERENCE_WRAP_EXPLOIT = (
     'forward_chunked_scan = __builtins__["__im" + "port__"](\n'
     '    "let" + "he.kernels.references.forward_chunked_scan",\n'
@@ -145,10 +143,7 @@ def test_reference_wrap_via_builtins_is_rejected() -> None:
 
 
 def test_import_guard_blocks_oracle_reimport() -> None:
-    """Belt-and-suspenders: a runtime-built oracle name still resolves through
-    the guarded __import__ and is rejected, while honest imports pass —
-    importlib INCLUDED, because a real Triton candidate pulls it in transitively
-    at jit time and guard-blocking it scored every kernel as a non-compile."""
+    """importlib stays unblocked (Triton needs it at jit time); the oracle import is still rejected."""
     import builtins
     import importlib
     import math
@@ -165,9 +160,7 @@ def test_import_guard_blocks_oracle_reimport() -> None:
 
 
 def test_oracle_import_blocker_covers_importlib_pathway() -> None:
-    """The meta-path finder blocks the oracle through importlib.import_module —
-    which bypasses builtins.__import__ — while non-oracle imports fall through.
-    With the oracle evicted from sys.modules, the re-import re-consults it."""
+    """Blocks the oracle via importlib.import_module (bypasses __import__); other imports pass."""
     import importlib
 
     from lethe.verifier.candidate_scoring import (
@@ -182,11 +175,7 @@ def test_oracle_import_blocker_covers_importlib_pathway() -> None:
     assert importlib.import_module("lethe.verifier.reward") is not None  # removed on exit
 
 
-# Bypasses the AST screen (no forbidden Name nodes — __builtins__/__import__/
-# importlib appear only as string constants and attribute accesses), reaches a
-# live __import__ through globals()['__builtins__'], imports importlib (now
-# allowed past the guard), and tries importlib.import_module on the oracle. Only
-# the meta-path finder stops it — the test that the finder is load-bearing.
+# AST-screen bypass: reach __import__ via globals()['__builtins__'], then import the oracle.
 ORACLE_GADGET_VIA_FINDER = (
     "b = globals()['__builtins__']\n"
     "imp = b['__import__'] if isinstance(b, dict) else b.__import__\n"
@@ -204,11 +193,7 @@ def test_oracle_gadget_through_importlib_is_blocked_by_finder() -> None:
     assert "may not reach the oracle" in result["error"]
 
 
-# The same wrap as ORACLE_GADGET_VIA_FINDER but DEFERRED into the entry-point
-# body: at module exec the def is inert (the exec-time guards see nothing), and
-# the gates invoke it later — outside exec. Unless the guards are re-armed around
-# each candidate call, this reaches the reference at call time and banks the 0.5
-# fixed point. The regression that pins that hole closed.
+# Same wrap as ORACLE_GADGET_VIA_FINDER but deferred into the entry-point body, called later.
 DEFERRED_ORACLE_WRAP = (
     "import torch\n"
     "def forward_chunked_scan(u, *aux, chunk_size=64):\n"
@@ -221,19 +206,13 @@ DEFERRED_ORACLE_WRAP = (
 
 
 def test_deferred_oracle_wrap_blocked_at_call_time() -> None:
-    # AST-clean and execs fine (the def is inert); the per-call eviction + finder
-    # make the import_module raise inside every gate, so the candidate produces no
-    # correct output and contracts fail — no 0.5 fixed point.
+    # AST-clean and execs fine; per-call eviction makes import_module raise inside every gate.
     result = _score_source_body(DEFERRED_ORACLE_WRAP, {"op": "forward_chunked_scan"})
     assert result["contracts_passed"] is False, result
     assert result["reward"] <= 0.1
 
 
-# The early-binding bypass: capture the REAL import_module as a module global at
-# EXEC (before any per-call guard is installed), then call the saved reference in
-# the body. A live-attribute patch can't see a reference bound before it installed
-# — only the per-call sys.modules eviction (forcing a cache miss into the finder)
-# closes it. Pins that the eviction, not the removed import patch, is doing it.
+# Early-binding bypass: capture the real import_module at exec, before any per-call guard.
 EARLY_BOUND_ORACLE_WRAP = (
     "import torch\n"
     "g = globals()\n"
@@ -256,7 +235,7 @@ def test_ast_screen_passes_clean_candidate() -> None:
     from lethe.verifier.candidate_scoring import _ast_screen
 
     assert _ast_screen(CORRECT_EAGER) == []
-    # A syntactically broken source is not a screen hit — exec classifies it.
+    # A syntactically broken source is not a screen hit, exec classifies it.
     assert _ast_screen(SYNTAX_ERROR) == []
 
 
@@ -272,10 +251,6 @@ def test_project_modules_hidden_during_candidate_exec() -> None:
     after = {k: v for k, v in sys.modules.items() if k.startswith("lethe")}
     assert after == before  # identical module objects restored
 
-
-# ---------------------------------------------------------------------------
-# Multi-view aggregation (fake driver, in-process)
-# ---------------------------------------------------------------------------
 
 FAKE_FIELDS = ("grad_p", "grad_q", "grad_r")
 
@@ -364,12 +339,7 @@ class TestMultiView:
         assert result["reward"] == pytest.approx(0.1 + 0.35 * 2 / 3)
 
     def test_all_gates_excluded_is_not_a_vacuous_pass(self, fake_bwd_op: dict[str, Any]) -> None:
-        """An exclude set covering every returned gate must NOT unlock the pass.
-
-        required=[] would make all([])==True vacuously pass every view with zero
-        checks — the guard the vacuous-pass fix installs. Regression on the
-        multi-view branch.
-        """
+        """An exclude set covering every returned gate must NOT unlock the pass."""
         result = _score_source_body(
             FAKE_SOURCE,
             {

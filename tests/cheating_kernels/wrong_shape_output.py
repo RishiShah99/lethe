@@ -1,11 +1,4 @@
-"""Cheating kernel: returns an output with one fewer time-step than expected.
-
-Drops the last element along the sequence dimension. Mimics an off-by-one
-loop bound — common in chunked-scan kernels.
-
-Expected rejector: CMP-01 (input variation) — every gate that compares
-output shapes will reject this. CMP-03 also rejects on the shape check.
-"""
+"""Cheating kernel: returns an output with one fewer time-step than expected."""
 
 from __future__ import annotations
 

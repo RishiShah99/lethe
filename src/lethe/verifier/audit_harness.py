@@ -1,47 +1,4 @@
-"""Audit harness: foreign KernelBench-convention kernel pairs through the contract gates.
-
-The rigor-gap audit runs kernels released by public RL kernel-generation
-systems through the same contract gates that score this project's own
-kernels. Corpus rows follow the KernelBench convention: a reference module
-``Model`` with ``get_inputs()`` / ``get_init_inputs()``, and a candidate
-module ``ModelNew`` with the same constructor and forward signature.
-
-Fairness rules (these decide what counts as a finding, so they are the
-load-bearing part of this module):
-
-- **Reference applicability.** Every gate input is consumed by the reference
-  first. If the *reference* cannot run an input (a shape variant a
-  fixed-weight task cannot accept, a dtype torch refuses), the check is
-  not-applicable, never a candidate failure. The reference adapter
-  surfaces any reference-side exception with a marker token the status
-  classifier partitions on.
-- **Claimed-scope split.** CMP-02 (gradcheck) and RES-02 (resource metadata)
-  are excluded: the audited corpora claim inference-speedup kernels, not
-  training kernels, gradcheck at task-native shapes costs O(numel^2)
-  forward evaluations, and foreign modules carry no compile-stage resource
-  metadata. RES-01 counts only genuine device-residency mismatches; a
-  GPU-targeted candidate that raises on a CPU tensor is recorded as skipped
-  coverage, not failure.
-- **Mixed-precision convention** (the op-harness contract, applied
-  generically): for half-dtype *inputs* (PRC-01) the reference stays fp32
-  but consumes parameters and auxiliary inputs round-tripped through the
-  half dtype, and rounds its output once; the candidate is charged only
-  for its own compute precision. PRC-02's fp32 reference call consumes
-  pristine fp32 operands by gate design; its 2e-2·scale budget sits >20x
-  above the fp16 parameter-rounding floor, which covers the asymmetry.
-- **Output aliasing.** A candidate returning the same buffer across calls
-  defeats ORD-02's comparison (the runs alias) and breaks torch semantics
-  (the previous return value is invalidated by the next call). Candidate
-  outputs are cloned for gating; same-buffer returns are recorded as a
-  separate ``output_aliasing`` finding.
-
-Tolerances side with the audited systems everywhere they are configurable:
-ORD-01 runs with the reduction extent set to the primary's full element
-count (the loosest defensible bound), ORD-03 at atol/rtol 1e-3 instead of
-bitwise, PRC-02 with output-scale-aware atol, EXC-02 with the C5-calibrated
-value atol. A failure under these settings is a failure under any
-defensible calibration.
-"""
+"""Audit harness: foreign KernelBench-convention kernel pairs through the contract gates."""
 
 from __future__ import annotations
 
@@ -61,13 +18,7 @@ from lethe.verifier.contracts import GateResult, run_all_gates
 
 AUDIT_SEED = 1337
 
-# Reference-inapplicable sentinel: prepended by the reference adapter (and only
-# there) when the *reference* cannot consume an input, so that failure is scored
-# as skipped coverage, not a candidate failure. The trailing nonce makes the
-# token collision/forgery-resistant, so a foreign candidate cannot get its own
-# real failure reclassified as "skipped" by emitting the marker substring in
-# its exception text. The audit aggregation is unchanged: the token is
-# still produced only at the single site below and matched the same way.
+# Marks reference-inapplicable failures as skipped coverage, not candidate failures.
 _RI_MARKER = "[ref-inapplicable::fmr-ri-9e3779b97f4a7c15]"
 
 # Gate subset within the audited corpora's claimed scope (no CMP-02/RES-02).
@@ -109,10 +60,7 @@ def _trunc(obj: Any, limit: int = 300) -> str:
 
 
 def _exec_source(source: str, required: str) -> dict[str, Any]:
-    # @triton.jit refuses functions without a real source file (inspect-based
-    # tracing), and the lazy PTX compile re-reads it during gating, so the
-    # source goes to a temp .py imported by path and the file stays alive for
-    # the worker's lifetime (one short-lived sandbox subprocess per row).
+    # @triton.jit needs a real source file, so we write a temp .py kept alive for the worker's lifetime.
     fd, path = tempfile.mkstemp(suffix=".py", prefix=f"audit_{required.lower()}_")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(source)
@@ -139,13 +87,7 @@ def _first_tensor(out: Any) -> Tensor:
 
 
 class _ModuleAdapter:
-    """Close a KernelBench module over its non-primary inputs as a single-tensor callable.
-
-    Reference adapters convert every exception into the not-applicable
-    marker; candidate adapters let exceptions propagate (the gates record
-    them as failures). Half-dtype variants are built lazily per the
-    mixed-precision convention in the module docstring.
-    """
+    """Close a KernelBench module over its non-primary inputs as a single-tensor callable."""
 
     def __init__(
         self,
@@ -170,10 +112,7 @@ class _ModuleAdapter:
         self.multi_output = False
 
     def _rebuild(self) -> nn.Module:
-        # Re-instantiation under the audit seed reproduces the fp32 base's
-        # parameters exactly; deepcopy is only the fallback when no ctor is
-        # supplied (it chokes on modules holding locks/caches and those
-        # failures must not be charged to the candidate).
+        # Seeded re-instantiation reproduces fp32 params; deepcopy (fallback) can choke on locks/caches.
         if self._ctor is None:
             return copy.deepcopy(self._models[torch.float32])
         torch.manual_seed(AUDIT_SEED)
@@ -267,14 +206,7 @@ def _shape_variants(shape: tuple[int, ...]) -> list[tuple[int, ...]]:
 
 
 def _gate_status(name: str, result: GateResult, n_checks: int | None) -> dict[str, Any]:
-    """Collapse a GateResult to {status, reason, skipped} with N/A reclassification.
-
-    The reference adapter runs before the candidate inside every gate check,
-    so a failure entry carrying the marker means the *reference* could not
-    consume that input, skipped coverage, not a candidate failure. A gate
-    whose every check was skipped is "na"; one with surviving real failures
-    is "fail"; otherwise the remaining checks passed.
-    """
+    """Collapse a GateResult to {status, reason, skipped} with N/A reclassification."""
     if result.passed:
         return {"status": "pass", "reason": "", "skipped": 0}
     if result.reason.startswith("gate crashed") or result.reason == "not_implemented":
@@ -291,9 +223,7 @@ def _gate_status(name: str, result: GateResult, n_checks: int | None) -> dict[st
         skipped = [f for f in failures if "output device" not in f]
         n_checks = len(result.details.get("devices_tested", [])) or None
     elif name == "gate_prc_01_precision_regime":
-        # The fp32 row duplicates CMP-01 at a tolerance this harness cannot
-        # tune per-task (the gate's dtype table is internal); CMP-01 carries
-        # the calibrated fp32 verdict, PRC-01 audits the half-precision rows.
+        # fp32 duplicates CMP-01 at an untunable tolerance; CMP-01 owns fp32, PRC-01 audits half-precision.
         real = [f for f in failures if _RI_MARKER not in f and "float32" not in f]
         skipped = [f for f in failures if _RI_MARKER in f or "float32" in f]
     else:
@@ -316,17 +246,7 @@ def _gate_status(name: str, result: GateResult, n_checks: int | None) -> dict[st
 
 
 def audit_worker(ref_source: str, cand_source: str, config: dict[str, Any]) -> dict[str, Any]:
-    """Audit one (reference, candidate) source pair; returns a picklable result dict.
-
-    Row statuses: ``ref_broken`` / ``not_auditable`` exclude the row from
-    the audit denominator (the reference or task shape is at fault);
-    ``cand_load_fail`` and ``cand_native_fail`` are candidate findings in
-    their own right; ``gated`` carries per-gate statuses.
-
-    The sandbox marshals this function's return value as pickled stdout, so
-    candidate prints (exec-time banners, autotune chatter) would corrupt the
-    channel, so stdout is swapped to stderr for the body's duration.
-    """
+    """Audit one (reference, candidate) source pair; returns a picklable result dict."""
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
@@ -408,9 +328,7 @@ def _audit_worker_body(ref_source: str, cand_source: str, config: dict[str, Any]
 
     shape = tuple(native.shape)
     variants = _shape_variants(shape)
-    # The C1 calibration model, task-generic: an honest tree-reducing kernel's
-    # reorder noise follows eps*sqrt(chain)*scale; the chain extent is unknown
-    # for a foreign op, so bound it by the primary's element count.
+    # C1 model: reorder noise ~ eps*sqrt(chain)*scale; chain extent unknown, bound by element count.
     fp32_atol = max(1e-5, 4 * 1.19e-7 * math.sqrt(native.numel()))
     gate_overrides: dict[str, dict[str, Any]] = {
         "gate_cmp_01_input_variation": {"atol": fp32_atol},

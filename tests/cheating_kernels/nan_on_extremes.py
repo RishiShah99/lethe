@@ -1,12 +1,4 @@
-"""Cheating kernel: correct in-range, NaN on inputs with |x| > 1e3.
-
-A kernel that overflows or otherwise spits NaN on large-magnitude
-inputs while looking fine in the typical training regime.
-
-Expected rejector: CMP-01 (input variation) — the ``large_1e6``
-adversarial case produces NaNs where the reference produces finite
-values. EXC-01 also catches the NaN-mask divergence.
-"""
+"""Cheating kernel: correct in-range, NaN on inputs with |x| > 1e3."""
 
 from __future__ import annotations
 

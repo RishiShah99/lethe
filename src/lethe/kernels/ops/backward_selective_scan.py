@@ -1,27 +1,4 @@
-"""C2, hand-written SISO selective-scan backward (the #904-broken op).
-
-Drop-in for ``reference_backward_selective_scan`` with the same signature
-and semantics, widened to more dtypes and devices:
-
-- CUDA + {fp32, fp16, bf16} with triton installed -> the Triton kernel
-  (``_triton_bwd_scan``): analytic adjoint with chunked state recompute,
-  no ``tl.dot`` anywhere, so Triton's eager TMEM-promotion pass, the
-  root cause of the official kernel's num_warps>=4 compile failures on
-  Blackwell, never engages.
-- everything else (CPU, fp64, missing triton) -> ``torch.autograd.grad``
-  through ``_scan_eager``, the differentiable eager path shared with the
-  C1 forward op. For fp32 on CPU this replicates the reference oracle's
-  gradients; fp64 is the verification dtype (gradcheck) and deliberately
-  routes here. When ``dy.requires_grad``, the eager path builds the
-  double-backward graph (``create_graph=True``), the VJP is linear in
-  ``dy``, which is exactly what CMP-02's gradcheck differentiates.
-
-Deviations from the reference: the reference rejects non-fp32 inputs; this
-op defines the mixed-precision contract instead (compute in fp32, round
-once per gradient output). ``chunk_size`` is validated identically but is
-a blocking hint only, gradients do not depend on it, and the Triton
-kernel picks its own recompute-chunk internally.
-"""
+"""C2, hand-written SISO selective-scan backward (the #904-broken op)."""
 
 from __future__ import annotations
 
@@ -65,16 +42,7 @@ def backward_selective_scan(
     chunk_size: int = 64,
     config: KernelConfig | None = None,
 ) -> SelectiveScanGrads:
-    """Selective-scan backward pass (SISO, Mamba-1 recurrence).
-
-    Args/semantics mirror ``reference_backward_selective_scan``:
-    ``u``/``delta``/``dy`` [B, L, D], ``A`` [D, N], ``B``/``C`` [B, L, N],
-    ``D`` [D]; returns a ``SelectiveScanGrads`` named tuple whose fields
-    match the corresponding input shapes and dtypes.
-
-    Raises:
-        ValueError: If L is not divisible by chunk_size.
-    """
+    """Selective-scan backward pass (SISO, Mamba-1 recurrence)."""
     seq_len = u.shape[1]
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
@@ -104,16 +72,7 @@ def backward_selective_scan(
 
 
 def triton_bwd_scan_resource_meta(config: KernelConfig | None = None) -> dict[str, int] | None:
-    """Resource metadata of the compiled Triton backward kernel, if any.
-
-    Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
-
-    Must match ``backward_selective_scan``'s dispatch: an explicit
-    ``scan_mode`` audits exactly that kernel, but when ``scan_mode`` is unset
-    the dispatch resolves the mode by *shape*, either kernel can run, so the
-    audit returns the max envelope over both, never the serial one alone.
-    """
+    """Resource metadata of the compiled Triton backward kernel, if any."""
     if not _triton_usable():
         return None
     from lethe.kernels.ops import _triton_bwd_scan, _triton_chunk_parallel_bwd

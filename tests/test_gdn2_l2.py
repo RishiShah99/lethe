@@ -1,11 +1,4 @@
-"""Level-2 de-glue promotion — CPU pins for the promoted module.
-
-The kernels themselves are box-only (silicon gate: results/k1_l2_epilogue_box.json);
-these tests pin what is CPU-checkable: the module imports cleanly off-box, the
-pure-torch model (the kernel spec with fp16 round-trips) tracks the fp64 cw bundle
-within the fp16 quantisation floor, and the cw K#1 default selector routes L2 on the
-exact proven tile / lever-B otherwise, upcasting L2's f16 outputs to fp32.
-"""
+"""Level-2 de-glue promotion: CPU pins for the promoted module."""
 
 from __future__ import annotations
 
@@ -60,8 +53,7 @@ def test_modelled_l2_tracks_fp64_bundle(nt: int) -> None:
 
 
 def test_selector_routes_l2_on_proven_tile(monkeypatch: pytest.MonkeyPatch) -> None:
-    # FMR_DISABLE_L3 drops the selector past the Level-3 fused kernel to Level-2
-    # (also the L3 kill-switch regression: L3 disabled must not shadow L2).
+    # FMR_DISABLE_L3 routes past L3 to L2; disabling L3 must not shadow L2's own path.
     monkeypatch.setenv("FMR_DISABLE_L3", "1")
     b, hv, nt, c, d_k, d_v = 1, 2, 2, 64, 128, 64
     shape_args = [
@@ -118,18 +110,13 @@ def test_selector_routes_batched_off_tile(monkeypatch: pytest.MonkeyPatch) -> No
     ids=lambda m: m.__name__.rsplit(".", 1)[-1],
 )
 def test_fence_proxy_precedes_barrier_on_simt_tma_roundtrip(module: object) -> None:
-    """Pin that fence_proxy always precedes barrier at SIMT-store-to-TMA round-trip sites.
-
-    The PTX mixed-proxy model requires stores -> fence_proxy (each writing thread)
-    -> barrier -> TMA for cross-proxy SIMT/TMA round-trips. This source-pin catches
-    any accidental inversion across the L2/L3/v0 sibling kernels.
-    """
+    """Pin that fence_proxy always precedes barrier at SIMT-store-to-TMA round-trip sites."""
     src = inspect.getsource(module)  # type: ignore[arg-type]
     barrier_then_fence = re.compile(
         r"cute\.arch\.barrier\(\)\s*\n\s*(?:if\s+[^\n]+:\s*\n\s*)?cute\.arch\.fence_proxy"
     )
     match = barrier_then_fence.search(src)
     assert match is None, (
-        f"{module.__name__}: barrier() before fence_proxy() at SIMT-TMA round-trip — "
+        f"{module.__name__}: barrier() before fence_proxy() at SIMT-TMA round-trip, "
         f"inverted order breaks cross-proxy synchronization (match at char {match.start()})"
     )

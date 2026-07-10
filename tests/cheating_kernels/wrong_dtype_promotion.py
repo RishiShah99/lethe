@@ -1,12 +1,4 @@
-"""Cheating kernel: silently promotes intermediates to int8 then back.
-
-Models a kernel that quantises through an intermediate integer path
-without disclosing the quantisation, blowing precision well past the
-FP16/BF16 tolerances.
-
-Expected rejector: PRC-01 (precision regime). The int8 round-trip
-gives errors far above FP16/BF16 tolerances.
-"""
+"""Cheating kernel: silently promotes intermediates to int8 then back."""
 
 from __future__ import annotations
 

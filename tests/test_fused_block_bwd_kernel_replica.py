@@ -1,18 +1,4 @@
-"""CPU replica of the C6 Triton backward pipeline's exact algorithm.
-
-The four-kernel backward computes the reference's gradients through a
-different route: forward re-stage with per-chunk checkpoints, a chunked
-RMSNorm backward that sums the div-backward integrand before dividing by
-r^2 once, a newest-first reverse sweep with in-chunk conv/SiLU recompute,
-and a gather-form conv input-gradient. This replica mirrors that pipeline
-statement-for-statement in torch — reduction groupings included (per-
-d-block grad_B/grad_C partials, per-t-block grad_norm_weight partials,
-reverse-t accumulator order) — so any algebra divergence from autograd's
-dataflow surfaces on CPU without a GPU in the loop. Tolerances are fp32
-reorder noise, not correctness slack; non-finite tests pin the EXC-01
-mask-parity claims the kernel docstring makes (the sdw factoring, the
-recompute path).
-"""
+"""CPU replica of the C6 Triton backward pipeline's exact algorithm."""
 
 from __future__ import annotations
 
@@ -102,7 +88,7 @@ def _bwd_pipeline_replica(
         abar = torch.exp(dbar.unsqueeze(-1) * a_mat.unsqueeze(0))
         return dbar, abar
 
-    # kernel 1: forward re-stage — ys plus per-chunk state checkpoints.
+    # kernel 1: forward re-stage, ys plus per-chunk state checkpoints.
     ys = torch.empty(batch, l_out, d_model, dtype=dt)
     ckpts = torch.empty(n_chunks, batch, d_model, n_state, dtype=dt)
     h = torch.zeros(batch, d_model, n_state, dtype=dt)
@@ -118,10 +104,7 @@ def _bwd_pipeline_replica(
     # kernel 2: RMSNorm backward.
     dys, grad_nw = _norm_bwd_replica(ys, dy, norm_w, eps, block_t, block_d)
 
-    # kernel 3: newest-first reverse sweep with in-chunk recompute. grad_B/
-    # grad_C cross-D sums complete per d-block (per-program partials the
-    # launcher reduces); the other accumulators ride registers in reverse-t
-    # order and reduce over batch at the end.
+    # kernel 3: newest-first reverse sweep with in-chunk recompute.
     n_d_blocks = (d_model + block_d - 1) // block_d
     dconv = torch.empty(batch, l_out, d_model, dtype=dt)
     grad_delta = torch.empty(batch, l_out, d_model, dtype=dt)
@@ -279,8 +262,7 @@ class TestBwdKernelReplicaParity:
         self._check(2, 16, 8, 8, 4, chunk_k=1)
 
     def test_d_block_tail(self) -> None:
-        # d_model=10 with block_d=4: masked tail lanes in the per-block
-        # grad_B/grad_C partials and the norm kernel's chunked loops.
+        # d_model=10, block_d=4: masked tail lanes in grad_B/grad_C partials and norm loops.
         self._check(2, 32, 10, 8, 4, block_d=4)
 
     def test_t_block_tail(self) -> None:
@@ -303,8 +285,7 @@ class TestBwdKernelReplicaParity:
 
 
 class TestBwdReplicaNonFinites:
-    """Pin the mask-parity claims: the sdw factoring and the recompute path
-    must mint the same NaN/Inf pattern autograd's dataflow grouping does."""
+    """Mask parity: the sdw factoring and recompute path must match autograd's NaN/Inf pattern."""
 
     def _masks_match(self, args: tuple[torch.Tensor, ...]) -> None:
         got = _bwd_pipeline_replica(*args, 1e-5, 8, 4, 8)

@@ -1,11 +1,4 @@
-"""Harness tests for the GDN-2 channel-wise crown gate (Phase 3).
-
-The channel-wise assembly must pass all 12 contract gates across all six per-channel
-gradient views, graded against the structurally-matched channel-wise refs assembly
-(candidate-vs-same-algorithm on CPU; tcgen05-vs-reference on a Blackwell box). Independent
-value correctness is carried by test_gdn2_assemble_cw (assembly vs the token-serial oracle).
-CPU only.
-"""
+"""Harness tests for the GDN-2 channel-wise crown gate (Phase 3)."""
 
 import pytest
 import torch

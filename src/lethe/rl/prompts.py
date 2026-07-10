@@ -1,12 +1,4 @@
-"""Per-op prompt templates for kernel-generation policies.
-
-One prompt per target op, consumed by the single-shot base-model eval and
-the GRPO trainer alike. The prompt states the exact contract the verifier
-enforces: signature, math, and the gate battery, so a policy is graded only
-on what it was told. The math sections restate the reference docstrings
-(kernels/references/*) verbatim in substance; they are the single source
-of truth.
-"""
+"""Per-op prompt templates for kernel-generation policies."""
 
 from __future__ import annotations
 
@@ -22,12 +14,12 @@ helpers it needs):
 
 ```python
 def forward_chunked_scan(
-    u,        # [B, L, D] float32/float16/bfloat16 CUDA tensor
-    delta,    # [B, L, D] same dtype as u (pre-softplus timescale)
-    A,        # [D, N] float32, negative log-magnitude SSM matrix
-    B,        # [B, L, N] same dtype as u
-    C,        # [B, L, N] same dtype as u
-    D,        # [D] float32 skip weight
+    u,       # [B, L, D] float32/float16/bfloat16 CUDA tensor
+    delta,   # [B, L, D] same dtype as u (pre-softplus timescale)
+    A,       # [D, N] float32, negative log-magnitude SSM matrix
+    B,       # [B, L, N] same dtype as u
+    C,       # [B, L, N] same dtype as u
+    D,       # [D] float32 skip weight
     *,
     chunk_size: int = 64,
 ) -> "Tensor":  # [B, L, D], same dtype as u
@@ -44,7 +36,7 @@ Semantics (zero-order-hold discretisation, then a linear recurrence over L):
     h_t = A_bar_t * h_{t-1} + B_bar_t * u_t[..., None]
     y_t = (h_t * C_t).sum(-1) + D * u_t               # [B, L, D]
 
-PITFALL — the arguments named B, C, D are TENSORS (input projection,
+PITFALL: the arguments named B, C, D are TENSORS (input projection,
 output projection, skip weight). Do NOT shadow them with shape variables:
 write `batch, seqlen, dmodel = u.shape`, never `B, L, D = u.shape`.
 
@@ -123,13 +115,13 @@ helpers it needs):
 
 ```python
 def backward_selective_scan(
-    u,        # [B, L, D] CUDA tensor (forward input)
-    delta,    # [B, L, D] (pre-softplus timescale)
-    A,        # [D, N] negative log-magnitude SSM matrix
-    B,        # [B, L, N] input projection
-    C,        # [B, L, N] output projection
-    D,        # [D] skip weight
-    dy,       # [B, L, D] upstream gradient w.r.t. y
+    u,       # [B, L, D] CUDA tensor (forward input)
+    delta,   # [B, L, D] (pre-softplus timescale)
+    A,       # [D, N] negative log-magnitude SSM matrix
+    B,       # [B, L, N] input projection
+    C,       # [B, L, N] output projection
+    D,       # [D] skip weight
+    dy,      # [B, L, D] upstream gradient w.r.t. y
     *,
     chunk_size: int = 64,
 ):  # -> (grad_u, grad_delta, grad_A, grad_B, grad_C, grad_D)
@@ -159,7 +151,7 @@ ALL SIX views to pass.
 - Value parity per gradient within reorder-noise tolerance
   (eps * sqrt(chain length) * output scale). Wrong math fails by orders
   of magnitude. The reverse-time carry never inverts the recurrence
-  (dividing by A_bar underflows at saturated delta) — recompute or
+  (dividing by A_bar underflows at saturated delta), recompute or
   checkpoint the forward state instead.
 - Shape polymorphism: any B, any D, any L divisible by chunk_size.
 - Byte-identical determinism across repeated calls: no atomics; fixed
@@ -169,7 +161,7 @@ ALL SIX views to pass.
   dataflow EXACTLY when dy carries non-finites. Algebraically equivalent
   refactorings can mint different non-finites (e.g. at t=0 where
   h_{-1} = 0, a factored expression produces +/-Inf where autograd
-  produces NaN) — mirror autograd's grouping of products and keep the
+  produces NaN), mirror autograd's grouping of products and keep the
   delta-path reductions separate.
 - Mixed precision: fp16/bf16 inputs must be computed with float32 state
   and accumulators, rounding once at each output. A half-precision
@@ -177,7 +169,7 @@ ALL SIX views to pass.
 - Subnormal inputs must not be flushed (no ftz exp approximations;
   guard softplus with a linear branch above threshold ~20).
 
-PITFALL — the arguments named B, C, D are TENSORS. Do NOT shadow them
+PITFALL: the arguments named B, C, D are TENSORS. Do NOT shadow them
 with shape variables: write `batch, seqlen, dmodel = u.shape`, never
 `B, L, D = u.shape`.
 
@@ -199,14 +191,14 @@ helpers it needs):
 
 ```python
 def mimo_backward(
-    x,        # [B, L, H, P] CUDA tensor (forward input)
-    B,        # [B, L, R, H, N] input projection (pre-rotated)
-    C,        # [B, L, R, H, N] output projection (pre-rotated)
-    dt,       # [B, L, H] positive timescale
-    alpha,    # [B, L, H] decay, alpha = exp(dt * A), in (0, 1)
-    mimo_x,   # [H, R, P] input mixing weights (psi)
-    mimo_o,   # [H, R, P] output mixing weights (phi)
-    dy,       # [B, L, H, P] upstream gradient w.r.t. y
+    x,       # [B, L, H, P] CUDA tensor (forward input)
+    B,       # [B, L, R, H, N] input projection (pre-rotated)
+    C,       # [B, L, R, H, N] output projection (pre-rotated)
+    dt,      # [B, L, H] positive timescale
+    alpha,   # [B, L, H] decay, alpha = exp(dt * A), in (0, 1)
+    mimo_x,  # [H, R, P] input mixing weights (psi)
+    mimo_o,  # [H, R, P] output mixing weights (phi)
+    dy,      # [B, L, H, P] upstream gradient w.r.t. y
 ):  # -> (grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x, grad_mimo_o)
     ...
 ```
@@ -227,7 +219,7 @@ The forward pass being differentiated (Mamba-3 Eqs 12-14):
 
 Structural fact worth exploiting: alpha is rank-independent and the
 readout distributes over the rank sum, so the reverse-time carry is
-IDENTICAL for every rank — carry only the aggregated state's gradient,
+IDENTICAL for every rank, carry only the aggregated state's gradient,
 never R per-rank states.
 
 Your gradients are graded against torch.autograd run through a float32
@@ -242,12 +234,12 @@ requires ALL SEVEN views to pass.
   (per-program partials + a deterministic final sum is the standard
   pattern for the parameter gradients summed over batch and L).
 - NaN/signed-Inf positions in every gradient must match autograd's
-  dataflow exactly when dy carries non-finites — mirror autograd's
+  dataflow exactly when dy carries non-finites, mirror autograd's
   grouping of products.
 - Mixed precision: fp16/bf16 inputs must be computed with float32 state
   and accumulators, rounding once at each output.
 
-PITFALL — the arguments named B and C are TENSORS. Do NOT shadow them
+PITFALL: the arguments named B and C are TENSORS. Do NOT shadow them
 with shape variables: write `batch, seqlen, nheads, headdim = x.shape`,
 never `B, L, H, P = x.shape`.
 
@@ -269,12 +261,12 @@ helpers it needs):
 
 ```python
 def complex_scan_rope(
-    x,           # [B, L, H, P] CUDA tensor
-    B,           # [B, L, H, N] input projection
-    C,           # [B, L, H, N] output projection
-    dt,          # [B, L, H] positive timescale
-    A,           # [H] negative per-head decay rate
-    angle_proj,  # [B, L, H, S] rotation angle logits
+    x,          # [B, L, H, P] CUDA tensor
+    B,          # [B, L, H, N] input projection
+    C,          # [B, L, H, N] output projection
+    dt,         # [B, L, H] positive timescale
+    A,          # [H] negative per-head decay rate
+    angle_proj, # [B, L, H, S] rotation angle logits
 ) -> "Tensor":   # [B, L, H, P], same dtype as x
     ...
 ```
@@ -283,12 +275,12 @@ def complex_scan_rope(
 with 2*S <= N.) All tensors arrive on the same CUDA device with the same
 dtype (float32/float16/bfloat16).
 
-Semantics — fold the cumulative rotation into B and C, then run a plain
+Semantics: fold the cumulative rotation into B and C, then run a plain
 decay scan (the hidden state itself is NEVER re-rotated):
 
     Theta_t  = cumsum_{s<=t}( tanh(angle_proj_s) * dt_s * pi )  mod 2*pi
                # [B, L, H, S], causal cumulative angle
-    B_rot_t  = R(Theta_t) @ B_t,   C_rot_t = R(Theta_t) @ C_t
+    B_rot_t  = R(Theta_t) @ B_t,  C_rot_t = R(Theta_t) @ C_t
                # R = block-diagonal pairwise rotation on consecutive
                # lanes (2k, 2k+1) for k < S: with c = cos, s = sin,
                #   out_even = v_even * c - v_odd * s
@@ -319,7 +311,7 @@ float32 eager reference:
 - Subnormal inputs must not be flushed (no ftz approximations for
   exp/cos/sin).
 
-PITFALL — the arguments named B and C are TENSORS. Do NOT shadow them
+PITFALL: the arguments named B and C are TENSORS. Do NOT shadow them
 with shape variables: write `batch, seqlen, nheads, headdim = x.shape`,
 never `B, L, H, P = x.shape`.
 
@@ -341,16 +333,16 @@ helpers it needs):
 
 ```python
 def fused_block_forward(
-    x,            # [B, L, D] CUDA tensor, ALREADY left-padded with
+    x,           # [B, L, D] CUDA tensor, ALREADY left-padded with
                   # conv_kernel_size - 1 zeros along L (causal padding)
-    conv_weight,  # [D, 1, K] depthwise conv kernel
-    conv_bias,    # [D]
-    delta,        # [B, L_out, D] (pre-softplus timescale), L_out = L - (K-1)
-    A,            # [D, N] negative log-magnitude SSM matrix
-    B,            # [B, L_out, N] input projection
-    C,            # [B, L_out, N] output projection
-    D,            # [D] skip weight
-    norm_weight,  # [D] RMSNorm gain
+    conv_weight, # [D, 1, K] depthwise conv kernel
+    conv_bias,   # [D]
+    delta,       # [B, L_out, D] (pre-softplus timescale), L_out = L - (K-1)
+    A,           # [D, N] negative log-magnitude SSM matrix
+    B,           # [B, L_out, N] input projection
+    C,           # [B, L_out, N] output projection
+    D,           # [D] skip weight
+    norm_weight, # [D] RMSNorm gain
     *,
     conv_kernel_size: int = 4,
     eps: float = 1e-5,
@@ -364,7 +356,7 @@ All tensors arrive on the same CUDA device with the same dtype
 
 Semantics, in order:
 
-    1. Causal depthwise conv1d over L (groups = D, VALID convolution —
+    1. Causal depthwise conv1d over L (groups = D, VALID convolution, 
        the input already carries the K-1 left padding):
        conv_out[b, t, d] = sum_k conv_weight[d, 0, k] * x[b, t+k, d]
                            + conv_bias[d]            # [B, L_out, D]
@@ -387,7 +379,7 @@ float32 eager reference:
   chunk_size.
 - Byte-identical determinism across repeated calls: no atomics; fixed
   reduction order only (the cross-D RMSNorm reduction must be
-  deterministic — a full-D fp32 sum per (batch, t) program is the
+  deterministic, a full-D fp32 sum per (batch, t) program is the
   standard pattern).
 - NaN and signed-Inf positions in the output must match the reference
   exactly (non-finites propagate through conv, SiLU, the recurrence and
@@ -398,7 +390,7 @@ float32 eager reference:
 - Subnormal inputs must not be flushed (no ftz approximations; guard
   softplus with a linear branch above threshold ~20).
 
-PITFALL — the arguments named B, C, D are TENSORS. Do NOT shadow them
+PITFALL: the arguments named B, C, D are TENSORS. Do NOT shadow them
 with shape variables: write `batch, seqlen, dmodel = x.shape`, never
 `B, L, D = x.shape`.
 
@@ -421,17 +413,17 @@ helpers it needs):
 
 ```python
 def fused_block_backward(
-    x,            # [B, L, D] CUDA tensor, ALREADY left-padded with
+    x,           # [B, L, D] CUDA tensor, ALREADY left-padded with
                   # conv_kernel_size - 1 zeros along L (causal padding)
-    conv_weight,  # [D, 1, K] depthwise conv kernel
-    conv_bias,    # [D]
-    delta,        # [B, L_out, D] (pre-softplus), L_out = L - (K-1)
-    A,            # [D, N] negative log-magnitude SSM matrix
-    B,            # [B, L_out, N] input projection
-    C,            # [B, L_out, N] output projection
-    D,            # [D] skip weight
-    norm_weight,  # [D] RMSNorm gain
-    dy,           # [B, L_out, D] upstream gradient w.r.t. the block output
+    conv_weight, # [D, 1, K] depthwise conv kernel
+    conv_bias,   # [D]
+    delta,       # [B, L_out, D] (pre-softplus), L_out = L - (K-1)
+    A,           # [D, N] negative log-magnitude SSM matrix
+    B,           # [B, L_out, N] input projection
+    C,           # [B, L_out, N] output projection
+    D,           # [D] skip weight
+    norm_weight, # [D] RMSNorm gain
+    dy,          # [B, L_out, D] upstream gradient w.r.t. the block output
     *,
     conv_kernel_size: int = 4,
     eps: float = 1e-5,
@@ -443,7 +435,7 @@ def fused_block_backward(
 
 All tensors arrive on the same CUDA device with the same dtype
 (float32/float16/bfloat16). Return the nine gradients in exactly that
-order, each matching its input's shape and dtype — grad_x matches the
+order, each matching its input's shape and dtype, grad_x matches the
 PADDED x, shape [B, L, D].
 
 The forward pass being differentiated, in order:
@@ -463,14 +455,14 @@ requires ALL NINE views to pass.
 - Value parity per gradient within reorder-noise tolerance
   (eps * sqrt(chain length) * output scale). The reverse-time carry
   never inverts the recurrence (dividing by exp(delta_bar*A) underflows
-  at saturated delta) — checkpoint and recompute the forward state.
+  at saturated delta), checkpoint and recompute the forward state.
 - Shape polymorphism: any batch, any D, any L_out divisible by
   chunk_size.
 - Byte-identical determinism: no atomics; fixed reduction order only
   (per-program fp32 partials + a deterministic final sum for the
   parameter gradients summed over batch and L).
 - NaN/signed-Inf positions in every gradient must match autograd's
-  dataflow exactly when dy carries non-finites — mirror autograd's
+  dataflow exactly when dy carries non-finites, mirror autograd's
   grouping of products (e.g. at t=0 where h_{-1} = 0, a factored
   expression can mint +/-Inf where autograd produces NaN).
 - Mixed precision: fp16/bf16 inputs must be computed with float32 state
@@ -479,7 +471,7 @@ requires ALL NINE views to pass.
 - Subnormal inputs must not be flushed (no ftz approximations; guard
   softplus with a linear branch above threshold ~20).
 
-PITFALL — the arguments named B, C, D are TENSORS. Do NOT shadow them
+PITFALL: the arguments named B, C, D are TENSORS. Do NOT shadow them
 with shape variables: write `batch, seqlen, dmodel = x.shape`, never
 `B, L, D = x.shape`.
 
@@ -512,10 +504,7 @@ def available_ops() -> tuple[str, ...]:
     return tuple(_OP_PROMPTS)
 
 
-# The config-emission action space. The knob set and legal values are
-# read from SEARCH_GRID so the prompt can never drift from what the verifier
-# accepts; a knob the policy invents or sets out of range is an illegal action
-# scored 0.0 (autotune.validate is the legality oracle).
+# The config-emission action space.
 _KNOB_DESC: dict[str, str] = {
     "block_d": "D (model-dim) tile width",
     "block_p": "P (head-dim) tile width",
@@ -531,7 +520,7 @@ _KNOB_DESC: dict[str, str] = {
 _CONFIG_PROMPT_TEMPLATE = """\
 You are tuning the CUDA launch configuration of a verified-correct Triton
 kernel implementing `{op}` on an NVIDIA B200 GPU. The kernel's numerics are
-fixed and already correct — you choose ONLY performance knobs that cannot
+fixed and already correct, you choose ONLY performance knobs that cannot
 change the result. Pick the fastest configuration for this exact shape:
 
     batch = {batch}, seq_len = {seq_len}, d_model = {width}
@@ -559,11 +548,7 @@ No prose after the block.
 
 
 def build_config_prompt(op_name: str, shape: ShapeSpec) -> str:
-    """Config-emission prompt for *op_name* at *shape* (KeyError if unknown).
-
-    Knob names + legal values come from ``SEARCH_GRID[op_name]`` so the prompt
-    is always in sync with the verifier's action space.
-    """
+    """Config-emission prompt for *op_name* at *shape* (KeyError if unknown)."""
     grid = SEARCH_GRID[op_name]
     knobs = "\n".join(
         f"    {name}: one of {list(values)}  ({_KNOB_DESC[name]})" for name, values in grid.items()
@@ -577,10 +562,7 @@ def build_config_prompt(op_name: str, shape: ShapeSpec) -> str:
     )
 
 
-# The edit-emission action space. Unlike config emission, the action can
-# change the kernel SOURCE, so it can discover structural wins, but the edited
-# source is re-graded by the full untrusted gate battery, so it stays
-# reference-faithful by verification, not by construction.
+# The edit-emission action space.
 _EDIT_PROMPT_TEMPLATE = """\
 You are optimizing a verified-correct kernel implementing `{op}` on an NVIDIA
 B200 GPU. Make it FASTER at this exact shape while keeping it numerically
@@ -618,11 +600,7 @@ Reply with ONLY the SEARCH/REPLACE blocks. No prose, no full-file rewrite.
 
 
 def build_edit_prompt(op_name: str, shape: ShapeSpec, *, base_variant: str = "triton") -> str:
-    """Edit-emission prompt for *op_name* at *shape* (KeyError if unknown).
-
-    Embeds the self-contained ``base_variant`` SFT target as the source to edit;
-    ``"triton"`` is the GPU-run kernel, ``"eager"`` the CPU base.
-    """
+    """Edit-emission prompt for *op_name* at *shape* (KeyError if unknown)."""
     base = target_source(op_name, base_variant)
     return _EDIT_PROMPT_TEMPLATE.format(
         op=op_name,

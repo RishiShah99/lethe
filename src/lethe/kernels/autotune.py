@@ -1,24 +1,4 @@
-"""Tunable kernel configurations, the RL-as-autotuner action space.
-
-The from-scratch source-generation policy is capped at imitating its SFT
-target (the hand-written kernel), so its measured speedup is ~1.0 by
-construction. The action space here is instead a *configuration* applied to
-the trusted, already-correct in-repo kernel: only knobs that are
-correctness-invariant (num_warps, num_stages, the D/P tiling, the checkpoint
-granularity chunk_k) vary; the knobs a kernel needs for *correctness*
-(block_n holding the full state dim, block_k holding the conv window) are
-pinned to the shape and never appear here. A config can therefore only ever
-change *performance*, or fail to compile / spill past budget / OOM, which
-the verifier scores honestly. Correctness is still re-gated per config:
-num_warps and the tiling shift reduction/FMA order within the contract
-tolerances, and the gate battery confirms each config stays inside them.
-
-``SEARCH_GRID`` enumerates the searched knobs per op, both the
-exhaustive-autotuning ceiling and the legal action set the policy samples
-from. A ``None`` field means "use the kernel's own default heuristic for
-this knob"; the all-``None`` config is the shipped default and is always
-valid.
-"""
+"""Tunable kernel configurations, the RL-as-autotuner action space."""
 
 from __future__ import annotations
 
@@ -38,16 +18,7 @@ _CHUNK_LEN = (64, 128, 256, 512)
 
 @dataclass(frozen=True)
 class KernelConfig:
-    """A point in a kernel's launch-knob search space (None = shipped default).
-
-    All knobs are correctness-invariant. ``scan_mode`` selects the SISO scan
-    algorithm (forward and backward): ``"serial"`` (the O(L) walk, the
-    byte-identical default) or ``"chunk_parallel"`` (the SSD chunked-carry
-    reassociation, the long-L lever); ``chunk_len`` is its chunk-parallel
-    granularity (must divide L), a no-op in serial mode. Both reassociate the
-    *same* recurrence, so the gate battery re-confirms correctness within the
-    eps*sqrt(chain)*scale band per config.
-    """
+    """A point in a kernel's launch-knob search space (None = shipped default)."""
 
     block_d: int | None = None
     block_p: int | None = None
@@ -72,11 +43,7 @@ class ShapeSpec:
     n_state: int | None = None
 
 
-# Per-op searched knobs. block_d tiles D (forward/conv ops); block_p tiles
-# headdim (rope only, the mimo grid has no p axis, so its block_p is a
-# correctness floor like block_n, never searched); chunk_k is the in-chunk
-# recompute window of the checkpointed backward ops. block_n / block_k are
-# absent by design, they are correctness constraints, not knobs.
+# Per-op searched knobs.
 SEARCH_GRID: dict[str, dict[str, tuple[int, ...] | tuple[str, ...]]] = {
     "forward_chunked_scan": {
         "block_d": _BLOCK,
@@ -124,13 +91,7 @@ def grid_size(op: str) -> int:
 
 
 def validate(op: str, config: KernelConfig, *, shape: ShapeSpec | None = None) -> list[str]:
-    """Return the config's grid/shape violations (empty list = legal).
-
-    A knob set on the wrong op, or to a value outside its grid, is a
-    violation. With ``shape`` given, ``chunk_k`` and ``chunk_len`` must each
-    divide ``seq_len`` (the checkpoint / chunk-parallel window tiles the
-    sequence).
-    """
+    """Return the config's grid/shape violations (empty list = legal)."""
     if op not in SEARCH_GRID:
         return [f"no search grid for op {op!r}"]
     grid = SEARCH_GRID[op]
@@ -165,15 +126,7 @@ def iter_configs(op: str) -> Iterator[KernelConfig]:
 
 
 def make_configured_op(op: str, config: KernelConfig) -> Callable[..., Any]:
-    """A public-signature callable for *op* with *config* bound into the launcher.
-
-    The returned callable IS the trusted in-repo public op with the kernel
-    config bound in, the gate battery and the speedup bench invoke it exactly
-    as they invoke the shipped op, the only difference being the launch knobs.
-    No candidate source is involved, so the source-gaming screens the
-    generation path needs do not apply. The ops are imported lazily so the pure
-    config types stay importable without torch/triton.
-    """
+    """A public-signature callable for *op* with *config* bound into the launcher."""
     if op not in SEARCH_GRID:
         raise KeyError(f"{op!r} is not a tunable op")
     from lethe.kernels import ops as hand_ops

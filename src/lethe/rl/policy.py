@@ -1,11 +1,4 @@
-"""Policy interface + a deterministic stub for tests.
-
-``PolicyInterface`` is the contract a real GRPO policy implementation
-(an HF causal LM with a LoRA adapter, in our case) must satisfy.
-``StubPolicy`` is a non-trainable canned-response policy used in
-tests and scaffolding so the trainer's data flow can be exercised
-without loading a real model.
-"""
+"""Policy interface + a deterministic stub for tests."""
 
 from __future__ import annotations
 
@@ -14,32 +7,19 @@ from typing import Protocol
 
 
 class PolicyInterface(Protocol):
-    """The interface every GRPO-trainable policy must satisfy.
-
-    The verifier-driven trainer treats the policy as a black box that
-    can generate candidate completions and report per-token log-probs.
-    The actual model (HF base + LoRA adapter, possibly quantised)
-    lives behind this interface.
-    """
+    """The interface every GRPO-trainable policy must satisfy."""
 
     def generate(self, prompt: str, n: int) -> list[str]:
         """Sample ``n`` candidate completions for ``prompt``."""
         ...
 
     def log_probs(self, prompt: str, completion: str) -> list[float]:
-        """Per-token log-probabilities of ``completion`` under this policy.
-
-        Returns one float per token in the completion (model-tokenised).
-        """
+        """Per-token log-probabilities of ``completion`` under this policy."""
         ...
 
 
 class StubPolicy:
-    """A canned-response policy. Use only in tests / scaffolding.
-
-    The same fixed completions cycle through every ``generate`` call.
-    Log-probs are all zero (placeholder).
-    """
+    """A canned-response policy."""
 
     def __init__(self, completions: Sequence[str] | None = None) -> None:
         self._completions: tuple[str, ...] = tuple(

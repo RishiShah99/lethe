@@ -1,8 +1,4 @@
-"""Helper callables for GPU sandbox tests.
-
-Imported by name inside the sandbox child process — keep this module
-import-safe and side-effect free.
-"""
+"""Helper callables for GPU sandbox tests."""
 
 import torch
 

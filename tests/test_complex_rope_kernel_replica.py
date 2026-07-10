@@ -1,15 +1,4 @@
-"""CPU replica of the C4 Triton kernel's exact algorithm vs the reference.
-
-The kernel computes the same math as the reference through a different
-path: theta as a per-step-remaindered running sum duplicated across each
-pair's two lanes (reference: one mod after a full cumsum over k-indexed
-angles), the rotation as self*cos + sign*partner*sin per lane (reference:
-pair-reshape matrix form), fp32 throughout. This replica mirrors the
-kernel statement-for-statement so any algebra divergence — sign flip,
-partner mapping, identity-tail boundary, remainder placement — surfaces
-on CPU without a GPU in the loop. Tolerances are fp32 reorder noise, not
-correctness slack.
-"""
+"""CPU replica of the C4 Triton kernel's exact algorithm vs the reference."""
 
 from __future__ import annotations
 
@@ -37,9 +26,7 @@ def _kernel_replica(
     offs_n = torch.arange(n_state)
     pair_k = offs_n // 2
     mask_rot = pair_k < s_angles
-    # The kernel masks the partner load (partner < n_state, other=0) and the
-    # value is only consumed on rotated lanes, whose partner is always
-    # in-range; torch gather needs the explicit clamp instead of a mask.
+    # Kernel masks the partner load (other=0); torch gather needs an explicit clamp instead.
     partner = (offs_n ^ 1).clamp(max=n_state - 1)
     sign = torch.where(offs_n % 2 == 0, -1.0, 1.0)
 
@@ -102,9 +89,7 @@ class TestKernelReplicaParity:
         self._check(1, 1, 2, 4, 8, 3)
 
     def test_longer_sequence_angle_wraps(self) -> None:
-        # Long enough that theta wraps 2*pi several times: the per-step
-        # remainder path and the reference's mod-after-cumsum must agree
-        # through the wraps.
+        # theta wraps 2*pi several times; per-step remainder must agree with mod-after-cumsum.
         self._check(1, 512, 2, 3, 8, 4, seed=7)
 
     def test_fp64_tight(self) -> None:

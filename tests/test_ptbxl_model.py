@@ -9,10 +9,6 @@ import torch.nn as nn
 
 from lethe.medical.model import Mamba3Config, Mamba3ECGClassifier
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _tiny_cfg(chunk_size: int = 8) -> Mamba3Config:
     return dataclasses.replace(Mamba3Config.tiny(), chunk_size=chunk_size)
@@ -22,14 +18,9 @@ def _make_model(chunk_size: int = 8) -> Mamba3ECGClassifier:
     return Mamba3ECGClassifier(dataclasses.replace(Mamba3Config.tiny(), chunk_size=chunk_size))
 
 
-# ---------------------------------------------------------------------------
-# Forward shape + finiteness
-# ---------------------------------------------------------------------------
-
-
 class TestForward:
     def test_output_shape_T256(self) -> None:
-        """T=256 is divisible by chunk_size=8 → valid."""
+        """T=256 is divisible by chunk_size=8; valid."""
         model = _make_model(chunk_size=8)
         ecg = torch.randn(2, 12, 256)
         logits = model(ecg)
@@ -61,11 +52,6 @@ class TestForward:
         assert torch.isfinite(logits).all()
 
 
-# ---------------------------------------------------------------------------
-# Gradient flow
-# ---------------------------------------------------------------------------
-
-
 class TestGradients:
     def test_all_leaf_params_have_grad(self) -> None:
         """Every trainable parameter must receive a gradient signal."""
@@ -93,11 +79,6 @@ class TestGradients:
         assert non_finite == [], f"Parameters with non-finite grad: {non_finite}"
 
 
-# ---------------------------------------------------------------------------
-# param_count
-# ---------------------------------------------------------------------------
-
-
 class TestParamCount:
     def test_param_count_matches_sum(self) -> None:
         model = _make_model()
@@ -117,11 +98,6 @@ class TestParamCount:
         assert analytic == actual, f"analytic={analytic} actual={actual}"
 
 
-# ---------------------------------------------------------------------------
-# b1 analytic count (no instantiation to avoid OOM)
-# ---------------------------------------------------------------------------
-
-
 class TestB1Config:
     def test_b1_analytic_count_in_1b_band(self) -> None:
         """Analytic formula must land in [0.5B, 2B] without instantiating the model."""
@@ -134,11 +110,6 @@ class TestB1Config:
         cfg = Mamba3Config.tiny()
         model = Mamba3ECGClassifier(cfg)
         assert cfg.analytic_param_count() == model.param_count()
-
-
-# ---------------------------------------------------------------------------
-# End-to-end: loader contract → model → loss → optimizer step
-# ---------------------------------------------------------------------------
 
 
 class TestEndToEnd:

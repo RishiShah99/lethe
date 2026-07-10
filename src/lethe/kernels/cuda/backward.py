@@ -1,10 +1,4 @@
-"""Python entry point for the CUDA selective-scan backward.
-
-Transposes the reference-layout inputs ([B,L,D]/[D,N]/[B,L,N]) to the kernel's
-d-major layout, launches the fused backward, and finishes the cross-block
-reductions with deterministic torch.sum (no atomics, ORD-02). The kernel omits
-grad_u's D*dy skip term; it is added here where Dskip is in hand.
-"""
+"""Python entry point for the CUDA selective-scan backward."""
 
 from __future__ import annotations
 
@@ -28,12 +22,7 @@ def cuda_backward_scan(
     items: int = 4,
     block_d: int = 8,
 ) -> SelectiveScanGrads:
-    """Selective-scan backward on the CUDA kernel. fp32 CUDA inputs only.
-
-    Args mirror ``reference_backward_selective_scan``: ``u``/``delta``/``dy``
-    [B, L, D], ``A`` [D, N], ``B``/``C`` [B, L, N], ``D`` [D]. Returns a
-    ``SelectiveScanGrads`` named tuple in the input shapes.
-    """
+    """Selective-scan backward on the CUDA kernel."""
     if not u.is_cuda:
         raise ValueError("cuda_backward_scan requires CUDA tensors")
     if u.dtype != torch.float32:

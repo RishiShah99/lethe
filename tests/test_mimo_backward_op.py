@@ -1,10 +1,4 @@
-"""CPU-side validation of the C3 MIMO backward op (the eager path).
-
-The Triton path needs the box; everything here pins the eager path's
-contract — bitwise oracle parity on fp32, the mixed-precision rounding
-contract on half dtypes, gradcheck-ability — so the GPU run only has to
-answer GPU-specific questions.
-"""
+"""CPU-side validation of the C3 MIMO backward op (the eager path)."""
 
 from __future__ import annotations
 
@@ -100,8 +94,7 @@ class TestMimoBackwardCpu:
             assert torch.equal(got, want), field
 
     def test_differentiable_wrt_dy_when_required(self) -> None:
-        # CMP-02's gradcheck differentiates the op w.r.t. dy; the eager path
-        # must build that graph (the VJP is linear in dy).
+        # CMP-02's gradcheck differentiates w.r.t. dy, so the eager path must build that graph.
         args = _mimo_inputs()
         dy = torch.randn(2, 6, 2, 3, requires_grad=True)
         grads = mimo_backward(*args, dy)
@@ -118,8 +111,7 @@ class TestMimoBackwardCpu:
         )
 
     def test_nonfinite_dy_masks_match_oracle(self) -> None:
-        # EXC-01 flows non-finites through the primary (dy); the eager path
-        # must mint NaN/Inf exactly where the oracle does.
+        # EXC-01 flows non-finites through dy; the eager path must mint NaN/Inf where the oracle does.
         args = _mimo_inputs(seed=5)
         dy = torch.randn(2, 6, 2, 3)
         dy[0, 1, 0, 0] = float("inf")

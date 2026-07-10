@@ -20,8 +20,7 @@ def test_searched_omits_none() -> None:
 
 
 def test_empty_config_is_the_shipped_default_and_always_valid() -> None:
-    # The all-None config means "use every shipped heuristic" — it must pass
-    # for every op, since it is exactly the pre-autotune launch path.
+    # All-None config is the shipped default heuristic; must validate for every op.
     for op in tunable_ops():
         assert validate(op, KernelConfig()) == []
 
@@ -84,16 +83,14 @@ def test_validate_rejects_unknown_scan_mode() -> None:
 
 
 def test_block_p_not_tunable_for_mimo_backward() -> None:
-    # The mimo grid has no p axis (one masked BLOCK_P tile covers headdim), so
-    # block_p is a correctness floor there — searched only for the rope op.
+    # mimo has no p axis (one masked BLOCK_P tile); block_p is a correctness floor there.
     v = validate("mimo_backward", KernelConfig(block_p=16))
     assert v and any("block_p" in s for s in v)
     assert validate("complex_scan_rope", KernelConfig(block_p=16)) == []
 
 
 def test_scan_mode_not_tunable_for_other_ops() -> None:
-    # The chunk-parallel lever is for the SISO scan (forward + C2 backward); the
-    # head-structured ops (mimo) don't carry it.
+    # scan_mode is only for the SISO scan (forward + C2 backward), not mimo ops.
     v = validate("mimo_backward", KernelConfig(scan_mode="chunk_parallel"))
     assert v and any("scan_mode" in s for s in v)
 

@@ -1,14 +1,4 @@
-"""Drifted-decay-regime robustness — the burst-2 native-training NaN regression.
-
-Training drifts the decay gate hard negative (delayed-copy pushes memory short); once
-the within-chunk log2 span crosses ~128 the unmasked ``exp2(g2_i - g2_s)`` upper
-triangle overflowed fp32 to inf and the masked einsums produced ``0 * inf = NaN`` —
-the assembly NaN'd at tiny-train step 3 while the token-serial eager path trained.
-The masked-exponent ``decay_rel``/``ratio`` forms remove both failure modes (upper
-overflow; live 0/0 after gamma underflow). These tests pin them.
-
-CPU only; the pure-torch kernel refs stand in for the box kernels (identical glue).
-"""
+"""Drifted-decay-regime robustness: the burst-2 native-training NaN regression."""
 
 from __future__ import annotations
 
@@ -21,8 +11,7 @@ from lethe.kernels.cute.gdn2_assemble import (
 )
 from lethe.kernels.references.gdn_backward import reference_gdn2_backward
 
-# mean per-token log-decay ~-1.7 -> chunk log2 span ~154 > 128: past the old fp32
-# exp2 cliff (and past fp32 gamma underflow at fp64's wider ranges stays exact).
+# mean log-decay -1.7 -> chunk log2 span ~154, past the fp32 exp2 cliff (128).
 _MEAN_G = -1.7
 
 

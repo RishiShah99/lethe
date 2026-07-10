@@ -1,18 +1,4 @@
-"""C4, hand-written Mamba-3 complex-RoPE selective scan forward.
-
-Drop-in for ``reference_complex_scan_rope`` with the same signature and
-semantics, widened to more dtypes and devices:
-
-- CUDA + {fp32, fp16, bf16} with triton installed -> the fused Triton
-  kernel (``_triton_complex_rope``), wrapped in an autograd.Function whose
-  backward recomputes through the eager path (first-order only; this op
-  has no hand-written backward in the kernel suite, the training-path
-  backward is C6's fused block).
-- everything else (CPU, fp64, missing triton) -> the reference itself.
-  fp32/fp64 feed it directly (bitwise-equal by construction); half dtypes
-  upcast once and round once at the output (the mixed-precision contract,
-  the reference rejects half).
-"""
+"""C4, hand-written Mamba-3 complex-RoPE selective scan forward."""
 
 from __future__ import annotations
 
@@ -37,11 +23,7 @@ def _rope_eager(
 
 
 class _ComplexRopeCuda(torch.autograd.Function):
-    """Triton forward; backward recomputes the VJP through the eager path.
-
-    First-order only, the recomputed graph is built per backward call and
-    freed; double-backward routes through the eager path (CPU or fp64).
-    """
+    """Triton forward; backward recomputes the VJP through the eager path."""
 
     @staticmethod
     def forward(
@@ -81,17 +63,7 @@ def complex_scan_rope(
     *,
     config: KernelConfig | None = None,
 ) -> Tensor:
-    """Mamba-3 SSM forward with data-dependent RoPE rotation (paper §3.2).
-
-    Args/semantics mirror ``reference_complex_scan_rope``: ``x`` [B, L, H, P],
-    ``B``/``C`` [B, L, H, N], ``dt`` [B, L, H] positive, ``A`` [H] negative,
-    ``angle_proj`` [B, L, H, S] with 2*S <= N; returns ``y`` [B, L, H, P] in
-    ``x``'s dtype. All floating inputs share ``x``'s dtype (dispatch keys on
-    ``x`` alone, the C1-C3 family contract).
-
-    Raises:
-        ValueError: If 2*S exceeds N (mirrors the reference's contract).
-    """
+    """Mamba-3 SSM forward with data-dependent RoPE rotation (paper §3.2)."""
     if 2 * angle_proj.shape[-1] > B.shape[-1]:
         raise ValueError(f"rotary_dim={2 * angle_proj.shape[-1]} exceeds d_state={B.shape[-1]}")
     if x.is_cuda and x.dtype in _TRITON_DTYPES and _triton_usable():
@@ -103,11 +75,7 @@ def complex_scan_rope(
 
 
 def triton_complex_rope_resource_meta() -> dict[str, int] | None:
-    """Resource metadata of the compiled Triton rotary-scan kernel, if any.
-
-    Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
-    """
+    """Resource metadata of the compiled Triton rotary-scan kernel, if any."""
     if not _triton_usable():
         return None
     from lethe.kernels.ops import _triton_complex_rope

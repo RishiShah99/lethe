@@ -1,10 +1,4 @@
-"""Kernel Contract gates, arXiv 2604.22032.
-
-All 12 gates implemented. RES-02 is evidence-based: it validates resource
-metadata extracted at compile time (registers, shared memory, TMEM) against
-hardware limits, and reports not-applicable when no metadata is supplied
-(plain-Python candidates have no compiled artifact to measure).
-"""
+"""Kernel Contract gates, arXiv 2604.22032. All 12 gates implemented."""
 
 from __future__ import annotations
 
@@ -16,14 +10,7 @@ from typing import Any
 
 import torch
 
-# Per-gate RNG seed base: each gate reseeds the global RNG from
-# ``_GATE_RNG_SEED ^ crc32(gate_name)`` before drawing its probe inputs, so a
-# borderline candidate's verdict is a pure function of the candidate rather than
-# of cross-rollout RNG drift (unseeded draws flipped thin-margin verdicts and
-# fed the GRPO update noise). The value is fixed by re-validation of the
-# discriminative floors on hardware; the thinnest is the grad_dt MIMO PRC-02
-# view, so changing it requires re-confirming that the honest kernel still
-# lands inside tolerance and every cheat outside it.
+# Each gate reseeds RNG from _GATE_RNG_SEED ^ crc32(name), so verdicts don't drift with GRPO noise.
 _GATE_RNG_SEED = 0x9E3779B9
 
 
@@ -32,11 +19,6 @@ class GateResult:
     passed: bool
     reason: str
     details: dict[str, Any] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Implemented gates
-# ---------------------------------------------------------------------------
 
 
 def gate_cmp_01_input_variation(
@@ -51,20 +33,7 @@ def gate_cmp_01_input_variation(
     n_random: int = 8,
     **kwargs: Any,
 ) -> GateResult:
-    """CMP-01: Input variation, random + adversarial inputs must match.
-
-    Generates *n_random* random inputs and a bank of adversarial inputs
-    (zeros, large magnitudes, small magnitudes, denormals, long sequences).
-    For every input the candidate and reference outputs are compared with
-    ``torch.allclose``.
-
-    The absolute tolerance is scaled by the reference output's magnitude
-    (``max(1, |out_ref|_inf)``): on a large-magnitude problem the error of
-    *any* correctly-rounded but differently-ordered implementation carries
-    the scale of the large intermediates, and elements that cancel to near
-    zero would otherwise demand cancellation noise below one ULP of those
-    intermediates. ``atol`` is interpreted at unit scale.
-    """
+    """CMP-01: Input variation, random + adversarial inputs must match."""
     failures: list[str] = []
 
     def _check(tensor: torch.Tensor, label: str) -> None:
@@ -72,7 +41,7 @@ def gate_cmp_01_input_variation(
             out_ref = reference(tensor)
             out_cand = candidate(tensor)
         except Exception as exc:
-            failures.append(f"{label}: exception — {exc}")
+            failures.append(f"{label}: exception: {exc}")
             return
         if out_cand.shape != out_ref.shape:
             failures.append(f"{label}: shape mismatch {out_cand.shape} vs {out_ref.shape}")
@@ -81,8 +50,7 @@ def gate_cmp_01_input_variation(
         finite = ref32[torch.isfinite(ref32)]
         scale = max(1.0, finite.abs().max().item()) if finite.numel() else 1.0
         atol_eff = atol * scale
-        # equal_nan is positional: a candidate matching the reference's own
-        # NaNs passes; minting NaN where the reference is finite still fails.
+        # equal_nan=True: matching the reference's own NaNs passes; minting new NaN still fails.
         if not torch.allclose(out_cand.float(), ref32, atol=atol_eff, rtol=rtol, equal_nan=True):
             max_err = (out_cand.float() - ref32).abs().max().item()
             failures.append(f"{label}: max_err={max_err:.3e} > atol={atol_eff:.3e} (scaled)")
@@ -130,16 +98,7 @@ def gate_cmp_03_shape_polymorphism(
     shapes: list[tuple[int, ...]] | None = None,
     **kwargs: Any,
 ) -> GateResult:
-    """CMP-03: Shape polymorphism, vary batch, length, and model-dim independently.
-
-    ``atol`` is interpreted at unit scale and multiplied by the reference
-    output's magnitude (see CMP-01): cancellation elements carry the ULP
-    noise of the large intermediates, not of their own small value.
-
-    ``shapes`` overrides the default scan-convention list for ops whose
-    primary tensor is not [batch, seq, d_model] (the audit harness derives
-    variants from a task's native input shape).
-    """
+    """CMP-03: Shape polymorphism, vary batch, length, and model-dim independently."""
     if shapes is None:
         shapes = [
             (1, 16, 8),
@@ -155,7 +114,7 @@ def gate_cmp_03_shape_polymorphism(
             out_ref = reference(t)
             out_cand = candidate(t)
         except Exception as exc:
-            failures.append(f"shape={shape}: exception — {exc}")
+            failures.append(f"shape={shape}: exception: {exc}")
             continue
         if out_cand.shape != out_ref.shape:
             failures.append(
@@ -191,33 +150,11 @@ def gate_ord_01_reduction_order_tolerance(
     safety_factor: float = 4.0,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-01: Reduction-order tolerance, atol scaled to the reduction extent.
-
-    Floating-point reductions are order-dependent; a kernel that reduces in
-    a different order than the reference may still be numerically correct.
-    Two correctly-rounded implementations of an N-term accumulation differ
-    by a random walk of rounding errors, so the tolerance is
-    ``safety_factor * dtype_eps * sqrt(N) * max(1, |out_ref|_inf)``:
-
-    - ``N`` is ``reduction_elements``, the op's true accumulation extent
-      (for a scan, the sequence length; for a row-sum, the row width).
-      Defaults to the sequence extent ``shape[-2]`` (this codebase's ops are
-      scans; ``shape[-1]`` for a 1-D shape). Production callers pass it
-      explicitly; the default only protects a harness that forgets to.
-    - the output-magnitude factor carries the scale of the intermediates;
-      a unit-scale atol would demand sub-ULP cancellation noise.
-    - ``safety_factor`` covers the stochastic spread of the random-walk
-      bound (measured ~1.1x the sqrt-N estimate for the C1 Triton scan on
-      B200; 4x keeps honest kernels clear while staying orders of
-      magnitude below wrong-math errors).
-    """
+    """ORD-01: Reduction-order tolerance, atol scaled to the reduction extent."""
     if reduction_elements is not None:
         n_elements = reduction_elements
     else:
-        # No explicit extent: default to the sequence dim (shape[-2]), the scan
-        # accumulation length for this codebase's ops. shape[-1] (the row width)
-        # under-counts N and makes the sqrt(N) atol ~sqrt(seq/width) too tight,
-        # false-rejecting honest reorder noise on a harness that omits the arg.
+        # No explicit extent: defaults to shape[-2], the scan accumulation length for these ops.
         n_elements = shape[-2] if len(shape) >= 2 else shape[-1]
     dtype_eps: float
     if dtype == torch.float16:
@@ -274,23 +211,7 @@ def gate_ord_02_atomic_determinism(
     n_runs: int = 5,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-02: Atomic determinism, repeated calls with identical input must be
-    byte-identical, and must not hand back one aliased output buffer.
-
-    Two hazards, one gate. Determinism is checked on *cloned* snapshots, so a
-    candidate that recomputes in place into a returned buffer is compared
-    snapshot-to-snapshot, not against a live tensor a later call overwrites.
-    Two aliasing hazards, both rejected. Cross-call: holding every raw output
-    alive at once and requiring distinct ``data_ptr``s catches a cached buffer
-    handed back across calls (where holding two results corrupts the first);
-    keeping the outputs live is what makes this sound on CUDA, since the caching
-    allocator would otherwise recycle a freed output's address and make
-    independent correct buffers look aliased. Input aliasing: an output that
-    shares storage with the tensor it was given is rejected too, a candidate
-    returning a view of its input scores a fresh ``data_ptr`` every call (each
-    gets a distinct input clone) and would otherwise pass the distinctness
-    check while never having computed anything.
-    """
+    """ORD-02: Atomic determinism; repeated calls must be byte-identical, no aliased output."""
     t = torch.randn(shape, dtype=dtype, device=device)
     raw_outputs: list[torch.Tensor] = []
     snapshots: list[torch.Tensor] = []
@@ -348,12 +269,7 @@ def gate_prc_01_precision_regime(
     device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
-    """PRC-01: Precision regime, test FP32, FP16, BF16 with per-dtype tolerances.
-
-    Per-dtype ``atol`` is interpreted at unit scale and multiplied by the
-    reference output's magnitude (see CMP-01): cancellation elements carry
-    the ULP noise of the large intermediates, not of their own small value.
-    """
+    """PRC-01: Precision regime, test FP32, FP16, BF16 with per-dtype tolerances."""
     dtype_configs: list[tuple[torch.dtype, float, float]] = [
         (torch.float32, 1e-5, 1e-5),
         (torch.float16, 1e-3, 1e-3),
@@ -366,7 +282,7 @@ def gate_prc_01_precision_regime(
             out_ref = reference(t)
             out_cand = candidate(t)
         except Exception as exc:
-            failures.append(f"{dtype}: exception — {exc}")
+            failures.append(f"{dtype}: exception: {exc}")
             continue
         if out_cand.shape != out_ref.shape:
             failures.append(f"{dtype}: shape mismatch")
@@ -398,19 +314,7 @@ def gate_exc_01_exceptional_values(
     device: str | torch.device = "cpu",
     **kwargs: Any,
 ) -> GateResult:
-    """EXC-01: Exceptional values, NaN and signed-Inf positions must agree.
-
-    Compares ``isposinf`` and ``isneginf`` independently rather than the
-    union ``isinf`` mask, so a kernel that silently flips +inf to -inf
-    (or vice versa) is rejected.
-
-    Backstop note: on ops whose forward is purely multiplicative, IEEE
-    ``Inf * 0 = NaN`` collapses the distinct exceptional positions into a single
-    NaN regardless of compute order, so EXC-01 cannot discriminate a wrong
-    exceptional-propagation order on those ops. CMP-01 carries the value verdict
-    there (a wrong magnitude is still caught), so this is a covered redundancy,
-    not a live hole.
-    """
+    """EXC-01: Exceptional values, NaN and signed-Inf positions must agree."""
     failures: list[str] = []
 
     def _check_exceptional(t: torch.Tensor, label: str) -> None:
@@ -418,7 +322,7 @@ def gate_exc_01_exceptional_values(
             out_ref = reference(t)
             out_cand = candidate(t)
         except Exception as exc:
-            failures.append(f"{label}: exception — {exc}")
+            failures.append(f"{label}: exception: {exc}")
             return
         if out_cand.shape != out_ref.shape:
             failures.append(f"{label}: shape mismatch")
@@ -464,11 +368,6 @@ def gate_exc_01_exceptional_values(
     )
 
 
-# ---------------------------------------------------------------------------
-# Stubbed gates (not yet cross-checked against arXiv 2604.22032)
-# ---------------------------------------------------------------------------
-
-
 def gate_cmp_02_gradient_correctness(
     candidate: Callable[..., torch.Tensor],
     reference: Callable[..., torch.Tensor],
@@ -480,15 +379,7 @@ def gate_cmp_02_gradient_correctness(
     rtol: float = 1e-3,
     **kwargs: Any,
 ) -> GateResult:
-    """CMP-02: Gradient correctness, candidate's autograd gradients must agree
-    with finite-difference approximations of its own forward pass.
-
-    Self-consistency check via ``torch.autograd.gradcheck`` on an FP64 input.
-    A kernel that returns correct values but breaks the gradient graph (e.g.,
-    ``.detach()`` on an intermediate, in-place operation on a non-leaf tensor)
-    is rejected. Combined with CMP-01's value-correctness, this gives
-    gradient agreement with the reference by transitivity.
-    """
+    """CMP-02: Gradient correctness; autograd grads must match finite-difference of its own forward."""
     t = torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True)
     try:
         ok = torch.autograd.gradcheck(
@@ -524,24 +415,7 @@ def gate_ord_03_noncommutative_reduction(
     rtol: float = 0.0,
     **kwargs: Any,
 ) -> GateResult:
-    """ORD-03: Non-commutative reduction, candidate must match the reference
-    on inputs designed to expose order-dependent reductions.
-
-    Floating-point addition is not associative; the alternating
-    large-positive / tiny / large-negative input makes reduction order
-    matter materially: numerically unstable orderings (reversed
-    accumulation, the cumprod-ratio scan trick, lost compensation terms)
-    produce errors orders of magnitude above ULP noise here.
-
-    Tolerances default to zero, bitwise identity, the right contract when
-    the candidate can replicate the reference's exact operation order (CPU
-    torch compositions). Hardware kernels reduce in trees and contract
-    multiply-adds into FMAs, so bitwise identity against a torch eager
-    reference is unachievable in principle; op harnesses override atol/rtol
-    to a near-ULP budget instead (the C1 Triton scan measures ~2e-6 against
-    the eager reference on B200 where unstable orderings err > 1e-2; the
-    adversarial input keeps the gate discriminative without bitwise).
-    """
+    """ORD-03: Non-commutative reduction; must match reference on order-dependent reduction inputs."""
     pattern = torch.tensor([1.0, 1e-7, -1.0, 1e-7], dtype=dtype, device=device)
     n_elements = 1
     for d in shape:
@@ -601,33 +475,7 @@ def gate_prc_02_mixed_precision_accumulation(
     scale_atol_by_ref_inf: bool = False,
     **kwargs: Any,
 ) -> GateResult:
-    """PRC-02: Mixed-precision accumulation, FP16 inputs must produce outputs
-    within FP16-ULP of the FP32 reference, implying an FP32 internal accumulator.
-
-    A kernel that naively accumulates in FP16 across a long reduction loses
-    precision proportionally to ``sqrt(N) * scale``. The default shape uses
-    a 1024-element reduction dimension to make the gap between FP16-only
-    accumulation and FP32-accumulating implementations visible.
-
-    Comparing the FP16 candidate output (upcast to FP32) against the FP32
-    reference output exposes the missing FP32 accumulator. The candidate's
-    irreducible error includes the fp16 *input* rounding (the reference
-    consumes unrounded operands by design), which is relative to local
-    output magnitude; ops whose outputs span magnitudes (amplifying
-    entries) need a small elementwise ``rtol`` so unit-scale ``atol``
-    keeps the accumulator discrimination where outputs are O(1).
-
-    ``scale_atol_by_ref_inf`` multiplies ``atol`` by ``max(1, |ref|_inf)``
-    (the CMP-01 convention) for outputs whose error carries the magnitude
-    of large *intermediates* even at elements that cancel to near zero;
-    elementwise rtol cannot express that. Measured on B200 for the
-    backward scan's grad_A view at (2, 1024, 32): honest fp32-accumulator
-    floors are 4.9e-4 (Triton) / 9.0e-4 (eager) of output scale, an fp16
-    carry sits at 1.25e-2 of scale, so a unit atol of 3e-3 keeps >3x
-    margin on both sides. Default off: at unit output scales the flat
-    interpretation is identical and stays bit-compatible with the C1
-    calibration.
-    """
+    """PRC-02: FP16 input must match FP32 reference within FP16-ULP (implies FP32 accumulator)."""
     t_fp32 = torch.randn(shape, dtype=torch.float32, device=device)
     t_fp16 = t_fp32.to(torch.float16)
     try:
@@ -660,8 +508,7 @@ def gate_prc_02_mixed_precision_accumulation(
     if scale_atol_by_ref_inf:
         details["output_scale"] = scale
         details["atol_effective"] = atol_eff
-    # Matching NaNs and bitwise-equal values (covers same-sign Inf) are ok,
-    # the candidate is only charged where it diverges from the reference.
+    # Matching NaNs and bitwise-equal values (same-sign Inf) are ok; only real divergence is charged.
     within = (
         (diff <= atol_eff + rtol * ref32.abs())
         | (torch.isnan(cand32) & torch.isnan(ref32))
@@ -672,14 +519,14 @@ def gate_prc_02_mixed_precision_accumulation(
         return GateResult(
             passed=False,
             reason=(
-                f"max_err={max_err:.3e} exceeds atol={atol_eff:.3e} + rtol={rtol}*|ref| — "
+                f"max_err={max_err:.3e} exceeds atol={atol_eff:.3e} + rtol={rtol}*|ref|, "
                 "likely missing FP32 accumulator"
             ),
             details=details,
         )
     return GateResult(
         passed=True,
-        reason=f"max_err={max_err:.3e} within FP16 tolerance — FP32 accumulator inferred",
+        reason=f"max_err={max_err:.3e} within FP16 tolerance, FP32 accumulator inferred",
         details=details,
     )
 
@@ -694,15 +541,7 @@ def gate_exc_02_subnormal_handling(
     atol: float = 1e-30,
     **kwargs: Any,
 ) -> GateResult:
-    """EXC-02: Subnormal handling, the candidate's flush-to-zero behaviour
-    on subnormal inputs must match the reference.
-
-    Generates inputs in the subnormal range for the given dtype (e.g.,
-    ``~1e-40`` for FP32, below ``~1.18e-38``). Compares the zero-mask
-    between candidate and reference. If the reference preserves subnormals,
-    the candidate must too; if the reference flushes, the candidate must
-    also flush. Where both produce non-zero outputs, values must agree.
-    """
+    """EXC-02: Subnormal handling; flush-to-zero behaviour on subnormals must match the reference."""
     if dtype == torch.float32:
         subnormal_min = 1e-40
     elif dtype == torch.float16:
@@ -744,9 +583,7 @@ def gate_exc_02_subnormal_handling(
             },
         )
 
-    # A candidate that mints NaN/Inf on subnormal inputs must be rejected even
-    # when the zero-mask agrees, NaN != 0 satisfies it, and a NaN ``max_err``
-    # would slip past the ``> atol`` check below (``NaN > atol`` is False).
+    # A candidate minting NaN/Inf must fail: NaN > atol is False, so it would silently pass otherwise.
     nonfinite_ref = ~torch.isfinite(out_ref)
     nonfinite_cand = ~torch.isfinite(out_cand)
     if not torch.equal(nonfinite_ref, nonfinite_cand):
@@ -785,13 +622,7 @@ def gate_res_01_memory_residency(
     dtype: torch.dtype = torch.float32,
     **kwargs: Any,
 ) -> GateResult:
-    """RES-01: Memory residency, output device must match input device.
-
-    A kernel that silently moves data through a different device (CPU↔GPU,
-    meta, or quantisation backends) hides latency. Tests every available
-    device (CPU always; CUDA if present) and checks that ``out.device.type``
-    matches ``input.device.type``.
-    """
+    """RES-01: Memory residency, output device must match input device."""
     devices: list[torch.device] = [torch.device("cpu")]
     if torch.cuda.is_available():
         devices.append(torch.device("cuda"))
@@ -802,7 +633,7 @@ def gate_res_01_memory_residency(
         try:
             out = candidate(t)
         except Exception as exc:
-            failures.append(f"device={device.type}: exception — {exc}")
+            failures.append(f"device={device.type}: exception: {exc}")
             continue
         if out.device.type != t.device.type:
             failures.append(f"input device={t.device.type} → output device={out.device.type}")
@@ -820,10 +651,7 @@ def gate_res_01_memory_residency(
     )
 
 
-# Conservative defaults when no device is queryable. 255 registers/thread is
-# the architectural max across sm_70..sm_100; 227 KB dynamic shared memory per
-# block covers H100 (228 KB opt-in) and B200; 512 TMEM elements is the sm_100
-# budget from the #904 family ("Required: 544, Hardware limit: 512").
+# Conservative defaults when no device is queryable.
 _DEFAULT_RESOURCE_LIMITS: dict[str, int] = {
     "n_regs": 255,
     "shared_bytes": 227 * 1024,
@@ -839,25 +667,7 @@ def gate_res_02_resource_limits(
     resource_limits: dict[str, int] | None = None,
     **kwargs: Any,
 ) -> GateResult:
-    """RES-02: compiled-artifact resource usage must not exceed hardware limits.
-
-    Evidence-based gate: the verifier's compile stage extracts per-kernel
-    resource metadata (``n_regs`` and ``shared_bytes`` from the Triton
-    CompiledKernel handle / ptxas ``--verbose``; ``tmem_elems`` from the
-    OutOfResources diagnostics on Blackwell) and passes it here as
-    ``resource_meta``. The gate compares each supplied field against the
-    limit table.
-
-    With no ``resource_meta`` the gate passes as not-applicable, a plain
-    Python candidate has no compiled artifact to measure, and absence of
-    evidence is not a violation. ``resource_limits`` overrides the defaults
-    (use the actual device's queried properties when available).
-
-    ``spill_bytes`` in the metadata is recorded in details as a warning but
-    does not fail the gate: register spilling is legal-but-crippled (the
-    num_warps=2 survivors in #904 spill 42-50 KB), and the perf consequence
-    is the benchmark's job to expose, not this gate's.
-    """
+    """RES-02: compiled-artifact resource usage must not exceed hardware limits."""
     if resource_meta is None:
         return GateResult(
             passed=True,
@@ -903,10 +713,6 @@ def gate_res_02_resource_limits(
     )
 
 
-# ---------------------------------------------------------------------------
-# Aggregate runner
-# ---------------------------------------------------------------------------
-
 _ALL_GATE_NAMES: list[str] = [
     "gate_cmp_01_input_variation",
     "gate_cmp_02_gradient_correctness",
@@ -947,30 +753,7 @@ def run_all_gates(
     seed: int | None = _GATE_RNG_SEED,
     **kwargs: Any,
 ) -> dict[str, GateResult]:
-    """Run Kernel Contract gates and return results keyed by gate name.
-
-    ``kwargs`` (e.g. ``shape``, ``dtype``, ``device``) are forwarded to every
-    gate uniformly; ``gate_overrides`` maps a gate name to kwargs applied to
-    that gate only, on top of the shared ``kwargs`` (use it for op-specific
-    shapes or to supply RES-02's ``resource_meta``).
-
-    ``gate_names`` selects a subset (default: all 12). The audit harness uses
-    this to exclude gates outside an audited corpus's claimed scope.
-
-    ``seed`` makes each gate's probe inputs deterministic: before every gate the
-    global RNG is reseeded from ``seed ^ crc32(gate_name)`` (per-gate so the
-    gates don't share one stream), and the caller's RNG state is saved and
-    restored around the loop. This pins a candidate's verdict to the candidate
-    alone, unseeded draws flipped thin-margin verdicts across rollouts and fed
-    the GRPO update noise. Pass ``seed=None`` to keep the legacy unseeded draws
-    (the closed audit artifact does its own ``AUDIT_SEED`` and opts out).
-
-    Stubbed gates that raise ``NotImplementedError`` are recorded as
-    ``passed=False`` with reason ``"not_implemented"``. Any other exception
-    escaping a gate (e.g., a malformed candidate output crashes an internal
-    comparison) is also caught and recorded as a failure; a misbehaving
-    candidate must not crash the verifier loop.
-    """
+    """Run Kernel Contract gates and return results keyed by gate name."""
     results: dict[str, GateResult] = {}
     cpu_rng_state = torch.get_rng_state() if seed is not None else None
     cuda_rng_states = (
@@ -983,8 +766,7 @@ def run_all_gates(
             if gate_overrides and name in gate_overrides:
                 gate_kwargs.update(gate_overrides[name])
             if seed is not None:
-                # manual_seed reseeds CPU and every CUDA device, covering both
-                # gate draw paths from one call.
+                # manual_seed reseeds CPU and every CUDA device, covering both gate draw paths from one call.
                 torch.manual_seed(seed ^ zlib.crc32(name.encode()))
             try:
                 results[name] = gate_fn(candidate, reference, **gate_kwargs)

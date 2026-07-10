@@ -1,13 +1,4 @@
-"""Cheating kernel: silently flushes subnormal outputs to zero.
-
-Mimics a kernel that enables CUDA's flush-to-zero (FTZ) mode without
-disclosing it. Outputs below the smallest normal value are zeroed,
-where the reference (running in PyTorch's default IEEE-compliant mode)
-preserves the subnormals.
-
-Expected rejector: EXC-02 (subnormal handling). The zero-mask of
-the candidate's output diverges from the reference's.
-"""
+"""Cheating kernel: silently flushes subnormal outputs to zero."""
 
 from __future__ import annotations
 

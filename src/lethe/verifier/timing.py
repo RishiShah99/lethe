@@ -27,55 +27,13 @@ def benchmark(
     inputs_factory: Callable[[int], tuple[Any, ...]] | None = None,
     output_sink: list[Any] | None = None,
 ) -> TimingResult:
-    """Benchmark *callable* with positional *inputs*.
-
-    Uses ``torch.cuda.Event`` for GPU timing when a CUDA device is available,
-    otherwise falls back to ``time.perf_counter_ns`` for CPU-only hosts.
-
-    Parameters
-    ----------
-    callable:
-        The function to benchmark.  Called as ``callable(*inputs)``.
-    inputs:
-        Positional arguments forwarded to *callable* on every call. Ignored
-        when ``inputs_factory`` is given.
-    warmup:
-        Number of warm-up calls before timing begins.
-    trials:
-        Number of timed calls.  Median (not best-of) is reported.
-    inputs_factory:
-        When supplied, fresh inputs are built per call via
-        ``inputs_factory(i)`` *outside* the timed window, distinct content
-        per trial. A fixed input tuple lets a candidate that memoizes on an
-        input fingerprint, or mutates a shared buffer in place, fabricate a
-        speedup by serving cache hits after the first trial; rebuilding with
-        varying content forces an honest recompute every trial. Warm-up uses
-        negative indices so it never primes a cache the timed trials hit.
-    output_sink:
-        When given, each timed trial's return value is appended (after the
-        timing window closes, so retention never perturbs the measurement).
-        Lets the caller value-check the *actual timed outputs*, the only way
-        to bind correctness to the calls that produced the ratio, so a
-        candidate cannot no-op the timed trials while computing correctly for
-        any separate probe. Warm-up outputs are not captured.
-
-    Returns
-    -------
-    TimingResult
-        Frozen dataclass with median, std, min, max (all in milliseconds).
-    """
+    """Benchmark *callable* with positional *inputs*."""
     import torch  # local import keeps the module importable without torch on PATH
 
     def call_inputs(i: int) -> tuple[Any, ...]:
         return inputs_factory(i) if inputs_factory is not None else inputs
 
-    # Choose the CUDA-event timer from the tensors actually fed, not the host:
-    # a CPU candidate on a CUDA host would otherwise be "timed" on an empty
-    # stream (elapsed_time ~ 0), fabricating a speedup.
-    #
-    # When no tensor arguments are present (closure-style call with inputs=()),
-    # fall back to host capability: the closure may capture CUDA tensors, and
-    # measuring host enqueue time for async work produces invalid timings.
+    # Choose the CUDA-event timer from tensors actually fed, not the host, or a CPU candidate times ~0.
     probe = call_inputs(-1)
     tensor_args = [a for a in probe if isinstance(a, torch.Tensor)]
     use_cuda = torch.cuda.is_available() and (

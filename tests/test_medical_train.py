@@ -1,9 +1,4 @@
-"""CPU smoke for the PTB-XL trainer (Phase F.3).
-
-No real PTB-XL files: a synthetic in-memory dataset whose labels are a linear
-readout of the signal, so the tiny model can actually fit it. Pins one-step loss
-descent, sane macro-AUC, and checkpoint→resume of step+optimizer+model.
-"""
+"""CPU smoke for the PTB-XL trainer (Phase F.3)."""
 
 from __future__ import annotations
 
@@ -172,8 +167,7 @@ class TestEvaluate:
         for _ in range(40):
             trainer.train_step(ds.signals, ds.labels)
         after = trainer.evaluate(loader)["macro_auc"]
-        # A real margin, not >= : the seeded run gains ~0.37, so a no-op or
-        # near-no-op trainer (after ~= before) must not pass.
+        # real margin, not >=: seeded run gains ~0.37, so a no-op trainer must not pass.
         assert after > before + 0.1
 
 
@@ -224,8 +218,7 @@ class TestCheckpointResume:
         assert not _trainer(tmp_path).load_checkpoint()
 
     def test_load_checkpoint_refuses_pickle_gadget(self, tmp_path: object) -> None:
-        # weights_only=True must reject a __reduce__ gadget in trainer_state.pt
-        # (pickle-RCE class) — the reconstruction side effect must never fire.
+        # weights_only=True must reject a __reduce__ (pickle-RCE) gadget; side effect must not fire.
         import os
         import pickle
 
@@ -244,10 +237,7 @@ class TestCheckpointResume:
         assert not os.path.exists(sentinel)
 
     def test_load_checkpoint_refuses_model_file_gadget(self, tmp_path: object) -> None:
-        # The model weights live in a SEPARATE file (model_step_N.pt) loaded after a
-        # clean trainer_state.pt. Locks that load to the safe loader so it can't
-        # regress to weights_only=False; a gadget here is only reached once
-        # trainer_state.pt loads successfully — the case the sibling test above skips.
+        # model weights live in a separate file (model_step_N.pt), loaded after trainer_state.pt.
         import os
         import pickle
 

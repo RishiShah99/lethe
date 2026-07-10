@@ -1,14 +1,4 @@
-"""Canonical reference for the cheating-kernels suite.
-
-All cheating kernels in this directory pretend to compute this same op.
-The op is simple, shape-polymorphic, dtype-polymorphic, and exercises:
-  - a reduction (catches reduction-order bugs)
-  - NaN/Inf propagation
-  - finite-precision behavior across fp32/fp16/bf16
-
-It stands in for ``reference_forward_chunked_scan``-style kernels: the
-verifier behavior under test is independent of the specific Mamba math.
-"""
+"""Canonical reference for the cheating-kernels suite."""
 
 from __future__ import annotations
 
@@ -17,14 +7,7 @@ from torch import Tensor
 
 
 def reference_op(u: Tensor) -> Tensor:
-    """y = silu(u) + 0.01 * sum(silu(u), dim=-1, keepdim=True).
-
-    The pool reduction runs through a higher-precision accumulator for
-    reduced-precision inputs (FP32 accumulator for FP16/BF16) so that long
-    reductions remain within FP16-ULP of the FP32 result. FP32/FP64 inputs
-    accumulate in their own dtype — no lossy downcast that would break
-    gradcheck under FP64. PRC-02 verifies candidates match this behavior.
-    """
+    """y = silu(u) + 0.01 * sum(silu(u), dim=-1, keepdim=True)."""
     import torch
 
     activated = F.silu(u)

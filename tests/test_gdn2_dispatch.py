@@ -1,9 +1,4 @@
-"""GDN-2 backward dispatch: native shim unavailable off-box -> eager fallback.
-
-Proves the Phase-2 integration boundary is correct *before* the kernel exists:
-the candidate ``gdn2_backward`` falls back to the oracle-faithful eager path and
-matches ``reference_gdn2_backward`` to machine precision in fp64.
-"""
+"""GDN-2 backward dispatch: native shim unavailable off-box -> eager fallback."""
 
 from __future__ import annotations
 
@@ -67,9 +62,7 @@ def test_exact_broadcast_routes_to_scalar() -> None:
 
 
 def test_near_constant_channelwise_routes_to_channelwise() -> None:
-    # g is per-channel constant to within allclose's default tolerance but NOT
-    # bitwise broadcast — it must route to the channel-wise crown, not collapse
-    # to the scalar assembly (which would return the wrong grad_g/b/w).
+    # near-constant but not bitwise broadcast must route to channel-wise, not the scalar assembly.
     g, b_gate, w_gate = _scalar_gates(seed=1)
     jitter = torch.zeros_like(g)
     jitter[..., 0] = 1e-9
@@ -79,9 +72,7 @@ def test_near_constant_channelwise_routes_to_channelwise() -> None:
 
 
 def test_bmm_tc_rejects_oversize_staging_dims() -> None:
-    # _bmm_tc stages M,K into a (D_K,D_K) buffer; dims above D_K must raise a
-    # named precondition rather than truncate/pad silently. Runs off-box — the
-    # raise precedes any tcgen05 GEMM.
+    # _bmm_tc stages M,K into a (D_K,D_K) buffer; oversize dims must raise, not truncate.
     from lethe.kernels.cute.gdn2_bwd_dhu import D_K, _bmm_tc
 
     with pytest.raises(ValueError, match="stages M,K"):

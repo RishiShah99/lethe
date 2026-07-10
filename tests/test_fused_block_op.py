@@ -108,11 +108,7 @@ class TestFusedBlockForwardCpu:
             fused_block_forward(*args, conv_kernel_size=3, chunk_size=8)
 
     def test_channel_mismatch_rejected_op_and_reference(self) -> None:
-        # The CMP-03 audit variant: primary x's channel dim is halved
-        # (D=16) while the baked conv/scan weights stay at D=32. torch's
-        # groups=D conv silently upweights 16->32; both the op and the
-        # reference must reject instead, so the audit reclassifies this to
-        # na (the reference-inapplicable path) rather than a value mismatch.
+        # CMP-03: x channels halved vs baked D=32 weights; both op and reference must reject (na).
         args = list(_fused_inputs(2, 64, 32, 16, k=4))
         args[0] = args[0][..., :16].contiguous()  # x -> (2, 67, 16)
         with pytest.raises(ValueError, match="channel mismatch"):
@@ -149,12 +145,7 @@ class TestFusedBlockForwardCpu:
 
 
 class TestFusedBlockNonFinites:
-    """Pin the contract the Triton kernel must reproduce on GPU.
-
-    On CPU the op is bitwise-equal to the reference, so equality is
-    trivial; the value of these tests is pinning the *expected* smear
-    semantics (conv window K, then row-wide poisoning through RMSNorm).
-    """
+    """Pin the contract the Triton kernel must reproduce on GPU."""
 
     def test_nan_smears_causally_over_conv_window(self) -> None:
         k = 4
@@ -163,9 +154,7 @@ class TestFusedBlockNonFinites:
         y = fused_block_forward(*args, chunk_size=8)
         ref = reference_fused_block_forward(*args, chunk_size=8)
         assert torch.equal(y.isnan(), ref.isnan())
-        # x feeds output rows t-(K-1)..t via the valid conv on pre-padded
-        # input; the scan then carries the poison to every later row, and
-        # RMSNorm spreads it across the whole D row.
+        # x feeds rows t-(K-1)..t via conv; scan carries the poison forward, RMSNorm spreads it over D.
         first_hit = 7 - (k - 1)
         assert not y[0, :first_hit].isnan().any()
         assert y[0, first_hit:].isnan().all()

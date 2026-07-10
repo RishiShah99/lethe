@@ -1,13 +1,4 @@
-"""Closed-form Stage-B VJP pins — the de-glue lever's correctness contract.
-
-``_stage_b_vjp_cw_closed`` must equal the autograd Stage B in fp64: it consumes K#1's
-``dh`` output (previously discarded) and ``dv2``, and reconstructs every stage-B grad
-chunk-locally. Pinned both directly (against ``_stage_b_vjp_cw``) and end-to-end
-(``stage_b_closed=True`` assembly vs the default, and vs the token-serial oracle).
-Level 1b adds the batched no-grad restage (``chunkwise_restage_cw``) the closed
-assembly path runs on — field-pinned against ``chunkwise_forward_cw`` — and the
-``stage_b_closed`` threading through the native dispatch. CPU only.
-"""
+"""Closed-form Stage-B VJP pins: the de-glue lever's correctness contract."""
 
 import pytest
 import torch
@@ -75,9 +66,7 @@ class TestStageBClosedForm:
 
     @pytest.mark.parametrize("use_qk_l2norm", [True, False])
     def test_assembly_end_to_end_equal(self, use_qk_l2norm: bool) -> None:
-        # Scale-relative: without qk-l2norm the delta-rule recurrence is
-        # ill-conditioned (grads reach ~1e15), so a per-element rtol misreads
-        # machine-precision agreement on the small-valued entries.
+        # scale-relative: without qk-l2norm grads reach ~1e15, so per-element rtol misreads it.
         q, k, v, g, b, w, do = _inputs(2, 48, 2, 24, 20)
         default = assemble_gdn2_backward_channelwise(
             q, k, v, g, b, w, do, use_qk_l2norm=use_qk_l2norm
@@ -164,7 +153,7 @@ class TestRestage:
             chunkwise_restage_cw(*(t.to(torch.bfloat16) for t in (q, k, v, g, b, w)), chunk_len=16)
 
     def test_restage_stashes_decay_rel_and_closed_reuses_it_bitwise(self) -> None:
-        """Lever 2a: one masked_decay_rel build per backward — stash == rebuild bitwise."""
+        """Lever 2a: one masked_decay_rel build per backward, stash == rebuild bitwise."""
         from dataclasses import replace
 
         from lethe.kernels.references.gdn2_chunkwise_cw import masked_decay_rel
@@ -196,9 +185,7 @@ class TestNativeDispatchClosed:
     """``stage_b_closed`` threads through ``native_gdn2_backward`` to the cw assembly."""
 
     def test_native_threads_stage_b_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Dispatch-legal dims (d_k=128, L%64==0, d_v=64) with the cw refs standing in
-        # for the box kernels; the native route must equal the direct closed assembly
-        # bitwise (same ops, same order, CPU).
+        # dispatch-legal dims (d_k=128, L%64==0, d_v=64); native must equal closed assembly bitwise.
         bsz, t, h, d_k, d_v = 1, 64, 1, 128, 64
         gen = torch.Generator().manual_seed(11)
         dt = torch.float32

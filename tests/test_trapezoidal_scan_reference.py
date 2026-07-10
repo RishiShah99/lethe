@@ -1,12 +1,4 @@
-"""Pins the Mamba-3 trapezoidal-discretisation oracle (Prop. 3.2.2).
-
-``reference_forward_trapezoidal_scan`` is the data-dependent trapezoidal
-generalisation of the ZOH ``reference_forward_chunked_scan``. These tests anchor
-it three ways: (1) the lambda=1 limit is bit-identical to the ZOH oracle (the
-generalisation is consistent), (2) a fully hand-computed L=2 case pins the
-beta/gamma split structurally, (3) the beta (previous-token) term is genuinely
-active at lambda<1. No GPU; pure float32 oracle math.
-"""
+"""Pins the Mamba-3 trapezoidal-discretisation oracle (Prop. 3.2.2)."""
 
 import math
 
@@ -35,10 +27,7 @@ def _siso_inputs(
 
 class TestLambdaOneReduction:
     def test_trapezoidal_reduces_to_zoh_at_lambda_one(self) -> None:
-        # lambda = sigmoid(trap); trap=+30 -> sigmoid rounds to exactly 1.0 in fp32,
-        # so beta = (1-1)*... = 0.0 exactly and gamma = delta_bar. The oracle groups
-        # the current term as (1.0*b_bar)*u == b_bar*u and adds the 0.0 beta term,
-        # so the result must be BIT-IDENTICAL to the ZOH oracle, not merely close.
+        # lambda=sigmoid(trap); trap=+30 rounds to 1.0 in fp32, so beta=0 exactly and gamma=delta_bar.
         for seed in (0, 1, 7):
             inp = _siso_inputs(2, 64, 8, 16, seed)
             zoh = reference_forward_chunked_scan(
@@ -61,8 +50,7 @@ class TestLambdaOneReduction:
 
 class TestHandComputedL2:
     def test_beta_gamma_split_hand_computed(self) -> None:
-        # B=D=N=1, L=2: fully scalar so the alpha/beta/gamma recurrence is
-        # hand-derivable. Independent derivation (not the vectorised code path).
+        # B=D=N=1, L=2: fully scalar so the alpha/beta/gamma recurrence is hand-derivable.
         u0, u1 = 0.7, -0.4
         d0, d1 = 0.3, -0.2
         a = -0.5
@@ -101,9 +89,7 @@ class TestHandComputedL2:
 
 class TestBetaTermActive:
     def test_beta_term_changes_output_below_lambda_one(self) -> None:
-        # At lambda<1 the previous-token (beta) term contributes, so the
-        # trapezoidal output must DIFFER from ZOH — proving the term is live,
-        # not silently dropped.
+        # At lambda<1 the beta term contributes, so output must differ from ZOH; proves it's live.
         inp = _siso_inputs(2, 32, 4, 8, seed=3)
         zoh = reference_forward_chunked_scan(
             inp["u"], inp["delta"], inp["A"], inp["B"], inp["C"], inp["D"], chunk_size=8

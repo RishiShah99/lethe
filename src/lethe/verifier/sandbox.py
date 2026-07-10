@@ -1,21 +1,4 @@
-"""Subprocess sandbox: run a kernel callable in an isolated child process.
-
-Isolates segfaults, OOM kills, and CUDA IMA faults from the parent process.
-The task (module/callable/inputs) is marshalled parent->child via pickle; it is
-parent-authored, so it is trusted. The child's RESULT travels back over a private
-fd serialized with ``torch.save`` and is loaded in the parent with
-``torch.load(weights_only=True)``: the parent runs the reward/verdict logic, so it
-must never execute code while deserializing an untrusted candidate's return value.
-``weights_only`` admits only tensors and plain primitive containers and refuses any
-code-bearing ``__reduce__`` gadget, closing the sandbox->parent escape.
-
-Memory limit enforcement:
-- POSIX: ``resource.setrlimit(RLIMIT_AS, ...)`` applied in the child process
-  before execution via the *preexec_fn* mechanism.
-- Windows: No in-process virtual-address limit is available via the standard
-  library.  The memory_limit_mb parameter is accepted for API consistency but
-  not enforced; a warning is written to stderr in the child script.
-"""
+"""Subprocess sandbox: run a kernel callable in an isolated child process."""
 
 from __future__ import annotations
 
@@ -56,8 +39,6 @@ _OOM_PATTERNS = [
 ]
 
 # Child worker script template.
-# The child reads a pickled (module_path, callable_name, inputs) tuple from
-# stdin, calls the function, and writes the pickled result to stdout.
 _WORKER_SCRIPT = textwrap.dedent(
     """\
     import os, sys
@@ -151,16 +132,7 @@ def _classify_subprocess_failure(stderr: str, rc: int) -> ErrorClass:
 
 
 def _deserialize_child_output(data: bytes) -> Any:
-    """Load the child's ``torch.save`` result WITHOUT executing candidate code.
-
-    The child is untrusted (it runs the candidate kernel) and the parent runs the
-    reward/verdict logic, so a bare ``pickle.loads`` here would let a reward-hacking
-    candidate execute arbitrary code in the parent via a ``__reduce__`` gadget,
-    forging rewards / GO verdicts. ``torch.load(weights_only=True)`` admits only
-    tensors and plain primitive containers and refuses any code-bearing global, so
-    a gadget surfaces as a deserialization failure instead of running. This is the
-    sanctioned system boundary: hardening belongs here.
-    """
+    """Load the child's ``torch.save`` result WITHOUT executing candidate code."""
     import io
 
     import torch
@@ -177,36 +149,7 @@ def run_in_subprocess(
     memory_limit_mb: int = 8192,
     extra_env: dict[str, str] | None = None,
 ) -> SubprocessResult:
-    """Run ``<callable_module>.<callable_name>(*inputs)`` in an isolated subprocess.
-
-    Parameters
-    ----------
-    callable_module:
-        Dotted module path (e.g., ``"lethe.kernels.some_op"``) OR an
-        absolute path to a ``.py`` file for ad-hoc kernel sources.
-    callable_name:
-        Name of the callable inside the module.
-    inputs:
-        Positional arguments to pass to the callable (must be picklable).
-    timeout_s:
-        Wall-clock timeout in seconds.
-    memory_limit_mb:
-        Virtual-address limit for the child process (POSIX only; ignored on
-        Windows, see module docstring). Pass ``0`` to disable. IMPORTANT:
-        CUDA context initialisation maps more virtual address space than any
-        practical RLIMIT_AS (multi-GPU unified addressing), so GPU-executing
-        candidates must run with ``memory_limit_mb=0``; rely on the timeout
-        and process isolation instead. The default suits CPU-only work.
-    extra_env:
-        Environment overrides for the child (e.g. ``CUDA_VISIBLE_DEVICES``
-        to pin a scoring worker to one GPU). Values replace any inherited
-        ones, so device ids are absolute regardless of the parent's mask.
-
-    Returns
-    -------
-    SubprocessResult
-        Frozen dataclass with outcome and marshalled output (if successful).
-    """
+    """Run ``<callable_module>.<callable_name>(*inputs)`` in an isolated subprocess."""
     import tempfile
     from pathlib import Path
 
@@ -223,9 +166,7 @@ def run_in_subprocess(
 
     task_bytes = pickle.dumps((callable_module, callable_name, inputs))
 
-    # Propagate the parent's sys.path to the child via PYTHONPATH so dotted
-    # module paths resolve regardless of the child's cwd (the child only gets
-    # site-packages + the worker-script dir by default).
+    # Propagate sys.path via PYTHONPATH so module paths resolve regardless of the child's cwd.
     env = dict(os.environ)
     parent_paths = [p for p in sys.path if p]
     if env.get("PYTHONPATH"):

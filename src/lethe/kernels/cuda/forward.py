@@ -1,10 +1,4 @@
-"""Python entry points for the CUDA forward selective scan.
-
-Mirrors ``reference_forward_chunked_scan`` semantics for fp32 CUDA tensors;
-the extension is compiled on first call (see ``_loader``). Mixed precision and
-the public-op dispatch wiring are not wired up yet; these entries are the
-parity-checkable scan primitive plus its build and wrapper.
-"""
+"""Python entry points for the CUDA forward selective scan."""
 
 from __future__ import annotations
 
@@ -17,12 +11,7 @@ from ._loader import load_scan_extension
 def cuda_forward_scan(
     u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor
 ) -> Tensor:
-    """Selective-scan forward on the CUDA kernel. fp32 CUDA inputs only.
-
-    Args mirror ``reference_forward_chunked_scan``: ``u``/``delta`` [B, L, D],
-    ``A`` [D, N] (negative log-magnitude), ``B``/``C`` [B, L, N], ``D`` [D].
-    Returns ``y`` [B, L, D].
-    """
+    """Selective-scan forward on the CUDA kernel."""
     if not u.is_cuda:
         raise ValueError("cuda_forward_scan requires CUDA tensors")
     if u.dtype != torch.float32:
@@ -42,11 +31,7 @@ def cuda_forward_scan(
 def cuda_forward_scan_2d(
     u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor, *, warps: int = 16
 ) -> Tensor:
-    """2-D forward scan (warps split d_state). fp32 CUDA inputs only.
-
-    Same semantics as :func:`cuda_forward_scan`; ``warps`` (4/8/16/32) is the
-    d_state-parallelism knob.
-    """
+    """2-D forward scan (warps split d_state)."""
     if not u.is_cuda:
         raise ValueError("cuda_forward_scan_2d requires CUDA tensors")
     if u.dtype != torch.float32:
@@ -67,12 +52,7 @@ def cuda_forward_scan_2d(
 def cuda_forward_scan_tiled(
     u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Tensor, *, items: int = 8
 ) -> Tensor:
-    """Efficient forward: d-major layout + kNItems time-tiling. fp32 CUDA only.
-
-    Transposes [B, L, D]/[B, L, N] inputs to the kernel's d-major [B, D, L]/
-    [B, N, L] (loads coalesce on the L-fastest axis), runs the tiled scan, and
-    transposes y back. ``items`` (4/8/16) is the per-thread time-tile.
-    """
+    """Efficient forward: d-major layout + kNItems time-tiling."""
     if not u.is_cuda:
         raise ValueError("cuda_forward_scan_tiled requires CUDA tensors")
     if u.dtype != torch.float32:

@@ -1,30 +1,4 @@
-"""One-command reproducibility surface for lethe.
-
-Captures the local environment, pins all seeds, runs every CPU-derivable
-headline check, and prints a PASS/FAIL table.  Exits nonzero if any check
-fails so this can gate CI.
-
-GPU-gated steps that cannot run without a B200/H100 box are listed at the
-end with their exact box commands — they are NOT executed here.
-
-Usage
------
-    uv run python scripts/repro.py
-
-Output
-------
-- ``results/repro_env.json``  — environment snapshot (overwrites on each run)
-- printed PASS/FAIL table
-
-Checks
-------
-1. CPU test suite (``uv run pytest -q``), parsed for pass/skip/fail counts.
-2. Selector geomean: re-derive the scan_mode selector geomean speedup from
-   ``results/scan_mode_boundary.json`` via ``_default_scan_mode``; assert ≥
-   2.1x (committed baseline is ~2.174x).
-3. Verifier audit headline: load ``results/audit_drkernel.json`` and report
-   the ``accepted_only.finding_rate`` (committed: 0.6213 ≈ 62.1%).
-"""
+"""One-command reproducibility surface for lethe."""
 
 from __future__ import annotations
 
@@ -45,20 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
 
 
-# ---------------------------------------------------------------------------
-# Seed pinning
-# ---------------------------------------------------------------------------
-
-
 def pin_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-# ---------------------------------------------------------------------------
-# Environment capture
-# ---------------------------------------------------------------------------
 
 
 def _module_version(name: str) -> str | None:
@@ -107,11 +71,6 @@ def write_env(env: dict[str, Any]) -> Path:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Check 1 — CPU test suite
-# ---------------------------------------------------------------------------
-
-
 def check_cpu_suite() -> tuple[bool, str]:
     """Shell out to pytest, parse summary line, return (passed, detail)."""
     result = subprocess.run(
@@ -121,8 +80,7 @@ def check_cpu_suite() -> tuple[bool, str]:
         text=True,
     )
     stdout = result.stdout + result.stderr
-    # Last non-empty line typically holds the summary, e.g.:
-    # "705 passed, 112 skipped in 12.34s"  or  "3 failed, 700 passed ..."
+    # Last non-empty pass/fail line typically holds the pytest summary.
     summary = ""
     for line in reversed(stdout.splitlines()):
         line = line.strip()
@@ -130,8 +88,7 @@ def check_cpu_suite() -> tuple[bool, str]:
             summary = line
             break
 
-    # pytest exit codes: 0=all passed, 1=some failed, 2=interrupted, 3=internal error,
-    # 4=usage error, 5=no tests collected. Only 0 with parsed pass count is a real PASS.
+    # pytest exit codes: 0=passed, 5=no tests collected (fail); other nonzero also fails.
     if result.returncode == 0:
         # Parse pass count to guard against "0 passed" edge case
         import re
@@ -141,21 +98,13 @@ def check_cpu_suite() -> tuple[bool, str]:
             return True, summary
         return False, summary or "exit 0 but no tests passed"
     if result.returncode == 5:
-        return False, "zero tests collected (exit 5) — gate FAIL"
+        return False, "zero tests collected (exit 5), gate FAIL"
     # Any other nonzero exit is a failure
     return False, summary or f"pytest exit {result.returncode}"
 
 
-# ---------------------------------------------------------------------------
-# Check 2 — selector geomean from committed boundary sweep
-# ---------------------------------------------------------------------------
-
-
 def compute_selector_geomean() -> tuple[float, int]:
-    """Re-derive geomean speedup of _default_scan_mode over the old serial default.
-
-    Returns (geomean, n_valid_rows).  Raises if the boundary JSON is absent.
-    """
+    """Re-derive geomean speedup of _default_scan_mode over the old serial default."""
     from lethe.kernels.ops.forward_chunked_scan import _default_scan_mode
 
     boundary_path = RESULTS_DIR / "scan_mode_boundary.json"
@@ -173,10 +122,7 @@ def compute_selector_geomean() -> tuple[float, int]:
             continue
         is_fwd = e.get("op") == "forward_chunked_scan"
         mode = _default_scan_mode(e["seq_len"], e["batch"], e["width"], is_forward=is_fwd)
-        # Credit the speedup of the mode the selector actually picks. If that
-        # measurement is missing (e.g. chunk_parallel chosen but not benched),
-        # sp<=0 drops the row — never fall back to the other mode's number, which
-        # would misattribute the serial speedup to a chunk_parallel choice.
+        # Credit the speedup of the mode the selector actually picks.
         sp = bs if mode == "serial" else bc
         if sp > 0:
             speedups.append(sp)
@@ -196,11 +142,6 @@ def check_selector_geomean(tol: float = 2.1) -> tuple[bool, str]:
         return False, f"boundary sweep JSON missing: {exc}"
     except Exception as exc:
         return False, f"error: {exc}"
-
-
-# ---------------------------------------------------------------------------
-# Check 3 — verifier audit headline
-# ---------------------------------------------------------------------------
 
 
 def check_audit_headline() -> tuple[bool, str]:
@@ -224,15 +165,10 @@ def check_audit_headline() -> tuple[bool, str]:
         f"accepted_only finding_rate={rate:.4f} ({rate * 100:.1f}%) "
         f"over {total} audited rows (committed~62.1%)"
     )
-    # finding_rate is an aggregate metric from a box run — we report it faithfully,
-    # no tolerance gate; presence of the JSON and a plausible value is sufficient.
+    # finding_rate is a box-run aggregate; report it faithfully, gated only on plausibility.
     plausible = 0.50 <= rate <= 0.80
     return plausible, detail
 
-
-# ---------------------------------------------------------------------------
-# GPU-gated steps (listed, not executed)
-# ---------------------------------------------------------------------------
 
 _BOX_STEPS = [
     (
@@ -293,19 +229,13 @@ def print_box_steps() -> None:
         print(f"    box    : {recipe}")
 
 
-# ---------------------------------------------------------------------------
-# Summary table
-# ---------------------------------------------------------------------------
-
-
 def _row(label: str, passed: bool, detail: str) -> str:
     status = "PASS" if passed else "FAIL"
     return f"  {status:<6}  {label:<45}  {detail}"
 
 
 def run_all() -> int:
-    # On Windows the default console codec (cp1252) cannot encode non-ASCII;
-    # reconfigure stdout/stderr to utf-8 if the stream supports it.
+    # Windows' default console codec (cp1252) can't encode non-ASCII; force utf-8 if supported.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     if hasattr(sys.stderr, "reconfigure"):

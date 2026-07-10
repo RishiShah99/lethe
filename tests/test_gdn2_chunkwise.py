@@ -1,10 +1,4 @@
-"""Chunkwise GDN (Phase-2) reference vs the verified token-serial oracle.
-
-The chunkwise decomposition (T/u/w/v_new + inter-chunk scan) must reproduce the
-oracle forward and its autograd grads to machine precision (fp64), and the exposed
-backward intermediates must satisfy the B4 recurrence the K#1 kernel implements
-and the B1/B6 path-completeness the K#2 kernel implements. CPU only.
-"""
+"""Chunkwise GDN (Phase-2) reference vs the verified token-serial oracle."""
 
 from __future__ import annotations
 
@@ -95,7 +89,7 @@ def test_final_grads_match_oracle(shape):
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_k1_b4_recurrence_self_consistency(shape):
-    """dv2 == dv_local + exp2(g_last - g2) * (k @ dh) — the K#1 contract math."""
+    """dv2 == dv_local + exp2(g_last - g2) * (k @ dh): the K#1 contract math."""
     q, k, v, g, beta, do = _scalar_inputs(shape, seed=3)
     cl = shape[5]
     s = shape[3] ** -0.5

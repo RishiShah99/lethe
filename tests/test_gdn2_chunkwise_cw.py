@@ -1,11 +1,4 @@
-"""Channel-wise GDN-2 chunkwise reference vs the token-serial oracle + scalar reduction.
-
-The channel-wise decomposition (per-channel decay; erase b on the key axis, write w on
-the value axis) must (a) reproduce the GDN-2 oracle forward and its autograd grads
-to machine precision in fp64, (b) collapse to the scalar ``gdn2_chunkwise`` path when g is
-channel-constant and b = w = beta (the Phase-3 -> Phase-2 reduction kill-gate), and
-(c) satisfy the channel-wise B4 recurrence the K#1 kernel implements. CPU only.
-"""
+"""Channel-wise GDN-2 chunkwise reference vs the token-serial oracle + scalar reduction."""
 
 from __future__ import annotations
 
@@ -109,11 +102,7 @@ def test_reduces_to_scalar_forward(shape):
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_reduces_to_scalar_grads(shape):
-    """Reduction: channel-wise final grads collapse to the scalar path's grads (fp64).
-
-    grad_q/k/v match elementwise; the scalar dg/db are the channel-sums of the
-    channel-wise grads (scalar g feeds every key channel; beta feeds b and w).
-    """
+    """Reduction: channel-wise final grads collapse to the scalar path's grads (fp64)."""
     b, t, h, d_k, d_v, cl = shape
     gen = torch.Generator().manual_seed(12)
     q = torch.randn(b, t, h, d_k, generator=gen, dtype=torch.float64)
@@ -146,7 +135,7 @@ def test_reduces_to_scalar_grads(shape):
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_k1_b4_recurrence_self_consistency(shape):
-    """dv2 == dv_local + ((k (.) decay_end) @ dh) — the channel-wise K#1 contract math."""
+    """dv2 == dv_local + ((k (.) decay_end) @ dh): the channel-wise K#1 contract math."""
     q, k, v, g, b_gate, w_gate, do = _cw_inputs(shape, seed=3)
     cl = shape[5]
     s = shape[3] ** -0.5

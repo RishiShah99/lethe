@@ -1,33 +1,4 @@
-"""Edit-RL: the action is a correctness-preserving edit of the kernel.
-
-Config-RL is correctness-invariant by construction: it only re-tunes
-launch knobs, so it can never *discover* a structurally different kernel. Edit-RL
-hands the policy the source of the trusted kernel plus a SEARCH/REPLACE edit
-action; the edited source is graded through the *untrusted* path
-(:func:`lethe.verifier.candidate_scoring.score_candidate_source`: the
-AST/oracle screens, the full gate battery, then the speedup bench at the target
-shape). Any edit that changes the result, fails to compile, spills, or OOMs is
-caught and scores at or below the contract-fail floor; an edit earns speedup
-credit only after every gate re-passes. This is the only action space that can
-find structural wins (memory layout, vectorization, fusion) while staying
-reference-faithful: the verifier, never the policy, is the correctness oracle.
-
-The base is the self-contained SFT target (``triton`` for the GPU-run kernel;
-``eager`` for CPU plumbing tests). The edit is one or more
-git-conflict-style blocks::
-
-    <<<<<<< SEARCH
-    <exact lines from the base>
-    =======
-    <replacement lines>
-    >>>>>>> REPLACE
-
-Each SEARCH must match the base exactly once (an absent or ambiguous SEARCH is an
-illegal action, scored 0.0: the analog of the source track's no_code_block). A
-completion carrying no SEARCH marker at all is a no_code_block; one with a marker
-but a malformed/unmatched block reaches the scorer and lands at the
-``illegal_edit`` 0.0, so a botched edit stays distinguishable from no attempt.
-"""
+"""Edit-RL: the action is a correctness-preserving edit of the kernel."""
 
 from __future__ import annotations
 
@@ -48,25 +19,12 @@ _MARKERS = frozenset({_SEARCH_MARK, _DIVIDER_MARK, _REPLACE_MARK})
 
 
 def extract_edits(completion: str) -> str | None:
-    """The completion verbatim if it carries a SEARCH marker, else None.
-
-    None is a ``no_code_block`` (0.0); the scorer re-parses the returned text,
-    so a present-but-malformed block still reaches it (``illegal_edit`` 0.0).
-    """
+    """The completion verbatim if it carries a SEARCH marker, else None."""
     return completion if _SEARCH_MARK in completion else None
 
 
 def parse_edits(text: str) -> list[tuple[str, str]] | None:
-    """Parse the SEARCH/REPLACE blocks in *text*; None if none are well-formed.
-
-    A block is ``<<<<<<< SEARCH`` … ``=======`` … ``>>>>>>> REPLACE`` on their
-    own lines. An unterminated block (a SEARCH with no matching divider or
-    REPLACE) makes the whole emission illegal. A partial edit must not apply.
-    A body line that is itself a bare marker (e.g. source containing a
-    ``=======`` line) is unrepresentable in this grammar: it would silently
-    shift the block boundaries, so such an emission is rejected outright
-    rather than mis-parsed into a wrong edit.
-    """
+    """Parse the SEARCH/REPLACE blocks in *text*; None if none are well-formed."""
     lines = text.splitlines()
     edits: list[tuple[str, str]] = []
     i, n = 0, len(lines)
@@ -96,14 +54,7 @@ def parse_edits(text: str) -> list[tuple[str, str]] | None:
 
 
 def apply_edits(base: str, edits: list[tuple[str, str]]) -> str | None:
-    """Apply each ``(search, replace)`` to *base*; None on any non-unique match.
-
-    A SEARCH must occur exactly once: zero means it doesn't match the base, more
-    than one means the replacement is ambiguous; both reject so the edit is
-    deterministic. An empty SEARCH (a whole-file insertion) is rejected for the
-    same reason. Replacements apply in order, so a later block sees the text the
-    earlier ones produced.
-    """
+    """Apply each ``(search, replace)`` to *base*; None on any non-unique match."""
     src = base
     for search, replace in edits:
         if search == "" or src.count(search) != 1:
@@ -113,11 +64,7 @@ def apply_edits(base: str, edits: list[tuple[str, str]]) -> str | None:
 
 
 def _illegal_action_result(error: str) -> dict[str, Any]:
-    """A 0.0-reward score dict for an unparseable / non-matching edit.
-
-    Mirrors ``candidate_scoring._failure``'s shape so rollout rows stay uniform
-    across the source, config, and edit tracks.
-    """
+    """A 0.0-reward score dict for an unparseable / non-matching edit."""
     return {
         "status": "illegal_edit",
         "error": error,
@@ -144,12 +91,7 @@ def score_edit_candidate(
     measure_speedup: bool = True,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Apply one edit emission to the base kernel and score the result.
-
-    Malformed or non-matching edits score 0.0; otherwise the edited source runs
-    the full untrusted gate battery + speedup bench at ``shape`` via
-    :func:`score_candidate_source`, so correctness is re-checked from scratch.
-    """
+    """Apply one edit emission to the base kernel and score the result."""
     edits = parse_edits(text)
     if not edits:
         return _illegal_action_result(f"no SEARCH/REPLACE block: {text[:120]!r}")

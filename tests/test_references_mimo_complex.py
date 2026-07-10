@@ -1,13 +1,4 @@
-"""Tests for the Mamba-3 MIMO and complex-RoPE scan reference oracles.
-
-Covers:
-  - reference_complex_scan_rope: shape, determinism, zero-angle identity,
-    causality of angle accumulation.
-  - reference_mimo_forward + reference_mimo_backward: shape, determinism,
-    R=1 SISO reduction, grad existence/shape, gradcheck (float64).
-
-All tests run on CPU only.  No GPU markers.
-"""
+"""Tests for the Mamba-3 MIMO and complex-RoPE scan reference oracles."""
 
 import math
 
@@ -21,9 +12,6 @@ from lethe.kernels.references import (
     reference_mimo_forward,
 )
 
-# ---------------------------------------------------------------------------
-# Shared small dimensions (oracle is slow; keep tiny)
-# ---------------------------------------------------------------------------
 BATCH = 2
 SEQ = 6
 NHEADS = 3
@@ -31,11 +19,6 @@ HEADDIM = 4
 D_STATE = 8  # must be >= 2 * NUM_ROPE for rope tests
 NUM_ROPE = 2  # num_rope_angles; 2 * NUM_ROPE = 4 <= D_STATE
 R = 2  # MIMO rank
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_rope_inputs(
@@ -79,11 +62,6 @@ def _make_mimo_inputs(
     return x, B, C, dt, alpha, mimo_x, mimo_o
 
 
-# ---------------------------------------------------------------------------
-# 1. reference_complex_scan_rope
-# ---------------------------------------------------------------------------
-
-
 class TestComplexScanRope:
     # --- 1a. Shape contracts for two distinct configs ---
 
@@ -116,7 +94,7 @@ class TestComplexScanRope:
         y = reference_complex_scan_rope(*args)
         assert torch.isfinite(y).all(), "NaN or Inf in complex_scan_rope output"
 
-    # --- 1d. Zero-angle → identity rotation → must match plain real scan ---
+    # --- 1d. Zero-angle: identity rotation, must match plain real scan ---
 
     def test_zero_angle_reduces_to_plain_scan(self) -> None:
         """angle_proj = 0 means R_t = I at every step; must equal a no-rotation scan."""
@@ -161,7 +139,7 @@ class TestComplexScanRope:
 
         # Positions 0..3 must be identical
         assert torch.equal(y_base[:, :4, :, :], y_perturbed[:, :4, :, :]), (
-            "Angle at t=4 affects output at t<4 — causality violated"
+            "Angle at t=4 affects output at t<4, causality violated"
         )
         # Position 4 or later must differ (rotation has changed)
         assert not torch.equal(y_base[:, 4:, :, :], y_perturbed[:, 4:, :, :]), (
@@ -171,18 +149,7 @@ class TestComplexScanRope:
     # --- 1f. Independent ground truth: complex-arithmetic state rotation ---
 
     def test_matches_complex_arithmetic_scan(self) -> None:
-        """Nonzero-angle equivalence against an independent complex formulation.
-
-        The oracle folds the CUMULATIVE rotation into B/C and runs a plain
-        decay scan. The mathematically equivalent state-rotation form is
-            h_hat_t = alpha_t * exp(-i * dtheta_t) * h_hat_{t-1} + dt_t * b_t * x_t
-            y_t     = Re( conj(c_t) . h_hat_t )
-        per rotary pair, using UNROTATED b/c and the PER-STEP angle delta
-        (change of basis h_hat_t = R(-Theta_t) h_t). Computing that directly
-        in complex arithmetic shares no code path with the oracle — it
-        catches double-rotation, sign, and angle-compounding bugs that the
-        zero-angle test cannot see.
-        """
+        """Nonzero-angle equivalence against an independent complex formulation."""
         x, B, C, dt, A, angle_proj = _make_rope_inputs(seed=21)
         y_oracle = reference_complex_scan_rope(x, B, C, dt, A, angle_proj)
 
@@ -235,11 +202,6 @@ class TestComplexScanRope:
         )
 
 
-# ---------------------------------------------------------------------------
-# 2. reference_mimo_forward
-# ---------------------------------------------------------------------------
-
-
 class TestMimoForward:
     # --- 2a. Shape contracts ---
 
@@ -268,7 +230,7 @@ class TestMimoForward:
         y = reference_mimo_forward(*args)
         assert torch.isfinite(y).all()
 
-    # --- 2d. R=1, mimo_x=ones, mimo_o=ones → must match a hand-rolled SISO scan ---
+    # --- 2d. R=1, mimo_x=ones, mimo_o=ones: must match a hand-rolled SISO scan ---
 
     def test_r1_ones_reduces_to_siso(self) -> None:
         """With R=1 and all-ones mix weights, MIMO collapses to SISO."""
@@ -284,8 +246,7 @@ class TestMimoForward:
 
         y_mimo = reference_mimo_forward(x, B, C, dt, alpha, mimo_x, mimo_o)
 
-        # Hand-rolled SISO: h_t = alpha_t * h_{t-1} + dt_t * B_t * x_t
-        # (R=1, psi=phi=1 → x_r = x, y = C^T h)
+        # Hand-rolled SISO: h_t = alpha_t*h_{t-1} + dt_t*B_t*x_t (R=1, psi=phi=1 -> x_r=x, y=C^T h)
         h_siso = torch.zeros(batch, nheads, headdim, d_state)
         y_siso = torch.empty_like(x)
         for t in range(seqlen):
@@ -302,11 +263,6 @@ class TestMimoForward:
             f"R=1 MIMO (ones weights) differs from SISO. "
             f"Max diff: {(y_mimo - y_siso).abs().max().item():.3e}"
         )
-
-
-# ---------------------------------------------------------------------------
-# 3. reference_mimo_backward
-# ---------------------------------------------------------------------------
 
 
 class TestMimoBackward:
@@ -376,8 +332,7 @@ class TestMimoBackward:
         mimo_x64 = torch.randn(nheads, r, headdim, dtype=torch.float64, requires_grad=True)
         mimo_o64 = torch.randn(nheads, r, headdim, dtype=torch.float64, requires_grad=True)
 
-        # gradcheck validates the REAL oracle (it accepts float64 exactly
-        # for this purpose) — never a duplicated copy of the forward.
+        # gradcheck validates the REAL oracle, never a duplicated copy of the forward.
         assert torch.autograd.gradcheck(
             reference_mimo_forward,
             (x64, B64, C64, dt64, alpha64, mimo_x64, mimo_o64),

@@ -1,30 +1,4 @@
-"""Pin the chunk-parallel-carry forward algebra against the serial oracle.
-
-The serial-L forward scan (``reference_forward_chunked_scan``, mirrored by the
-shipped C1 Triton kernel) carries the SSM state step-by-step over all L. The
-chunk-parallel-carry restructuring is the deferred long-L speedup lever: it
-splits L into chunks of size K and reassociates the *same* linear recurrence
-into three phases, exposing parallelism across chunks where the serial form has
-none. It is a reassociation, not new math (the SSD chunked-scan decomposition,
-Dao & Gu 2024 / official ``mamba`` ``chunk_scan``):
-
-    h_t = a_t * h_{t-1} + bu_t          (bu_t = b_bar_t * u_t, h_{-1}=0)
-
-  Phase 1 (local, parallel across chunks): per chunk c, run the K-step scan
-    from a zero state -> hloc[c,j]; the chunk's end state Sloc[c]=hloc[c,K-1]
-    and its total decay A_chunk[c]=prod_j a[c,j] (inclusive cumprod P_incl).
-  Phase 2 (carry, serial over the nc=L/K chunks, not over L):
-    hin[0]=0; hin[c] = A_chunk[c-1]*hin[c-1] + Sloc[c-1].
-  Phase 3 (combine): h[c,j] = P_incl[c,j]*hin[c] + hloc[c,j].
-
-Phase 3 is exact algebraically; in fp it differs from the serial thread only by
-the distributive split a*(x+y) -> a*x+a*y, i.e. within the eps*sqrt(chain)*scale
-reduction-order band the gates already allow. This test holds the replica to
-that band so the Triton kernel that mirrors it has a pinned, hardware-free
-correctness target. The within-chunk and cross-chunk loops are serial in K and
-nc respectively but vectorised over (batch, chunk, D, N) — the shape the GPU
-kernel parallelises.
-"""
+"""Pin the chunk-parallel-carry forward algebra against the serial oracle."""
 
 from __future__ import annotations
 
@@ -66,7 +40,7 @@ def chunk_parallel_scan_replica(
     c_c = C.reshape(batch, nc, k, n_state)
     u_c = u.reshape(batch, nc, k, d_model)
 
-    # Phase 1 — local scan from zero state, serial in j, parallel across chunks.
+    # Phase 1: local scan from zero state, serial in j, parallel across chunks.
     hloc = torch.zeros(batch, nc, d_model, n_state, dtype=u.dtype, device=u.device)
     hloc_all = torch.empty(batch, nc, k, d_model, n_state, dtype=u.dtype, device=u.device)
     for j in range(k):
@@ -76,14 +50,14 @@ def chunk_parallel_scan_replica(
     a_chunk = p_incl[:, :, k - 1]  # [B,nc,D,N]
     s_loc = hloc_all[:, :, k - 1]  # [B,nc,D,N]
 
-    # Phase 2 — cross-chunk carry, serial over the nc chunk boundaries.
+    # Phase 2: cross-chunk carry, serial over the nc chunk boundaries.
     hin_all = torch.empty(batch, nc, d_model, n_state, dtype=u.dtype, device=u.device)
     carry = torch.zeros(batch, d_model, n_state, dtype=u.dtype, device=u.device)
     for c in range(nc):
         hin_all[:, c] = carry
         carry = a_chunk[:, c] * carry + s_loc[:, c]
 
-    # Phase 3 — combine the carry-in contribution with the local scan, then read out.
+    # Phase 3: combine the carry-in contribution with the local scan, then read out.
     h_full = p_incl * hin_all.unsqueeze(2) + hloc_all  # [B,nc,K,D,N]
     y = (h_full * c_c.unsqueeze(3)).sum(-1) + D * u_c  # [B,nc,K,D]
     return y.reshape(batch, seq_len, d_model)
@@ -126,9 +100,7 @@ def test_chunk_parallel_matches_reference_fp32(
 
 @pytest.mark.parametrize("chunk_size", [16, 64, 256])
 def test_chunk_size_invariance_fp64(chunk_size: int) -> None:
-    # fp64: the reassociation error collapses, so the result is chunk-size-free
-    # to a far tighter band — the algebra itself is exact. The reference is
-    # fp32-only, so oracle against the fp64-capable eager path (same math).
+    # fp64: reassociation error collapses, so the result is chunk-size free to a tight band.
     u, delta, A, B, C, D = _draw(2, 1024, 6, 16, seed=3, dtype=torch.float64)
     want = _scan_eager(u, delta, A, B, C, D)
     got = chunk_parallel_scan_replica(u, delta, A, B, C, D, chunk_size=chunk_size)
@@ -142,10 +114,7 @@ def test_indivisible_chunk_rejected() -> None:
 
 
 class TestAutoChunkLen:
-    """_auto_chunk_len makes chunk_parallel a contract-clean drop-in: it always
-    returns a divisor of seq_len ≤ the requested target, so the launcher never
-    raises on the shapes the gate battery probes, while choosing a coarse (fast)
-    granularity at long L."""
+    """_auto_chunk_len returns the largest divisor of seq_len <= target, never leaves a remainder."""
 
     @pytest.mark.parametrize(
         ("seq_len", "requested", "expected"),

@@ -1,69 +1,4 @@
-"""Triton kernels for the Mamba fused-block backward (C6), the training path.
-
-Import this module only when ``triton`` is installed and a CUDA device is
-the target, the public dispatcher in ``fused_block_backward.py`` guards
-both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
-
-    x, grad_x                 : [B, L, D]      L = L_out + K - 1 (pre-padded)
-    conv_weight               : [D, 1, K]
-    delta, dy, grad_delta     : [B, L_out, D]
-    A : [D, N]   B, C : [B, L_out, N]   conv_bias, D_skip, norm_weight : [D]
-
-Four kernels, one public op. The structure is forced, not chosen:
-
-- The reverse scan sweep consumes ``dys`` (the RMSNorm-backward output),
-  and ``dys`` at any (b, t) needs the *complete* ``ys`` row, which only
-  exists after the forward sweep of every program has finished. That is a
-  global barrier, and Triton has no grid sync, so the forward sweep and
-  the reverse sweep are separate launches (where C2 fused them: its
-  upstream gradient was given, not computed).
-- The RMSNorm backward needs cross-D reductions per (b, t), the same
-  constraint that split C5 into two kernels (atomics are forbidden,
-  ORD-02).
-- The conv input-gradient is written in gather form (one kernel, parallel
-  over every (b, s, d): grad_x[s] = sum_k w[k] * dconv[s-k]) instead of
-  scatter-accumulating inside the serial sweep, no read-modify-write, no
-  accumulation hazard, embarrassingly parallel.
-
-Pipeline (stagings are fp32; one round per gradient at the very end):
-  1. ``_fwd_stage_kernel``: C5's fused conv+SiLU+scan forward, plus
-     per-chunk state checkpoints (C2's scheme) and the ``ys`` staging.
-  2. ``_norm_bwd_kernel``: per (batch, t-block): recompute rms from
-     ``ys``, emit ``dys`` and per-program norm-weight partials.
-  3. ``_bwd_sweep_kernel``: C2's newest-first chunked reverse sweep
-     with the conv+SiLU recompute riding the in-chunk forward pass (z and
-     conv are scratch-buffered per chunk, so the reverse walk re-reads
-     them instead of re-deriving); emits grad_delta directly, dconv
-     staging, and per-program partials for A/B/C/D/conv_w/conv_bias.
-  4. ``_conv_x_bwd_kernel``: the gather-form grad_x.
-  Launcher then runs deterministic ``torch.sum`` reductions over the
-  partial buffers (fixed shapes -> fixed reduction trees, ORD-02).
-
-C2 invariants carried verbatim: no tl.dot (the #904 TMEM-promotion pass
-never engages), no atomics, int64 offset bases with int32 per-step
-increments, fp32 everywhere internally, libdevice exp/log1p, masked padded
-lanes exactly zero, never invert the recurrence (checkpoint + in-chunk
-recompute), gradient expressions mirror autograd's dataflow grouping (the
-EXC-01 lesson):
-
-- RMSNorm backward follows autograd's chain through mul/div/sqrt/mean/pow:
-  ``dys = (dy*w)/r + (2*ys) * ((-sdw/r^2) / (2r) / D)`` with
-  ``sdw = sum_d (dy*w)*ys``. Factoring 1/r^2 out of the sdw sum is
-  mask-equivalent in every reachable case (r >= sqrt(eps) > 0 for finite
-  ys; an Inf in ys makes both forms NaN through Inf/Inf; the one excluded
-  window is all-finite overflow of the undivided sdw sum, unreachable at
-  the gate contract's randn scales), pinned by the replica's non-finite
-  tests.
-- SiLU': ``(dz * sig) * (1 + conv * (1 - sig))``, aten silu_backward's
-  grouping.
-- The scan adjoint is C2's, with z (the SiLU output) in place of u.
-- The sweep's in-chunk recompute keeps C2's ``b_bar = dbar*B`` grouping
-  (the dataflow the gradient expressions consume); stage 1 keeps C5's
-  ``(dbar*z)*B`` so the staged ``ys`` reproduces the forward bit-for-bit.
-  The two trajectories diverge at ULP level, regrouping a product cannot
-  change NaN/Inf class, and the divergence sits inside the calibrated
-  tolerances.
-"""
+"""Triton kernels for the Mamba fused-block backward (C6), the training path."""
 
 from __future__ import annotations
 
@@ -144,8 +79,7 @@ def _fwd_stage_kernel(  # type: ignore[no-untyped-def]
     bln_off = pid_b.to(tl.int64) * l_out * n_state + offs_n
 
     for c in range(n_chunks):
-        # c is int32: promote before the tile-stride product (it crosses
-        # 2^31 once the per-program ckpt region exceeds 8 GiB).
+        # Promote c to int64 before the tile-stride product; it overflows past an 8 GiB ckpt region.
         tl.store(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N, h)  # type: ignore[attr-defined]
         for _j in range(CHUNK_K):
             xw = tl.load(
@@ -204,8 +138,7 @@ def _norm_bwd_kernel(  # type: ignore[no-untyped-def]
         )
         w = tl.load(w_ptr + offs_d, mask=mask_d, other=0.0).to(tl.float32)
         ssq += tl.sum(ys * ys, axis=1)
-        # div-backward integrand (dy*w)*ys; the 1/r^2 factor is applied
-        # after the loop (mask-equivalent, see module docstring).
+        # div-backward integrand (dy*w)*ys; the 1/r^2 factor applies after the loop (see module docstring).
         sdw += tl.sum(tl.where(mask, (dy * w[None, :]) * ys, 0.0), axis=1)
 
     r = libdevice.sqrt(ssq / d_model + eps)
@@ -227,8 +160,7 @@ def _norm_bwd_kernel(  # type: ignore[no-untyped-def]
         dys = (dy * w[None, :]) / r[:, None] + (2.0 * ys) * dm_over_d[:, None]
         tl.store(dys_ptr + row_off[:, None] + offs_d[None, :], dys, mask=mask)
 
-        # grad_norm_weight integrand dy * (ys/r); masked rows contribute
-        # exact zeros to the per-program partial.
+        # grad_norm_weight integrand dy * (ys/r); masked rows contribute exact zero to the partial.
         gnw_t = tl.sum(tl.where(mask, dy * (ys / r[:, None]), 0.0), axis=0)
         tl.store(gnw_acc_base + offs_d, gnw_t, mask=mask_d)
 
@@ -357,9 +289,7 @@ def _bwd_sweep_kernel(  # type: ignore[no-untyped-def]
             gb_t = tl.sum(tl.where(mask_dn, (g * z[:, None]) * dbar[:, None], 0.0), axis=0)
             tl.store(gb_part_ptr + gbc_base + j * n_state, gb_t, mask=mask_n)
 
-            # grad_z (C2's grad_u with z as the scan input), then SiLU' and
-            # the conv-weight/bias integrands. The x window is reloaded
-            # from L2 for gw (same columns the recompute pass just read).
+            # grad_z (C2's grad_u with z as the scan input), then SiLU' and the conv-weight/bias integrands.
             gz_t = tl.sum(tl.where(mask_dn, g * bb, 0.0), axis=1) + d_skip * dys_t
             sig = 1.0 / (1.0 + libdevice.exp(-conv))
             dconv_t = (gz_t * sig) * (1.0 + conv * (1.0 - sig))
@@ -457,21 +387,7 @@ def launch_fused_block_backward(
     num_warps: int | None = None,
     config: KernelConfig | None = None,
 ) -> tuple[Tensor, ...]:
-    """Launch the four-kernel backward. Inputs must be CUDA tensors of one dtype.
-
-    Returns the nine gradients in ``FusedBlockGrads`` field order, each in
-    its input's dtype. ``config`` overrides the two serial-sweep kernels'
-    searched knobs (block_d, chunk_k, num_warps, num_stages); ``num_warps``
-    is the legacy bench hook. The norm-backward and gather kernels keep
-    their own.
-
-    Checkpoint scratch is ``4 * B * ceil(D/64) * n_chunks * BLOCK_D *
-    BLOCK_N`` bytes with ``n_chunks = l_out / chunk_k(l_out)``; chunk_k is
-    the largest power-of-2 divisor of l_out capped at 16, so an odd l_out
-    collapses it to 1 and inflates the buffer 16x vs the even-L envelope
-    (the public op's chunk_size divisibility check keeps default callers
-    out of that regime).
-    """
+    """Launch the four-kernel backward."""
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]
     n_state = a.shape[1]
@@ -491,8 +407,7 @@ def launch_fused_block_backward(
     chunk_k = _chunk_k(l_out)
     if config is not None and config.chunk_k is not None:
         chunk_k = config.chunk_k
-        # A direct override that does not divide l_out drops the tail chunk
-        # (uninitialised grads); the default _chunk_k always divides.
+        # An override that doesn't divide l_out drops the tail chunk with uninitialised grads.
         if l_out % chunk_k != 0:
             raise ValueError(f"chunk_k override {chunk_k} must divide output length {l_out}")
     n_chunks = l_out // chunk_k
@@ -528,11 +443,7 @@ def launch_fused_block_backward(
     gcb_part = torch.empty(batch, d_model, dtype=f32, device=dev)
 
     grid_sweep = (batch, n_d_blocks)
-    # num_warps=8 measured fastest at every (shape, dtype) cell on B200,
-    # and at num_warps<=4 ptxas collapses the half-dtype _bwd_sweep_kernel
-    # specs to 32 registers with 1.4-2.6 KB spill (train bf16: 722 ms at
-    # nw=4 vs 114 ms at nw=8); nw=8 compiles every spec at >=219 regs with
-    # <=172 B spill.
+    # num_warps=8 avoids ptxas register spill on B200 (measured 722ms at nw=4 vs 114ms at nw=8).
     warps = num_warps if num_warps is not None else (8 if block_d * block_n >= 512 else 2)
     if config is not None and config.num_warps is not None:
         warps = config.num_warps

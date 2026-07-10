@@ -1,26 +1,4 @@
-"""C4 benchmark: our fused rotary scan vs the loop oracle.
-
-No open full-sequence comparator exists: the official repo's rotary
-kernels are the decode-step (``mamba3_mimo_rotary_step``, one token) and
-the standalone ``angle_dt`` cumsum; the full-sequence training path runs
-through the compiled TileLang artifact with the fused MIMO semantics.
-The comparator set is therefore:
-
-- ``ours_triton``: this repo's fused rotary scan (C4): angle
-  accumulation + rotation + decay scan in one kernel, nothing staged
-  through HBM
-- ``reference_loop``: the Python-loop oracle (small shapes; the only
-  other implementation of this op anywhere)
-
-Plus the #904-contrast artifact carried over from C2/C3:
-``num_warps_sweep`` compiles and times the kernel at num_warps 2/4/8 with
-per-specialisation ptxas resources: no ``tl.dot``, so the sweep
-succeeding on sm_100 is the claim, recorded with evidence.
-
-Usage: ``uv run python -m
-lethe.bench.c4_complex_scan_rope --out ~/out/c4_bench.json``
-(add ``--quick`` for a fast smoke pass).
-"""
+"""C4 benchmark: our fused rotary scan vs the loop oracle."""
 
 from __future__ import annotations
 
@@ -63,9 +41,7 @@ class ShapeSpec:
         )
 
 
-# Training-like sizing from the official mamba3 defaults: headdim 64,
-# d_state 128, full rotary (S = N/2); H=32 makes d_inner=2048. One
-# partial-rotary shape exercises the identity tail at scale.
+# Training-like mamba3 sizing: headdim 64, d_state 128, full rotary S=N/2, H=32 (d_inner 2048).
 SHAPES = [
     ShapeSpec(2, 256, 4, 16, 32, 16),  # oracle shape: every comparator runs
     ShapeSpec(8, 2048, 32, 64, 128, 64),  # training shape, full rotary
@@ -148,11 +124,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
 
 def _specialization_table() -> list[dict[str, Any]]:
-    """Per-compiled-specialisation resources from the kernel cache.
-
-    Attribute layout is triton-version dependent; missing fields record as
-    None rather than guessing (same convention as the C2/C3 tables).
-    """
+    """Per-compiled-specialisation resources from the kernel cache."""
     from lethe.kernels.ops import _triton_complex_rope
 
     jit_fn = _triton_complex_rope._complex_rope_kernel

@@ -1,18 +1,4 @@
-"""Family reduction credentials: GLA / LA / SSD-class / KDA through the one assembly.
-
-Three layers, mirroring the crown's discipline:
-
-1. Oracle cross-pins — each independent token-serial family oracle equals the GDN-2
-   oracle at its gate settings (machine precision; exact where the op sequences
-   coincide).
-2. Value correctness — each family wrapper (channel-wise assembly at gate settings,
-   grads mapped to family parameters) matches its family oracle in fp64.
-3. The 12-gate battery per family view (verify_gdn2_family_op), candidate vs the
-   structurally matched refs-path wrapper.
-
-Plus the ``b = 0`` fast-path pins: skip-T forward and no-K#2 assembly are exactly the
-full path at b = 0. CPU only.
-"""
+"""Family reduction credentials: GLA / LA / SSD-class / KDA through the one assembly."""
 
 import pytest
 import torch
@@ -54,7 +40,7 @@ from lethe.verifier.op_harness import (
 
 _ALL_GATES_COUNT = 12
 
-# (batch, seq_len, nheads, d_k, d_v) — chunk-boundary-straddling and uneven dims.
+# (batch, seq_len, nheads, d_k, d_v): chunk-boundary-straddling and uneven dims.
 SHAPES = [(2, 32, 2, 16, 16), (1, 64, 3, 16, 8), (2, 48, 2, 24, 20)]
 
 FAMILY_BACKWARDS = {
@@ -101,8 +87,7 @@ class TestFamilyOracleCrossPins:
         q, k, v, g = _family_inputs("gla", batch, seq, heads, d_k, d_v)
         o_gla = reference_gla_forward(q, k, v, g)
         o_gdn2 = reference_gdn2_forward(q, k, v, g, torch.zeros_like(g), torch.ones_like(v))
-        # b=0 zeroes the erase term exactly and w=1 is an exact multiply, so the two
-        # op sequences coincide bit-for-bit.
+        # b=0 zeroes erase, w=1 is exact multiply: the two paths coincide bit-for-bit.
         assert torch.equal(o_gla, o_gdn2)
 
     @pytest.mark.parametrize(("batch", "seq", "heads", "d_k", "d_v"), SHAPES)
@@ -175,18 +160,7 @@ class TestFamilyWrapperValue:
             kda_backward(q, k, v, g, g, torch.randn_like(v))
 
     def test_ssd_half_grad_g_single_round(self) -> None:
-        """Regression: SSD grad_g channel-sum must happen before half-round.
-
-        The module's mixed-precision contract is "each grad rounds once at the end".
-        Prior to the fix, ssd_backward summed the ALREADY-ROUNDED per-channel dg,
-        i.e. d_k independent roundings followed by a sum, violating the contract
-        and accumulating more error than the single-round path.
-
-        This test constructs bf16 inputs where the per-channel dg components have
-        magnitudes such that their fp32 sum differs from the sum of their bf16-rounded
-        values. The fixed path (sum in fp32, round once) matches fp64 ground truth
-        more closely than the old double-round path would.
-        """
+        """Regression: SSD grad_g channel-sum must happen before half-round."""
         gen = torch.Generator().manual_seed(42)
         batch, seq, heads, d_k, d_v = 1, 128, 2, 128, 64
         q = torch.randn(batch, seq, heads, d_k, generator=gen, dtype=torch.bfloat16)
@@ -205,8 +179,7 @@ class TestFamilyWrapperValue:
         abs_err = (got_dg_f64 - want.grad_g).abs()
         ref_scale = want.grad_g.abs().max().item()
         max_scaled_err = (abs_err / (ref_scale + 1e-12)).max().item()
-        # Discriminating floor: on these inputs the old round-then-sum path scores
-        # 3.94e-3 and the fixed sum-then-round path 2.82e-3 — the bound must sit between.
+        # floor: old round-then-sum scores 3.94e-3, fixed sum-then-round scores 2.82e-3.
         assert max_scaled_err < 3.3e-3, f"SSD grad_g scaled error {max_scaled_err:.4e} >= 3.3e-3"
 
 

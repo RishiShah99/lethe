@@ -1,32 +1,4 @@
-"""C5 benchmark: the fused block vs unfused compositions of the same math.
-
-Unlike C3/C4 this op has real comparators: the same conv1d + SiLU +
-selective scan + RMSNorm pipeline can be composed from parts, so the bench
-measures exactly what the fusion buys:
-
-- ``ours_triton``: the fused path (conv+SiLU+scan in one kernel,
-  fp32 staging, deterministic RMSNorm kernel)
-- ``composed_ours_scan``: torch conv1d/SiLU + our C1 Triton scan +
-  torch RMSNorm: the fusion-benefit control (same scan engine, staged
-  activations)
-- ``composed_official``: official ``causal_conv1d`` (fused conv+SiLU
-  CUDA kernel, internal zero-pad == our zero pre-pad) + official
-  ``selective_scan_fn`` + torch RMSNorm, when installed; falls back to
-  torch conv with a recorded skip. The official *fused block*
-  (``mamba_inner_fn``) computes a different composition (z-gating, in-proj
-  fused, no post-scan RMSNorm), recorded as the skip reason, the
-  composed path is the honest official anchor.
-- ``reference_loop``: the Python-loop oracle (small shapes)
-
-Plus the #904-contrast artifact carried over from C2-C4:
-``num_warps_sweep`` compiles and times the conv-scan kernel at num_warps
-2/4/8 with per-specialisation ptxas resources: no ``tl.dot``, so the
-sweep succeeding on sm_100 is the claim, recorded with evidence.
-
-Usage: ``uv run python -m
-lethe.bench.c5_fused_block_forward --out ~/out/c5_bench.json``
-(add ``--quick`` for a fast smoke pass).
-"""
+"""C5 benchmark: the fused block vs unfused compositions of the same math."""
 
 from __future__ import annotations
 
@@ -85,8 +57,7 @@ class ShapeSpec:
         return f"B{self.batch}xL{self.l_out}xD{self.d_model}xN{self.n_state}xK{self.conv_k}"
 
 
-# Training sizing matches the C1/C2 benches (d_inner=4096) with Mamba-3's
-# d_state 128 and the universal d_conv=4.
+# Training sizing matches C1/C2 (d_inner=4096) with Mamba-3's d_state 128, d_conv=4.
 SHAPES = [
     ShapeSpec(2, 256, 256, 16, 4),  # oracle shape: every comparator runs
     ShapeSpec(8, 2048, 4096, 128, 4),  # training shape
@@ -135,8 +106,7 @@ def _composed_ours_scan(args: FusedArgs) -> Tensor:
 def _composed_official(args: FusedArgs, conv_k: int) -> Tensor:
     x, conv_w, conv_b, delta, a, b_proj, c_proj, d_skip, norm_w = args
     if _HAS_CAUSAL_CONV:
-        # causal_conv1d zero-pads internally; feed the unpadded core so its
-        # implicit padding matches our explicit zero pre-pad.
+        # causal_conv1d pads internally; feed it the unpadded core to match our explicit pre-pad.
         x_core_t = x[:, conv_k - 1 :, :].transpose(1, 2).contiguous()
         z_t = causal_conv1d_fn(x_core_t, conv_w[:, 0, :], conv_b, activation="silu")
     else:
@@ -227,11 +197,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
 
 def _specialization_table() -> list[dict[str, Any]]:
-    """Per-compiled-specialisation resources from both kernels' caches.
-
-    Attribute layout is triton-version dependent; missing fields record as
-    None rather than guessing (same convention as the C2-C4 tables).
-    """
+    """Per-compiled-specialisation resources from both kernels' caches."""
     from lethe.kernels.ops import _triton_fused_block
 
     rows: list[dict[str, Any]] = []

@@ -1,34 +1,4 @@
-"""Triton fused-block backward: four-kernel pipeline for all nine gradients.
-
-Four kernels, one public op. Structural rationale:
-- The reverse sweep needs ``dys`` (RMSNorm-backward output), and ``dys`` at
-  any (b, t) needs the complete ``ys`` row — which only exists after every
-  forward-sweep program finishes. That is a global barrier; Triton has no
-  grid sync, so the forward sweep and reverse sweep are separate launches.
-- RMSNorm backward needs cross-D reductions per (b, t) — the same constraint
-  that split the fused forward into two kernels (atomics forbidden, ORD-02).
-- The conv input-gradient is written in gather form (one kernel, parallel over
-  every (b, s, d)) instead of scatter-accumulating inside the serial sweep —
-  no read-modify-write, no accumulation hazard.
-
-Pipeline: (1) _fwd_stage_kernel — fused conv+SiLU+scan forward with per-chunk
-state checkpoints and ``ys`` staging. (2) _norm_bwd_kernel — recompute rms
-from ``ys``, emit ``dys`` and per-program norm-weight partials. (3)
-_bwd_sweep_kernel — newest-first chunked reverse sweep with conv+SiLU
-recompute riding the in-chunk forward pass. (4) _conv_x_bwd_kernel — the
-gather-form grad_x. Launcher then runs deterministic torch.sum reductions.
-
-C2 invariants: no tl.dot, no atomics, int64 offset bases with int32 per-step
-increments, fp32 everywhere internally, libdevice exp/log1p, masked padded
-lanes exactly zero, checkpoint + in-chunk recompute (never invert the
-recurrence). Gradient expressions mirror autograd's dataflow grouping.
-RMSNorm backward: dys = (dy*w)/r + (2*ys)*((-sdw/r^2)/(2r)/D) with
-sdw = sum_d (dy*w)*ys. SiLU': (dz*sig)*(1 + conv*(1 - sig)) per aten grouping.
-num_warps=8 measured fastest at every (shape, dtype) cell on B200; at
-num_warps<=4 ptxas collapses half-dtype _bwd_sweep_kernel to 32 registers
-with 1.4-2.6 KB spill (bf16: 722 ms at nw=4 vs 114 ms at nw=8); nw=8
-compiles every spec at >=219 regs with <=172 B spill.
-"""
+"""Triton fused-block backward: four-kernel pipeline for all nine gradients."""
 
 from __future__ import annotations
 
@@ -48,14 +18,11 @@ _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 MAX_BLOCK_N = 128
 # The x window is materialised as a [BLOCK_D, BLOCK_K] register block per step.
 MAX_CONV_K = 8
-# Kernel B's load tile is [BLOCK_T, BLOCK_D_NORM] fp32 registers; product
-# stays ~8 KB/program.
+# Kernel B's load tile is [BLOCK_T, BLOCK_D_NORM] fp32 registers; product stays ~8 KB/program.
 _NORM_TILE = 2048
 _MAX_BLOCK_D_NORM = 256
 
-# Recompute-chunk cap. Working set of the in-chunk state scratch is
-# B*D*K*N fp32 across all programs; K=16 keeps it ~34 MB at the training
-# shape (B=8, D=4096, N=16) — resident in B200's 126 MB L2.
+# Recompute-chunk cap.
 MAX_CHUNK_K = 16
 
 
@@ -119,8 +86,7 @@ def _fwd_stage_kernel(  # type: ignore[no-untyped-def]
     bln_off = pid_b.to(tl.int64) * l_out * n_state + offs_n
 
     for c in range(n_chunks):
-        # c is int32: promote before the tile-stride product (it crosses
-        # 2^31 once the per-program ckpt region exceeds 8 GiB).
+        # Promote c to int64 before the stride product; it can cross 2^31 past an 8 GiB ckpt region.
         tl.store(ckpt_prog + c.to(tl.int64) * BLOCK_D * BLOCK_N, h)  # type: ignore[attr-defined]
         for _j in range(CHUNK_K):
             xw = tl.load(
@@ -179,8 +145,7 @@ def _norm_bwd_kernel(  # type: ignore[no-untyped-def]
         )
         w = tl.load(w_ptr + offs_d, mask=mask_d, other=0.0).to(tl.float32)
         ssq += tl.sum(ys * ys, axis=1)
-        # div-backward integrand (dy*w)*ys; the 1/r^2 factor is applied
-        # after the loop (mask-equivalent, see module docstring).
+        # div-backward integrand (dy*w)*ys; the 1/r^2 factor is applied after the loop.
         sdw += tl.sum(tl.where(mask, (dy * w[None, :]) * ys, 0.0), axis=1)
 
     r = libdevice.sqrt(ssq / d_model + eps)
@@ -202,8 +167,7 @@ def _norm_bwd_kernel(  # type: ignore[no-untyped-def]
         dys = (dy * w[None, :]) / r[:, None] + (2.0 * ys) * dm_over_d[:, None]
         tl.store(dys_ptr + row_off[:, None] + offs_d[None, :], dys, mask=mask)
 
-        # grad_norm_weight integrand dy * (ys/r); masked rows contribute
-        # exact zeros to the per-program partial.
+        # grad_norm_weight integrand dy*(ys/r); masked rows contribute exact zeros to the partial.
         gnw_t = tl.sum(tl.where(mask, dy * (ys / r[:, None]), 0.0), axis=0)
         tl.store(gnw_acc_base + offs_d, gnw_t, mask=mask_d)
 
@@ -332,9 +296,7 @@ def _bwd_sweep_kernel(  # type: ignore[no-untyped-def]
             gb_t = tl.sum(tl.where(mask_dn, (g * z[:, None]) * dbar[:, None], 0.0), axis=0)
             tl.store(gb_part_ptr + gbc_base + j * n_state, gb_t, mask=mask_n)
 
-            # grad_z (scan-adjoint with z as the scan input), then SiLU' and
-            # the conv-weight/bias integrands — the x window is reloaded
-            # from L2 for gw (same columns the recompute pass just read).
+            # grad_z via scan-adjoint, then SiLU' and conv-weight/bias integrands; x reloads from L2 for gw.
             gz_t = tl.sum(tl.where(mask_dn, g * bb, 0.0), axis=1) + d_skip * dys_t
             sig = 1.0 / (1.0 + libdevice.exp(-conv))
             dconv_t = (gz_t * sig) * (1.0 + conv * (1.0 - sig))
@@ -431,17 +393,7 @@ def launch_fused_block_backward(
     *,
     num_warps: int | None = None,
 ) -> tuple[Tensor, ...]:
-    """Launch the four-kernel backward. Inputs must be CUDA tensors.
-
-    Returns nine gradients in field order:
-    (grad_x, grad_conv_weight, grad_conv_bias, grad_delta, grad_A,
-     grad_B, grad_C, grad_D, grad_norm_weight), each in its input's dtype.
-
-    Checkpoint scratch is ``4 * B * ceil(D/64) * n_chunks * BLOCK_D *
-    BLOCK_N`` bytes; n_chunks = l_out / chunk_k(l_out). chunk_k is the
-    largest power-of-2 divisor of l_out capped at MAX_CHUNK_K, so an odd
-    l_out collapses to 1 and inflates the buffer 16x vs the even-L envelope.
-    """
+    """Launch the four-kernel backward."""
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]
     n_state = a.shape[1]
@@ -490,9 +442,7 @@ def launch_fused_block_backward(
     gcb_part = torch.empty(batch, d_model, dtype=f32, device=dev)
 
     grid_sweep = (batch, n_d_blocks)
-    # num_warps=8 measured fastest at every (shape, dtype) cell on B200
-    # (nw=4 collapses half-dtype _bwd_sweep_kernel to 32 regs + 1.4-2.6 KB
-    # spill; nw=8 compiles at >=219 regs with <=172 B spill).
+    # num_warps=8 wins on B200 (nw=4: 32 regs, 1.4-2.6 KB spill; nw=8: >=219 regs, <=172 B spill).
     warps = num_warps if num_warps is not None else (8 if block_d * block_n >= 512 else 2)
     _fwd_stage_kernel[grid_sweep](
         x_c,
@@ -622,19 +572,7 @@ def fused_block_backward(
     eps: float = 1e-5,
     chunk_size: int = 64,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Mamba fused-block backward: all nine gradients of the fused-block forward.
-
-    Forward inputs as in the fused-block forward, plus ``dy`` [B, L_out, D].
-    Returns a 9-tuple:
-    (grad_x, grad_conv_weight, grad_conv_bias, grad_delta,
-     grad_A, grad_B, grad_C, grad_D, grad_norm_weight).
-    Each gradient is in its corresponding input's dtype.
-    ``chunk_size`` is validated but is a blocking hint only.
-
-    Raises:
-        ValueError: if ``conv_kernel_size`` disagrees with ``conv_weight``'s
-            trailing dim, or if L_out is not divisible by ``chunk_size``.
-    """
+    """Mamba fused-block backward: all nine gradients of the fused-block forward."""
     conv_k = conv_weight.shape[-1]
     if conv_k != conv_kernel_size:
         raise ValueError(
@@ -681,8 +619,7 @@ def _fused_forward_eager(
     n_state = A.shape[1]
     l_out = seq_len - (conv_k - 1)
 
-    # Explicit shifted-sum conv: its autograd decomposes into deterministic
-    # slice/sum backwards (a conv primitive's weight gradient may not be).
+    # Explicit shifted-sum conv gives a deterministic slice/sum backward, unlike the conv primitive.
     conv_out = x[:, 0:l_out, :] * conv_weight[:, 0, 0]
     for k in range(1, conv_k):
         conv_out = conv_out + x[:, k : k + l_out, :] * conv_weight[:, 0, k]

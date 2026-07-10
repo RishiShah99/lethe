@@ -74,8 +74,7 @@ class TestFusedBlockBackwardCpu:
             fused_block_backward(*args, conv_kernel_size=3, chunk_size=8)
 
     def test_channel_mismatch_rejected(self) -> None:
-        # Family-consistent guard with the C5 forward: x channels must equal
-        # conv_weight's out-channels (a depthwise-conv contract).
+        # Same channel guard as C5 forward: x channels must match conv_weight's out-channels.
         args = list(_fused_inputs(2, 64, 32, 16, k=4))
         args[0] = args[0][..., :16].contiguous()  # x -> (2, 67, 16)
         with pytest.raises(ValueError, match="channel mismatch"):
@@ -100,10 +99,7 @@ class TestFusedBlockBackwardCpu:
                 assert torch.equal(got, want.to(dtype)), field
 
     def test_inputs_unmutated(self) -> None:
-        # The eager path detaches without cloning, so its safety rests on
-        # _fused_eager staying mutation-free — pinned here, since the
-        # bitwise test feeds both paths the same tensors and would hide a
-        # shared mutation.
+        # Eager path detaches without cloning; safety rests on _fused_eager staying mutation-free.
         args = _fused_inputs(2, 16, 8, 8, seed=3)
         snapshot = tuple(t.clone() for t in args)
         fused_block_backward(*args, chunk_size=8)
@@ -111,8 +107,7 @@ class TestFusedBlockBackwardCpu:
             assert torch.equal(orig, snap)
 
     def test_consistent_with_public_forward_autograd(self) -> None:
-        # The op pair must be self-consistent: differentiating the public
-        # forward must give the same gradients the public backward returns.
+        # Self-consistency: differentiating the public forward must match the public backward.
         args = _fused_inputs(2, 8, 6, 8, seed=11)
         direct = fused_block_backward(*args, chunk_size=8)
 
@@ -123,8 +118,7 @@ class TestFusedBlockBackwardCpu:
             assert torch.equal(got, want), field
 
     def test_differentiable_wrt_dy_when_required(self) -> None:
-        # CMP-02's gradcheck differentiates the op w.r.t. dy; the eager path
-        # must build that graph (the VJP is linear in dy).
+        # CMP-02's gradcheck needs the eager path to build a graph w.r.t. dy (VJP is linear).
         args = list(_fused_inputs(1, 8, 4, 8))
         args[9] = args[9].requires_grad_(True)
         grads = fused_block_backward(*args, chunk_size=8)

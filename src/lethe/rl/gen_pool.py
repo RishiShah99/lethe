@@ -1,27 +1,4 @@
-"""Data-parallel generation pool: K candidates across N policy replicas.
-
-The GRPO bottleneck at 32B is generation, not scoring: one device samples
-K completions serially while the rest idle. vLLM (the usual fix) has no
-wheel for this repo's torch-2.12/cu130 + pinned-Triton stack, so this pool
-parallelises generation within plain PyTorch instead: one inference-only
-``HFPolicy`` replica per generation GPU, the K prompts split across them,
-``generate`` run concurrently (threads: HF generate releases the GIL in
-its CUDA kernels, and each replica samples on its own device whose CUDA
-RNG is independent, so concurrent sampling neither races nor correlates).
-
-The trainer keeps the single optimizer-bearing policy on its own GPU and
-computes the log-prob streams + update there; only sampling is pooled.
-Each step the pool's LoRA tensors are refreshed from the trainer policy
-BEFORE generating, so the sampled completions come from the current
-behaviour distribution. The GRPO importance ratio the trainer then
-computes on those same strings stays consistent (the step-0 identity is
-unaffected: refresh makes replica LoRA == trainer LoRA at sample time).
-
-Topology (the driver wires the GPU lists): trainer on one GPU, replicas
-on the generation GPUs, scoring sandboxes pinned to the rest. Replicas
-are loaded once; refresh is a cheap CPU-staged LoRA copy (adapters are a
-few hundred MB, negligible against a multi-minute generation step).
-"""
+"""Data-parallel generation pool: K candidates across N policy replicas."""
 
 from __future__ import annotations
 
@@ -49,12 +26,7 @@ class _TrainerPolicy(Protocol):
 
 
 def split_counts(n: int, parts: int) -> list[int]:
-    """Distribute ``n`` items across ``parts`` as evenly as possible.
-
-    The first ``n % parts`` replicas take one extra, so the split is
-    deterministic and order-preserving when results are concatenated in
-    replica order.
-    """
+    """Distribute ``n`` items across ``parts`` as evenly as possible."""
     if parts <= 0:
         raise ValueError("parts must be positive")
     base, extra = divmod(n, parts)
@@ -79,12 +51,7 @@ class GenerationPool:
         sampling: Any = None,
         **policy_kwargs: Any,
     ) -> GenerationPool:
-        """Load one inference HFPolicy replica per GPU id in ``gen_devices``.
-
-        Replicas carry a fresh LoRA adapter (overwritten by the first
-        ``refresh_from``); ``gradient_checkpointing`` is irrelevant here
-        (generation runs under ``no_grad``) and left off.
-        """
+        """Load one inference HFPolicy replica per GPU id in ``gen_devices``."""
         from lethe.rl.hf_policy import HFPolicy
 
         replicas = [
@@ -107,12 +74,7 @@ class GenerationPool:
             replica.load_adapter_state_dict(state)
 
     def generate(self, prompt: str, n: int) -> list[str]:
-        """Sample ``n`` completions, splitting across replicas concurrently.
-
-        Returns them concatenated in replica order; ``last_terminated`` is
-        assembled in the same order so the trainer's per-completion EOS
-        mask still aligns.
-        """
+        """Sample ``n`` completions, splitting across replicas concurrently."""
         if n <= 0:
             self.last_terminated = []
             return []

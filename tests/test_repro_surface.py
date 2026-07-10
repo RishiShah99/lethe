@@ -1,11 +1,4 @@
-"""Tests for the reproducibility surface helpers in scripts/repro.py.
-
-These are fast, CPU-only tests that cover:
-- environment capture returns required keys
-- seed pinning is repeatable
-- selector geomean helper returns a value ≥ 2.1 against the committed JSON
-- audit headline helper returns a plausible value from the committed JSON
-"""
+"""Tests for the reproducibility surface helpers in scripts/repro.py."""
 
 from __future__ import annotations
 
@@ -16,8 +9,7 @@ from pathlib import Path
 import pytest
 import torch
 
-# scripts/ is not a package; add the repo root's scripts dir to the path so
-# we can import repro directly.
+# scripts/ is not a package; add the repo root's scripts dir to sys.path to import repro.
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -74,8 +66,7 @@ class TestSeedPinning:
 
 class TestSelectorGeomean:
     def test_boundary_json_exists(self) -> None:
-        # git-tracked artifact — its absence is a regression, not a reason to
-        # silently skip the only automated check of the 2.1x selector headline.
+        # git-tracked artifact; its absence is a regression, not a skip.
         assert _BOUNDARY_JSON.exists(), f"tracked boundary sweep JSON missing: {_BOUNDARY_JSON}"
 
     def test_geomean_at_least_2_1(self) -> None:
@@ -99,9 +90,7 @@ class TestSelectorGeomean:
     def test_missing_chunk_parallel_measurement_dropped_not_misattributed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # When the selector picks chunk_parallel but that measurement is absent,
-        # the row is dropped — never credited the serial speedup, which would
-        # inflate the >=2.1x geomean gate.
+        # If chunk_parallel is picked but unmeasured, the row is dropped rather than credited to serial.
         entries = [
             {  # saturated corner routes to serial -> contributes its 2.0x
                 "op": "backward_selective_scan",
@@ -129,31 +118,24 @@ class TestSelectorGeomean:
 
 class TestAuditHeadline:
     def test_audit_json_exists(self) -> None:
-        # git-tracked artifact — absence is a regression, not a skip.
+        # git-tracked artifact; absence is a regression, not a skip.
         assert _AUDIT_JSON.exists(), f"tracked audit aggregate JSON missing: {_AUDIT_JSON}"
 
     def test_finding_rate_plausible(self) -> None:
         ok, detail = repro.check_audit_headline()
         assert ok, f"audit headline check failed: {detail}"
-        # Pin the committed headline on the COMPUTED portion of the detail string —
-        # the "(committed~62.1%)" suffix is a constant and must not satisfy the pin.
+        # Pin the COMPUTED portion of the detail string; the constant suffix must not satisfy the pin.
         assert "finding_rate=0.6213" in detail, f"committed rate not in detail: {detail}"
 
     def test_raw_finding_rate_value(self) -> None:
         data = json.loads(_AUDIT_JSON.read_text())
         rate = data["accepted_only"]["finding_rate"]
-        # The committed value is 0.6213 — within 2pp is a sound check.
+        # The committed value is 0.6213; within 2pp is a sound check.
         assert abs(rate - 0.6213) < 0.02, f"finding_rate {rate} deviates >2pp from committed"
 
 
 class TestMicrogateHarnessIntegrity:
-    """The K#1/K#2 silicon-gate harnesses must track the promoted kernel modules.
-
-    After the scratch->src promotion (1c755a0) the k1 harness kept importing the
-    deleted scratch module; the import sits inside the harness's GO try-block, so
-    a rerun of the tracked GO evidence wrote GO=False — a broken harness
-    masquerading as a failed gate. Pin the promoted paths off-box.
-    """
+    """The K#1/K#2 silicon-gate harnesses must track the promoted kernel modules."""
 
     def test_harnesses_reference_only_promoted_kernel_modules(self) -> None:
         root = Path(__file__).resolve().parents[1]

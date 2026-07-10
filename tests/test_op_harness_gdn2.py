@@ -1,11 +1,4 @@
-"""Harness tests for the GDN-2 backward verifier wiring.
-
-Mirrors TestMimoBackwardHarness: adapter factoring/determinism/shapes/dtype,
-reference-adapter equivalence, a full 12-gate CPU run on one view, and a PRC-02
-discrimination check (fp16-state cheat must fail where the honest path passes).
-
-All tests run on CPU only.
-"""
+"""Harness tests for the GDN-2 backward verifier wiring."""
 
 import pytest
 import torch
@@ -41,14 +34,7 @@ def _low_precision_state_gdn2_bwd(
     *,
     state_dtype: torch.dtype,
 ) -> tuple[torch.Tensor, ...]:
-    """Cheating GDN-2 backward: per-step math in fp32, running state re-rounded.
-
-    Autograd through the low-precision-state forward keeps the backward carry at
-    ``state_dtype`` too — the missing-fp32-accumulator failure PRC-02 exists to
-    reject. GDN-2's decay-limited memory makes an fp16 state only ~2x over the
-    honest fp16 input-rounding floor (uncatchable at a safe atol — measured); a
-    bf16 state is the robust adversary that proves the gate's teeth.
-    """
+    """Cheating GDN-2 backward: per-step math in fp32, running state re-rounded."""
     inputs = (q, k, v, g, b, w)
     with torch.enable_grad():
         leaves = [t.detach().float().requires_grad_(True) for t in inputs]
@@ -139,11 +125,7 @@ class TestGdn2BackwardHarness:
 
 class TestGdn2Prc02Discrimination:
     def test_scale_aware_prc02_separates_honest_from_coarse_accumulator(self) -> None:
-        # Calibrated floor (scratch/gdn2_prc02_floor.py): honest fp16 input-rounding
-        # floor ~6e-4 of scale; bf16-state cheat ~6.7e-3 (11x) on grad_v; unit atol
-        # 2e-3 sits between. (An fp16-state cheat is only ~2x over the floor — GDN-2's
-        # decay-limited memory makes it uncatchable at a safe atol; the bf16 cheat is
-        # the robust adversary. See _gdn2_prc02.)
+        # Calibrated floor: honest ~6e-4 vs bf16-state cheat ~6.7e-3 (11x) on grad_v; unit atol 2e-3.
         torch.manual_seed(11)
         kwargs = dict(GDN2_BWD_GATE_OVERRIDES["grad_v"]["gate_prc_02_mixed_precision_accumulation"])
         honest = gate_prc_02_mixed_precision_accumulation(
@@ -167,8 +149,7 @@ class TestGdn2ReduceCandidate:
         assert torch.equal(out, grads[4].sum(-1) + grads[5].sum(-1))
 
     def test_unknown_view_raises(self) -> None:
-        # A typo'd view must NOT fall through to the beta reduction (a green
-        # result from an operator-wiring error); it must raise.
+        # A typo'd view must not silently fall through to the beta reduction; it must raise.
         grads = tuple(torch.randn(2, 4, 3, 5) for _ in range(6))
         with pytest.raises(ValueError, match="grad_typo"):
             _gdn2_reduce_candidate("grad_typo", grads)

@@ -1,11 +1,4 @@
-"""CPU regressions for the RES-02 resource-envelope helpers.
-
-Pins the review MEDIUM fix: when the scan mode is resolved by shape (config
-unset), the resource audit must bound *whichever* kernel dispatch could pick,
-not the serial one only — a chunk-parallel specialisation that spills registers
-must not hide behind the serial envelope. Triton isn't importable off-box, so
-the routing tests stub the lazily-imported kernel modules on the package.
-"""
+"""CPU regressions for the RES-02 resource-envelope helpers."""
 
 from __future__ import annotations
 
@@ -17,9 +10,7 @@ import pytest
 from lethe.kernels.autotune import KernelConfig
 from lethe.kernels.ops._resource_meta import max_resource_meta
 
-# The ops package __init__ rebinds ``forward_chunked_scan`` /
-# ``backward_selective_scan`` / ``fused_block_backward`` to the *functions*,
-# shadowing the submodule attributes — reach the real modules through sys.modules.
+# The ops __init__ rebinds these names to functions, shadowing submodules; use sys.modules.
 ops_pkg = importlib.import_module("lethe.kernels.ops")
 fwd_mod = importlib.import_module("lethe.kernels.ops.forward_chunked_scan")
 bwd_mod = importlib.import_module("lethe.kernels.ops.backward_selective_scan")

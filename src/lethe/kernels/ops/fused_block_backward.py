@@ -1,27 +1,4 @@
-"""C6, hand-written Mamba fused-block backward (the training bottleneck).
-
-Drop-in for ``reference_fused_block_backward`` with the same signature and
-semantics, widened to more dtypes and devices:
-
-- CUDA + {fp32, fp16, bf16} with triton installed -> the four-kernel
-  Triton pipeline (``_triton_fused_block_bwd``: forward re-stage with
-  checkpoints, RMSNorm backward, chunked reverse sweep with conv/SiLU
-  recompute, gather-form conv input-gradient; the structural rationale
-  lives on that module).
-- everything else (CPU, fp64, missing triton) -> ``torch.autograd.grad``
-  through ``_fused_eager``, the differentiable eager path shared with the
-  C5 forward op. For fp32 on CPU this replicates the reference oracle's
-  gradients; fp64 is the verification dtype (gradcheck) and deliberately
-  routes here. When ``dy.requires_grad``, the eager path builds the
-  double-backward graph (``create_graph=True``), the VJP is linear in
-  ``dy``, which is exactly what CMP-02's gradcheck differentiates.
-
-Deviations from the reference: the reference rejects non-fp32 inputs; this
-op defines the mixed-precision contract instead (compute in fp32, round
-once per gradient output). ``chunk_size`` is validated identically but is
-a blocking hint only, gradients do not depend on it, and the Triton
-pipeline picks its own recompute-chunk internally.
-"""
+"""C6, hand-written Mamba fused-block backward (the training bottleneck)."""
 
 from __future__ import annotations
 
@@ -81,20 +58,7 @@ def fused_block_backward(
     chunk_size: int = 64,
     config: KernelConfig | None = None,
 ) -> FusedBlockGrads:
-    """Mamba fused-block backward: all nine gradients of the C5 forward.
-
-    Args/semantics mirror ``reference_fused_block_backward``: forward
-    inputs as in ``fused_block_forward`` plus the upstream gradient ``dy``
-    [B, L_out, D]; returns a ``FusedBlockGrads`` named tuple whose fields
-    match the corresponding input shapes and dtypes. All floating inputs
-    share ``x``'s dtype (dispatch keys on ``x`` alone, the family
-    contract).
-
-    Raises:
-        ValueError: If ``conv_kernel_size`` disagrees with ``conv_weight``'s
-            trailing dim, if x's channel dim disagrees with ``conv_weight``'s,
-            or if L_out is not divisible by ``chunk_size``.
-    """
+    """Mamba fused-block backward: all nine gradients of the C5 forward."""
     conv_k = conv_weight.shape[-1]
     if conv_k != conv_kernel_size:
         raise ValueError(
@@ -150,16 +114,7 @@ def fused_block_backward(
 def triton_fused_block_bwd_resource_meta(
     config: KernelConfig | None = None,
 ) -> dict[str, int] | None:
-    """Resource metadata over the compiled backward kernels, if any.
-
-    Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
-
-    Must match ``fused_block_backward``'s dispatch: an explicit ``scan_mode``
-    audits exactly that kernel, but when ``scan_mode`` is unset the dispatch
-    resolves the mode by *shape*, either kernel can run, so the audit returns
-    the max envelope over both, never the serial one alone.
-    """
+    """Resource metadata over the compiled backward kernels, if any."""
     if not _triton_usable():
         return None
     from lethe.kernels.ops import (

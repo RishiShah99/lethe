@@ -124,8 +124,7 @@ class TestRunner:
         )
 
     def test_runs_all_levels_and_records(self, tmp_path: Any) -> None:
-        # forward op: GOOD rows pass contracts -> rate 0.5 -> promotes after
-        # the window; backward op: nothing passes -> cap, unpromoted.
+        # forward op promotes after the window; backward op caps unpromoted (nothing passes).
         runner = self.make_runner(
             tmp_path,
             {"forward_chunked_scan": 0.5, "backward_selective_scan": 0.0},

@@ -1,11 +1,4 @@
-"""Mamba-3 fused-block backward pass via torch.autograd.
-
-Reference oracle: gradients are obtained by differentiating through
-``reference_fused_block_forward`` using torch.autograd.grad.  No hand-derived
-formulae; correctness is guaranteed by PyTorch's autograd engine.
-
-Reference: Mamba-3 (Lahoti, Li, et al., ICLR 2026).
-"""
+"""Mamba-3 fused-block backward pass via torch.autograd."""
 
 from typing import NamedTuple
 
@@ -45,36 +38,7 @@ def reference_fused_block_backward(
     eps: float = 1e-5,
     chunk_size: int = 64,
 ) -> FusedBlockGrads:
-    """Fused-block backward pass via autograd through the forward reference.
-
-    Creates fresh leaf tensors from all inputs, re-runs
-    ``reference_fused_block_forward``, then calls ``torch.autograd.grad``
-    with upstream gradient ``dy``.
-
-    Args:
-        x:               Input (possibly pre-padded), shape [B, L, D], float32.
-        conv_weight:     Depthwise conv kernel, shape [D, 1, conv_kernel_size].
-        conv_bias:       Depthwise conv bias, shape [D], float32.
-        delta:           Timescale input, shape [B, L_out, D], float32.
-        A:               Log-neg SSM matrix, shape [D, N], float32.
-        B:               Input projection, shape [B, L_out, N], float32.
-        C:               Output projection, shape [B, L_out, N], float32.
-        D:               Skip weight, shape [D], float32.
-        norm_weight:     RMSNorm gain, shape [D], float32.
-        dy:              Upstream gradient, shape [B, L_out, D], float32.
-        conv_kernel_size: Kernel size forwarded to the forward reference.
-        eps:             RMSNorm epsilon forwarded to the forward reference.
-        chunk_size:      Chunk size forwarded to the scan.
-
-    Returns:
-        FusedBlockGrads named tuple with fields:
-        ``grad_x``, ``grad_conv_weight``, ``grad_conv_bias``,
-        ``grad_delta``, ``grad_A``, ``grad_B``, ``grad_C``,
-        ``grad_D``, ``grad_norm_weight``.
-
-    Raises:
-        ValueError: If any input tensor is not float32.
-    """
+    """Fused-block backward pass via autograd through the forward reference."""
     if x.dtype != torch.float32:
         raise ValueError(f"Expected float32, got x.dtype={x.dtype}")
 

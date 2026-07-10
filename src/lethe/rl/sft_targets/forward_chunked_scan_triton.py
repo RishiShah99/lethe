@@ -1,11 +1,4 @@
-"""Triton SISO selective-scan forward.
-
-One program per (batch, D-block); the hidden state rides as a
-[BLOCK_D, BLOCK_N] fp32 register block, serial over L so the
-accumulation order matches the eager recurrence. fp16/bf16 inputs are
-upcast at load and rounded once at store. No atomics, no tl.dot;
-libdevice exp/log1p keep subnormals (ex2.approx would flush them).
-"""
+"""Triton SISO selective-scan forward."""
 
 from __future__ import annotations
 
@@ -66,15 +59,12 @@ def _fwd_scan_kernel(  # type: ignore[no-untyped-def]
         b_t = tl.load(b_ptr + bln_off, mask=mask_n, other=0.0).to(tl.float32)
         c_t = tl.load(c_ptr + bln_off, mask=mask_n, other=0.0).to(tl.float32)
 
-        # libdevice.exp keeps subnormal outputs; tl.exp's ex2.approx would
-        # flush them and split the NaN/Inf masks against the reference.
+        # libdevice.exp keeps subnormals; tl.exp's ex2.approx flush splits NaN/Inf masks vs reference.
         dbar = tl.where(dlt > _SOFTPLUS_THRESHOLD, dlt, libdevice.log1p(libdevice.exp(dlt)))
 
         a_bar = libdevice.exp(dbar[:, None] * a)
         bu = (dbar * u_t)[:, None] * b_t[None, :]
-        # Padding lanes must stay exactly zero through the update: with
-        # non-finite u or delta, Inf * 0 in a padded lane would mint a NaN
-        # that poisons the real lanes' N-reduction.
+        # Padding lanes stay zero: non-finite u/delta could mint Inf*0=NaN and poison the N-reduction.
         h = tl.where(mask_dn, a_bar * h + bu, 0.0)
 
         y_t = tl.sum(h * c_t[None, :], axis=1) + d_skip * u_t

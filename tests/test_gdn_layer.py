@@ -1,11 +1,4 @@
-"""Autograd binding for GDN-2 (gdn_layer.gdn2_op).
-
-Two contracts:
-* Backward grads from ``gdn2_op(...).sum().backward()`` match ``reference_gdn2_backward``
-  to machine precision in fp64 (bitwise on the eager path, where both delegate to the
-  same oracle).
-* Output shape and dtype are preserved for all six input tensors.
-"""
+"""Autograd binding for GDN-2 (gdn_layer.gdn2_op)."""
 
 from __future__ import annotations
 
@@ -55,7 +48,7 @@ def test_backward_matches_reference_fp64() -> None:
         ("grad_w", w_leaf.grad, ref.grad_w),
     ):
         assert got is not None, f"{name} is None"
-        # fp64 eager path delegates to the same oracle — grads must be bitwise equal.
+        # fp64 eager path delegates to the same oracle, grads must be bitwise equal.
         torch.testing.assert_close(got, want, rtol=0.0, atol=0.0, msg=f"{name} mismatch")
 
 
@@ -70,7 +63,7 @@ def test_shape_and_dtype_preserved(dtype: torch.dtype) -> None:
 
 
 def test_no_grad_inputs_produce_none_grads() -> None:
-    """Inputs with requires_grad=False have .grad=None after backward; grad-requiring ones are populated."""
+    """requires_grad=False inputs get .grad=None; grad-requiring ones get populated grads."""
     q, k, v, g, b, w, do = _inputs(seed=2)
 
     # q and v require grad; k, g, b, w do not.
@@ -98,14 +91,7 @@ def test_no_grad_inputs_produce_none_grads() -> None:
 
 
 def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The native assembly works inside Function.backward's no-grad context.
-
-    Regression for the burst-2 box failure: Function.backward runs with grad mode
-    disabled, and the native assembly's supporting stages (autograd stage B,
-    L2-norm VJP) raised "does not require grad" until gdn_layer re-enabled grad
-    mode around the dispatch. Reproduced off-box with the cw refs standing in for
-    the box kernels at dispatch-legal dims.
-    """
+    """The native assembly works inside Function.backward's no-grad context."""
     import lethe.kernels.cute.gdn2_backward as gdn2_native
     from lethe.kernels.cute.gdn2_assemble import (
         k1_reverse_state_cw_ref,
@@ -129,8 +115,7 @@ def test_native_route_runs_under_function_backward(monkeypatch: pytest.MonkeyPat
         "_load_box_kernels_cw",
         lambda: (k1_reverse_state_cw_ref, k2_wy_vjp_cw_ref),
     )
-    # gdn2_backward guards the native route behind q.is_cuda; route around the
-    # device check so the CPU refs exercise the exact Function.backward context.
+    # native route is gated on q.is_cuda; bypass the check so CPU refs hit Function.backward.
     import lethe.kernels.ops.gdn_backward as op_mod
 
     real = op_mod.gdn2_backward

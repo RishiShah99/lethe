@@ -52,8 +52,7 @@ class TestLoadCandidate:
             load_candidate(tmp_path / "nope.py")
 
     def test_invalid_syntax_loads_without_eval(self, tmp_path: Path) -> None:
-        """Module-attr parsing must not crash on bad syntax in the rest of
-        the file; metadata simply returns empty."""
+        """Module-attr parsing must not crash on bad syntax; metadata just returns empty."""
         src = "__candidate_op__ = 'forward'\ndef broken(:\n    pass\n"
         path = _write(tmp_path / "kernel_broken.py", src)
         cand = load_candidate(path)
@@ -61,12 +60,9 @@ class TestLoadCandidate:
         assert cand.callable_name == "broken"
 
     def test_literal_eval_typeerror_skipped(self, tmp_path: Path) -> None:
-        """ast.literal_eval raises TypeError for certain non-literal node types;
-        discovery must skip these rather than crash."""
+        """ast.literal_eval can raise TypeError; discovery must skip it, not crash."""
         src = (
-            # dict with an unhashable list key: parses as a literal, but
-            # literal_eval raises TypeError constructing it (a bare name like
-            # `open` raises ValueError instead and never exercised the fix).
+            # unhashable list key -> TypeError; a bare name like open raises ValueError instead.
             "__candidate_op__ = {[]: 1}\ndef typeerr_kernel(x):\n    return x\n"
         )
         path = _write(tmp_path / "kernel_typeerr.py", src)
@@ -119,8 +115,7 @@ class TestImportCandidate:
             import_candidate(cand)
 
     def test_each_import_is_fresh(self, tmp_path: Path) -> None:
-        """Two imports should produce independent module instances so RL
-        sweeps that overwrite the source see the new function."""
+        """Two imports produce independent modules, so RL sweeps see source overwrites."""
         path = tmp_path / "kernel_v.py"
         _write(path, "def v(x): return x * 10\n")
         fn1 = import_candidate(load_candidate(path))

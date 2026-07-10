@@ -1,60 +1,4 @@
-"""Fused K#2 channel-wise, ONE grid-z-batched tcgen05 kernel for the whole WY-VJP.
-
-``run_k2_batched`` costs ~17 ms @B2/L2048/H8, almost all of it glue: the 1.07 GB fp32
-``masked_decay_rel`` materialization plus six einsum reads over it. This kernel deletes
-that: the six GEMM sites land in TMEM and the decay pushes are computed SIMT in-kernel
-with on-the-fly ``exp2(g2_i - g2_s)`` on the strict-lower triangle only (the loop range
-is the mask, so arguments are structurally <= 0 and the factored-overflow NaN class
-cannot occur; never rewrite as 2^Gi * 2^-Gs).
-
-K#2 is chunk-local (no inter-chunk carry), so the grid is one CTA per chunk over
-Z = B*H*NT: the Level-2 batching layout, not L3's unroll. No compile wall, nt not baked,
-one executable per shape class, and Z=512 CTAs @L2048 is ~3.5 waves on 148 SMs, genuinely
-throughput-parallel (unlike K#1's n_bh-bound 16 CTAs).
-
-Seven sequential mainloop+epilogue pairs, all on the a@b^T (128,64,128) tiler, single
-K-tile each (operands K-pad to 128):
-
-  G1  dp     = T^T @ du            A=a_tt   B=b_du     -> fp32 land s_dp32
-      (d_v=128: a second G1b mainloop over b_du's 2nd N=64 tile lands s_dp32
-       cols 64..127, reusing the dp accumulator+pipe)
-  G2a dq_wy[:, :64]  = T^T @ dwy   A=a_tt   B=b_dwy N0 -> fp32 land s_dq32 N0
-  G2b dq_wy[:, 64:]                A=a_tt   B=b_dwy N1 -> fp32 land s_dq32 N1
-  G3  dT    += du @ pwv^T          A=a_du   B=b_pwv    }  ONE shared accumulator,
-  G4  dT    += dwy @ q_kbg^T       A=a_dwy  B=b_qkbg   }  ACCUMULATE carried G3->G4
-                                   -> fp16 land into s_dt (A-shaped, K-pad zeros persist)
-  G5  X      = dT @ T^T            A=s_dt   B=b_t      -> fp16 land s_xn, SIMT transpose
-                                                          into s_x (B-shaped X^T)
-  G6  dM_raw = T^T @ X             A=a_tt   B=s_x      -> fp32 land s_dm32
-
-The two chained landings (dT feeding G5, X^T feeding G6) use the same round trip as the
-L3 kernel: SIMT/autovec stores -> fence_proxy("async.global") -> barrier -> TMA re-read.
-The G6 strict-lower mask + negate folds into the SIMT tail's reads (``-s_dm32[i,s]`` for
-s<i, dead entries never read). The tail computes the two decay einsums (two passes,
-serial per-thread fp32 accumulation, deterministic), dg2 via the rowsum/colsum identities
-(E never built), the finals, and the reverse-cumsum over C (one key-channel per thread).
-
-TMEM column budget (fp32 accs, M-padded to 128; make_tmem_copy trips on M=64):
-  dp 0..63 | dqwy_n0 64..127 | dqwy_n1 128..191 | dT 192..255 | X 256..319 | dM 320..383
-  total 384, so ONE tmem.allocate(512) (power-of-2), static offsets, ONE relinquish + free
-  at the end. No TMEM-staged operands. d_v=128 reuses the dp accumulator for a 2nd N-tile
-  (the dv/dw SIMT tail reads full d_v from gmem), so TMEM stays at 384: the N-tiling
-  costs a second dp mainloop, not more columns (:func:`k2f_dims_ok` d_v in {64,128}).
-
-Constraints carried across all seven mainloops:
-  - gmem K coordinate literal 0 (ab_e.count grows monotonically across the 7 mainloops);
-  - executor call tuple = the 32 marked cute.Tensors + CUstream ONLY (Constexprs baked
-    and dropped; re-passing shifts pointer slots and crashes at launch);
-  - all copy atoms hoisted once, consumed in straight-line context (no scf region);
-  - fresh output/scratch tensors every call (no caller aliasing).
-
-Kernel spec = ``gdn2_bwd_wy_cw._run_k2_fused_modelled`` (fp64-pinned vs k2_wy_vjp_cw_ref
-by tests/test_gdn2_k2_fused.py). Fallback ladder if the triangular-loop path misbehaves
-on a given toolchain: (1) ``FMR_K2F_PRED_TAIL=1`` swaps the einsum passes' triangular
-loops (data-dependent inner bounds) for the mamba2_ssd SegSum idiom (constexpr unroll +
-runtime -inf exponent mask pre-exp2); (2) the 2-kernel split (A: G1/G2/G3+G4; B: G5->G6
-+ tail), each grid-z batched, with kernel B then isomorphic to one L3 chunk body.
-"""
+"""Fused K#2 channel-wise, ONE grid-z-batched tcgen05 kernel for the whole WY-VJP."""
 # NB: no `from __future__ import annotations`, PEP 563 stringizes @cute.struct fields.
 
 import torch
@@ -285,8 +229,7 @@ if _HAVE:
         tS_x = thr_x.partition_S(t_x_epi)
         tS_dm = thr_dm.partition_S(t_dm_epi)
 
-        # C-side landing chains (z-fixed per CTA). dq lands in two N-tiles of s_dq32;
-        # dT lands in the N=64 tile 0 of the A-shaped s_dt (K-pad columns stay host zeros).
+        # C-side landing chains (z-fixed per CTA).
         def _land(m_c, mma, thr, ncoord):
             g = cute.local_tile(m_c, _MNK_TILER, (0, ncoord, None, z), proj=(1, 1, None))
             ge = cute.zipped_divide(mma.get_slice(0).partition_C(g), epi_tiler)
@@ -334,8 +277,7 @@ if _HAVE:
         tBs_g5, tBg_g5 = _part_b(tma_bt, m_bt, mma_x, 0)
         tBs_g6, tBg_g6 = _part_b(tma_bsx, m_bsx, mma_dm, 0)
 
-        # dp N-tile 1 (d_v=128 only): dp carries d_v in its N-dim, so d_v=128 lands
-        # cols 64..127 of m_dp_c from a second dp mainloop over b_du's 2nd N=64 tile.
+        # dp N-tile 1 (d_v=128 only): a second dp mainloop lands cols 64..127 of m_dp_c.
         if cutlass.const_expr(d_v > _MNK_TILER[1]):
             tD_dp1 = _land(m_dp_c, mma_dp, thr_dp, 1)
             tBs_g1b, tBg_g1b = _part_b(tma_bdu, m_bdu, mma_dp, 1)
@@ -355,10 +297,7 @@ if _HAVE:
         tCrAcc = cute.make_rmem_tensor(tD_dp[None, None, 0].shape, _acc)
         tCrC16 = cute.make_rmem_tensor(tD_dp[None, None, 0].shape, _io)
 
-        # ── 7 sequential mainloops + epilogues (straight-line; L3-at-nt=3 shape) ──
-        # gmem K coordinate is literal 0 in every copy: the K-rest extent is statically 1
-        # (tiler K=128 over 128-deep operands) and ab_e.count grows MONOTONICALLY across
-        # the 7 mainloops sharing this pipeline; count as coordinate is OOB from G2 on.
+        # gmem K coord literal 0 in every copy; ab_e.count grows across 7 mainloops, goes OOB.
 
         # G1: dp = a_tt @ b_du^T
         if warp_idx == 0:
@@ -390,10 +329,7 @@ if _HAVE:
         dp_f.release()
         pipeline.sync(barrier_id=2)
 
-        # G1b (d_v=128): dp N-tile 1 = a_tt @ b_du[tile1]^T. dp tile 0 has already
-        # landed to gmem, so the dp accumulator and pipe are free to reuse for tile 1.
-        # Lands cols 64..127 of m_dp_c; the dv/dw SIMT tail then reads the full d_v
-        # width from gmem.
+        # G1b (d_v=128): dp N-tile 1 = a_tt @ b_du[tile1]^T.
         if cutlass.const_expr(d_v > _MNK_TILER[1]):
             if warp_idx == 0:
                 dp1_empty = dp_prod.acquire_and_advance()
@@ -612,10 +548,7 @@ if _HAVE:
         dm_f.release()
         pipeline.sync(barrier_id=2)
 
-        # ── SIMT tail (all GEMM scratches landed; gmem/rmem only from here) ──
-        # d_m[i,s] = -s_dm32[i,s] on the strict-lower triangle, 0 elsewhere: the loop
-        # ranges ARE the mask, so exp2 arguments g2_i - g2_s (i>s) are structurally <= 0
-        # (bounded, the masked-unfactored discipline) and dead entries are never read.
+        # SIMT tail: loop ranges enforce the lower-triangle mask, so exp2 args g2_i-g2_s stay <= 0.
 
         # dv/dw from dp (rows >= c of the landed dp are exact zeros via a_tt's M-pad).
         for e in cutlass.range(tidx, c * d_v, THREADS):
@@ -625,14 +558,6 @@ if _HAVE:
             m_dw[z, i_, j_] = dp_v * m_v[z, i_, j_]
 
         # Pass A: dbk_m[i,d] = sum_{s<i} (-dM[i,s]) * k[s,d] * exp2(g2[i,d]-g2[s,d]).
-        # Pass B: dk_m[s,d] = sum_{i>s} (-dM[i,s]) * (b*k)[i,d] * exp2(g2[i,d]-g2[s,d]).
-        # Two trace-time shapes (the triangular form's data-dependent inner bounds
-        # have no precedent in this DSL):
-        #   default:   triangular loops; the range IS the mask, exponents <= 0.
-        #   pred_tail: the mamba2_ssd SegSum idiom (constexpr full-triangle unroll +
-        #              runtime mask of the exponent to -inf before exp2; exp2(-inf) = 0
-        #              exactly, so dead dM entries times 0 stay 0), matching the
-        #              masked_decay_rel structure.
         if cutlass.const_expr(pred_tail):
             neg_inf = cutlass.Float32(-float("inf"))
             for e in cutlass.range(tidx, c * d_k, THREADS):
@@ -677,8 +602,7 @@ if _HAVE:
 
         cute.arch.barrier()
 
-        # Finals + reverse-cumsum over C: one key channel d per thread, serial in i
-        # (fixed order -> deterministic). dg2 = dq_wy*q_kbg*ln2 + ln2*(bk*dbk_m - k*dk_m).
+        # Finals + reverse-cumsum over C: one key channel per thread, serial in i for determinism.
         for d_ in cutlass.range(tidx, d_k, THREADS):
             run = cutlass.Float32(0.0)
             for ii in cutlass.range(c):
@@ -852,21 +776,12 @@ def run_k2_fused(
     dwy: Tensor,
     du: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Fused channel-wise WY-VJP, ONE launch for all Z=B·H·NT chunks.
-
-    Packs via :func:`gdn2_bwd_wy_cw._k2f_pack`, launches ``_kern_k2f`` on torch's current
-    stream (CUDA-graph-capturable; ``maybe_sync`` at the end only). Returns
-    ``(dk2, dv, db, dw, dg2)`` head-major chunked, fp32. Tile contract: C=64, d_k=128,
-    d_v in {64,128} (:func:`gdn2_bwd_wy_cw.k2f_dims_ok`); d_v=128 fires the dp N-tiling
-    path. ~1.07 GB ``decay_rel`` is never
-    materialized; staged operands + scratch total ~300 MB @B2/L2048/H8.
-    """
+    """Fused channel-wise WY-VJP, ONE launch for all Z=B·H·NT chunks."""
     if not _HAVE:
         raise RuntimeError("CuTe DSL toolchain unavailable (not an sm_100 box)")
     import os
 
-    # FMR_K2F_PRED_TAIL=1 selects the predicated-tail fallback (the mamba2_ssd SegSum
-    # shape) if the triangular loops' data-dependent bounds misbehave on this wheel.
+    # FMR_K2F_PRED_TAIL=1 falls back to predicated tails if data-dependent loop bounds misbehave.
     pred_tail = bool(os.environ.get("FMR_K2F_PRED_TAIL"))
 
     bsz, hh, nt, c, d_k = k.shape
@@ -955,8 +870,7 @@ def run_k2_fused(
     if ex is None:
         ex = cute.compile(_k2f_host, *args)
         _k2f_cache[key] = ex
-    # Constexpr args (c, d_k, d_v, pred_tail) are baked at compile and DROPPED from the
-    # runtime signature; the call tuple is the 32 marked tensors + the CUstream.
+    # c/d_k/d_v/pred_tail are baked at compile and dropped; pass only the 32 tensors + stream.
     ex(*args[:32], stream)
     maybe_sync()
     return (

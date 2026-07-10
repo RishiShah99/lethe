@@ -1,24 +1,4 @@
-"""Triton kernel for the Mamba-3 MIMO selective-scan backward.
-
-No open implementation of this op exists (the official repo ships only
-forward + decode-step kernels for MIMO). No ``tl.dot`` — every contraction
-is elementwise FMAs + ``tl.sum``, so the sm_100 TMEM-promotion pass never
-engages. No atomics: cross-program sums go through per-program partial
-buffers reduced by deterministic ``torch.sum`` in the launcher (ORD-02).
-The op has no transcendentals (``dt``/``alpha`` arrive precomputed).
-
-Key structural fact: ``alpha`` is rank-independent and the readout
-distributes identically over ranks, so the backward state gradient is the
-same for every rank — one carry ``g[p, n]``, and the aggregated state obeys
-``h_agg_t = alpha_t * h_agg_{t-1} + sum_r (dt_t * B_t^r) * x_r_t^r``.
-
-Layout (enforced via ``.contiguous()``):
-
-    x, dy, grad_x              : [B, L, H, P]   row-major
-    B, C, grad_B, grad_C       : [B, L, R, H, N]
-    dt, alpha                  : [B, L, H]
-    mimo_x, mimo_o             : [H, R, P]
-"""
+"""Triton kernel for the Mamba-3 MIMO selective-scan backward."""
 
 from __future__ import annotations
 
@@ -33,10 +13,7 @@ MAX_BLOCK_P = 128
 MAX_RANK = 16
 MAX_BLOCK_N = 64
 
-# Recompute-chunk cap: the in-chunk scratch working set is
-# n_programs * K * BLOCK_P * BLOCK_N fp32; K=16 at (B=8, H=64, P=64,
-# N=128, BLOCK_N=64) is ~268 MB — above B200's 126 MB L2, so K (and
-# BLOCK_N) are autotuning levers; correctness never depends on K.
+# K=16 (~268 MB, over B200's 126 MB L2) is a tuning lever, not a correctness knob; so is BLOCK_N.
 MAX_CHUNK_K = 16
 
 
@@ -94,8 +71,7 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
 
     # ----- Phase 1: forward sweep, checkpointing h_agg entering each chunk.
     h = tl.zeros((BLOCK_P, BLOCK_N), dtype=tl.float32)
-    # Fold batch into the int64 base before multiplying by row strides:
-    # bare int32 products overflow past L*R*H*N ~ 2^31 (C2 invariant).
+    # Fold batch into int64 before the row-stride multiply; int32 overflows past L*R*H*N~2^31 (C2).
     xrow = (pid_b.to(tl.int64) * seq_len * nheads + pid_h) * headdim + offs_p
     brow = (pid_b.to(tl.int64) * seq_len * R * nheads + pid_h) * n_state + offs_n
     srow = pid_b.to(tl.int64) * seq_len * nheads + pid_h
@@ -117,17 +93,13 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
                     mimo_x_ptr + (pid_h * R + r) * headdim + offs_p, mask=mask_p, other=0.0
                 ).to(tl.float32)
                 upd += ((x_t * mx_r)[:, None]) * ((dt_t * b_r)[None, :])
-            # Padding lanes must stay exactly zero through the whole update
-            # (C1 lesson): a NaN minted there poisons the real lanes'
-            # reductions downstream.
+            # Padding lanes must stay zero (C1 lesson) or a stray NaN poisons the real lanes' reductions.
             h = tl.where(mask_pn, alpha_t * h + upd, 0.0)
             xrow += x_step
             brow += b_step
             srow += s_step
 
     # ----- Phase 2: chunks newest-first; recompute in-chunk pre-update
-    # states, then reverse-sweep. ag_carry = alpha_{t+1} * g_{t+1} crosses
-    # chunk boundaries in registers because t descends globally.
     ag_carry = tl.zeros((BLOCK_P, BLOCK_N), dtype=tl.float32)
     gmx_acc = tl.zeros((BLOCK_R, BLOCK_P), dtype=tl.float32)
     gmo_acc = tl.zeros((BLOCK_R, BLOCK_P), dtype=tl.float32)
@@ -169,8 +141,7 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
             alpha_t = tl.load(alpha_ptr + soff).to(tl.float32)
             h_tm1 = tl.load(hbuf_prog + j * BLOCK_P * BLOCK_N)
 
-            # g_t = dL/dh_agg_t (rank-uniform). dy in padded lanes loads as
-            # 0, but Inf*0 across broadcasts mints NaN in padded lanes — mask.
+            # g_t = dL/dh_agg_t (rank-uniform).
             gsum = tl.zeros((BLOCK_P, BLOCK_N), dtype=tl.float32)
             for r in tl.static_range(R):
                 c_r = tl.load(c_ptr + boff + r * b_rstride, mask=mask_n, other=0.0).to(tl.float32)
@@ -204,24 +175,19 @@ def _mimo_bwd_kernel(  # type: ignore[no-untyped-def]
                 )
                 yraw_r = tl.sum(tl.where(mask_pn, h_cur * c_r[None, :], 0.0), axis=1)
 
-                # Autograd's grouping: grad_tmp1 = sum_p(g * x_r), then * dt
-                # for grad_B and * B (summed) for grad_dt.
+                # Autograd grouping: grad_tmp1=sum_p(g*x_r), then *dt for grad_B, *B (summed) for grad_dt.
                 gt1_r = tl.sum(tl.where(mask_pn, g * xr_r[:, None], 0.0), axis=0)
                 tl.store(
                     grad_b_ptr + boff + r * b_rstride,
                     (gt1_r * dt_t).to(grad_b_ptr.dtype.element_ty),
                     mask=mask_n,
                 )
-                # Unmasked sums here and at galpha_t below are safe only
-                # because g, gt1_r and h_tm1 are zeroed at padded lanes
-                # upstream (g at its tl.where, h via the recompute mask) —
-                # re-check if any of those producers change.
+                # Unmasked sums here are safe only because g, gt1_r, h_tm1 are already zero at padded lanes.
                 gdt_t += tl.sum(gt1_r * b_r)
                 gxr_r = tl.sum(tl.where(mask_pn, g * tmp1_r[None, :], 0.0), axis=1)
                 gx_t += gxr_r * mx_r
 
-                # Per-rank accumulators persist across t as [BLOCK_R, BLOCK_P]
-                # tiles; static_range r selects its row via the lane mask.
+                # Accumulators are [BLOCK_R, BLOCK_P] tiles, one row per rank, selected via the lane mask.
                 row_r = offs_r == r
                 gmx_acc += tl.where(row_r[:, None], (gxr_r * x_t)[None, :], 0.0)
                 gmo_acc += tl.where(row_r[:, None], (dy_t * yraw_r)[None, :], 0.0)
@@ -256,15 +222,7 @@ def launch_mimo_backward(
     *,
     num_warps: int | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Launch the Triton MIMO backward on CUDA tensors.
-
-    Dispatch keys on ``x`` (device, dtype); the kernel upcasts every load to
-    fp32 and each gradient stores in its own input's dtype — mixed-dtype
-    inputs are tolerated identically to the eager path, not validated.
-    Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
-    grad_mimo_o)`` in the corresponding input dtypes. ``num_warps`` overrides
-    the launch config for the bench's compile-behaviour sweep.
-    """
+    """Launch the Triton MIMO backward on CUDA tensors."""
     batch, seq_len, nheads, headdim = x.shape
     rank = B.shape[2]
     n_state = B.shape[4]
@@ -292,8 +250,7 @@ def launch_mimo_backward(
     dev = x.device
     grad_b = torch.empty_like(b_c)
     grad_c = torch.empty_like(c_c)
-    # Partials and scratch stay fp32: internal compute is fp32 and the single
-    # round to the input dtype happens after the launcher's reduction.
+    # Partials/scratch stay fp32; input dtype is rounded once after the launcher's reduction.
     gx_part = torch.empty(
         n_n_blocks, batch, seq_len, nheads, headdim, dtype=torch.float32, device=dev
     )
@@ -306,15 +263,12 @@ def launch_mimo_backward(
         n_n_blocks, batch, nheads, rank, headdim, dtype=torch.float32, device=dev
     )
     n_programs = batch * nheads * n_n_blocks
-    # ckpt is HBM-resident O(B*H*nNb*(L/CHUNK_K)*BLOCK_P*BLOCK_N) fp32 — ~2 GB
-    # at (B8, L4096, H32, P64, N128); only hbuf's in-chunk slice is L2-hot.
+    # ckpt is HBM-resident, ~2 GB at (B8,L4096,H32,P64,N128); only hbuf's in-chunk slice is L2-hot.
     ckpt = torch.empty(n_programs * n_chunks * block_p * block_n, dtype=torch.float32, device=dev)
     hbuf = torch.empty(n_programs * chunk_k * block_p * block_n, dtype=torch.float32, device=dev)
 
     grid = (batch, nheads, n_n_blocks)
-    # B200 resource envelope sits at the 255-reg ceiling with <=194 B spill
-    # — zero headroom: anything that adds register pressure (wider MAX_RANK
-    # unroll, larger BLOCK_P) must re-check RES-02 and the spill column.
+    # B200 sits at 255-reg ceiling, <=194 B spill (zero headroom); recheck RES-02 if pressure grows.
     warps = num_warps if num_warps is not None else (4 if block_p * block_n >= 512 else 2)
     _mimo_bwd_kernel[grid](
         x_c,
@@ -347,8 +301,7 @@ def launch_mimo_backward(
         num_warps=warps,
     )
 
-    # Deterministic cross-program reductions (fixed shapes -> fixed reduction
-    # trees; byte-identical across runs, unlike float atomics).
+    # Deterministic reductions: fixed shapes give fixed reduction trees, byte-identical unlike atomics.
     grad_x = gx_part.sum(dim=0).to(x.dtype)
     grad_dt = gdt_part.sum(dim=0).to(dt.dtype)
     grad_alpha = galpha_part.sum(dim=0).to(alpha.dtype)
@@ -429,13 +382,7 @@ def mimo_backward(
     mimo_o: Tensor,
     dy: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Mamba-3 MIMO SSM backward pass.
-
-    Args/shapes: ``x``/``dy`` [B, L, H, P], ``B``/``C`` [B, L, R, H, N],
-    ``dt``/``alpha`` [B, L, H], ``mimo_x``/``mimo_o`` [H, R, P].
-    Returns ``(grad_x, grad_B, grad_C, grad_dt, grad_alpha, grad_mimo_x,
-    grad_mimo_o)`` matching corresponding input shapes and dtypes.
-    """
+    """Mamba-3 MIMO SSM backward pass."""
     # Device residency: non-CUDA (and fp64) inputs take the eager path.
     if not (x.is_cuda and x.dtype in (torch.float32, torch.float16, torch.bfloat16)):
         return _mimo_backward_eager(x, B, C, dt, alpha, mimo_x, mimo_o, dy)

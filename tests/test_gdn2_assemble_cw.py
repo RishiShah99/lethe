@@ -1,12 +1,4 @@
-"""Channel-wise GDN-2 backward assembly (Phase-3 crown) — desk correctness in fp64.
-
-* The hand-derived closed-form K#1/K#2 channel-wise references reproduce the autograd
-  micro-gate bundles (the kernels' contracts are correct).
-* The full assembly (default refs) reproduces the token-serial GDN-2 oracle's six
-  per-channel gradients end-to-end, through the L2-norm VJP.
-* The ``b = w = beta``, g-channel-constant reduction collapses to the Phase-2 scalar
-  assembly to machine precision (the Phase-3 -> Phase-2 kill-gate). CPU only.
-"""
+"""Channel-wise GDN-2 backward assembly (Phase-3 crown): desk correctness in fp64."""
 
 from __future__ import annotations
 
@@ -129,11 +121,7 @@ def test_wrapper_matches_oracle(shape):
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_reduction_to_scalar_assembly(shape):
-    """b = w = beta, g channel-constant collapses to the Phase-2 scalar assembly.
-
-    grad_q/k/v match elementwise; the scalar path only recovers the channel-sums of
-    grad_g and grad_b+grad_w, so those are compared as sums.
-    """
+    """b = w = beta, g channel-constant collapses to the Phase-2 scalar assembly."""
     b, t, h, d_k, d_v, _ = shape
     gen = torch.Generator().manual_seed(21)
     q = torch.randn(b, t, h, d_k, generator=gen, dtype=torch.float64)

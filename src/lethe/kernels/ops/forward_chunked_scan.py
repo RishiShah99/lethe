@@ -1,23 +1,4 @@
-"""C1, hand-written SISO selective-scan forward.
-
-Drop-in for ``reference_forward_chunked_scan`` with the same signature and
-semantics, widened to more dtypes and devices:
-
-- CUDA + {fp32, fp16, bf16} with triton installed -> the Triton kernel
-  (``_triton_fwd_scan``), wrapped in an autograd.Function whose backward
-  recomputes through the eager path. The backward is provisional until C2
-  lands the hand-written Triton backward kernel.
-- everything else (CPU, fp64, missing triton) -> ``_scan_eager``, a
-  differentiable eager-torch path replicating the reference op-for-op.
-  For fp32 on the same device it is bitwise-equal to the reference.
-  fp64 is a verification-only dtype (gradcheck); it deliberately routes
-  to the eager path rather than the Triton kernel.
-
-Deviations from the reference: the reference rejects non-fp32 inputs; this
-op defines the mixed-precision contract instead (compute in fp32, round
-once on store). ``chunk_size`` is validated identically but is a blocking
-hint only, the scan result does not depend on it.
-"""
+"""C1, hand-written SISO selective-scan forward."""
 
 from __future__ import annotations
 
@@ -58,15 +39,7 @@ def _next_power_of_2(n: int) -> int:
 def _chunk_parallel_bwd_scratch_bytes(
     batch: int, seq_len: int, d_model: int, n_state: int, chunk_len: int
 ) -> int:
-    """Compute the fp32 scratch buffer size (bytes) for chunk-parallel backward.
-
-    The backward kernels allocate a per-chunk forward-recompute buffer sized for
-    all chunks at once. This mirrors the default block sizing in
-    _triton_chunk_parallel_bwd and _triton_chunk_parallel_fused_bwd; a
-    config.block_d override or the fused launcher's narrower block_d can pad
-    the true allocation by at most one block_d remainder per d-block, exact
-    for every width where block_d divides d_model.
-    """
+    """Compute the fp32 scratch buffer size (bytes) for chunk-parallel backward."""
     block_n = _next_power_of_2(n_state)
     if block_n > _MAX_BLOCK_N:
         block_n = _MAX_BLOCK_N
@@ -78,16 +51,7 @@ def _chunk_parallel_bwd_scratch_bytes(
 
 
 def _auto_chunk_len(seq_len: int, requested: int | None) -> int:
-    """Largest divisor of ``seq_len`` not exceeding ``requested`` (or the cap).
-
-    The chunk-parallel launcher requires ``chunk_len | seq_len``; a fixed value
-    cannot divide every shape the gate battery probes (CMP-03/CMP-01), and the
-    serial carry is O(seq_len / chunk_len), so a tiny chunk_len is slow. Choosing
-    the largest divisor ≤ target makes chunk_parallel a contract-clean drop-in
-    (never raises, identical math) that still picks a coarse, fast granularity at
-    long L. ``requested`` is the RL/autotuner's preferred granularity; ``None``
-    falls back to the cap.
-    """
+    """Largest divisor of ``seq_len`` not exceeding ``requested`` (or the cap)."""
     target = min(requested if requested is not None else _CHUNK_PARALLEL_CAP, seq_len)
     for k in range(target, 0, -1):
         if seq_len % k == 0:
@@ -104,27 +68,7 @@ def _default_scan_mode(
     n_state: int | None = None,
     device: torch.device | None = None,
 ) -> str:
-    """Launch-default scan mode for a shape, consulted only when scan_mode is unset.
-
-    Calibrated to a broad boundary sweep (178 shapes x 3 SISO ops,
-    best-tuned-vs-best-tuned through the verifier): chunk_parallel is the
-    global optimum (geomean ~2.2x over the serial default) EXCEPT in the
-    saturated short-sequence corner, where the O(seq_len/chunk_len) carry
-    cannot amortise against an already SM-saturated device. Serial there,
-    chunk_parallel otherwise; an explicit ``config.scan_mode`` overrides this so
-    the autotuner/config-RL still drives the choice. ``is_forward`` adds the
-    forward op's extra serial preference at every short L (the forward kernel is
-    cheap enough per step that the carry rarely pays below L=512). The thresholds
-    are the sweep's measured boundary, slightly biased toward chunk_parallel (the
-    dominant winner): the rule trails the per-shape oracle by <0.1% in geomean
-    with its worst single-shape regression ~5%.
-
-    When ``n_state`` is provided and ``is_forward=False``, the selector also
-    checks whether the chunk-parallel backward scratch buffer would exceed 70%
-    of GPU memory on ``device`` (the same bound the guard uses) and whether
-    ``n_state`` exceeds the launchers' hard block cap. Either way it falls back
-    to serial, routing to a mode whose guard would raise is a bug (CMP-05).
-    """
+    """Launch-default scan mode for a shape, consulted only when scan_mode is unset."""
     if is_forward and seq_len <= 512:
         return "serial"
     if batch >= 8 and width >= 4096 and seq_len <= 4096:
@@ -191,13 +135,7 @@ def _scan_eager(u: Tensor, delta: Tensor, A: Tensor, B: Tensor, C: Tensor, D: Te
 
 
 class _ForwardScanCuda(torch.autograd.Function):
-    """Triton forward; backward is the hand-written Triton kernel (C2).
-
-    First-order only: the Triton backward returns plain tensors with no
-    graph, so double-backward (HVPs, gradient penalties) through the CUDA
-    path is unsupported, route through the eager path (CPU or fp64) when
-    higher-order gradients are needed.
-    """
+    """Triton forward; backward is the hand-written Triton kernel (C2)."""
 
     @staticmethod
     def forward(
@@ -228,10 +166,7 @@ class _ForwardScanCuda(torch.autograd.Function):
     def backward(ctx: Any, grad_y: Tensor) -> tuple[Tensor | None, ...]:
         u, delta, a, b, c, d_skip = ctx.saved_tensors
         config = ctx.config
-        # Both scan modes are correct for any tiling; chunk_parallel reassociates
-        # the backward the same way it does the forward. The backward is its own
-        # regime (the C2 adjoint, not the C1 forward), so it resolves the mode
-        # with is_forward=False rather than inheriting the forward pass's choice.
+        # Both modes are correct for any tiling; chunk_parallel reassociates the backward too.
         batch, seq_len, width = u.shape
         n_state = a.shape[1]
         if (
@@ -267,15 +202,7 @@ def forward_chunked_scan(
     chunk_size: int = 64,
     config: KernelConfig | None = None,
 ) -> Tensor:
-    """Selective state-space scan forward (SISO, Mamba-1 recurrence).
-
-    Args/semantics mirror ``reference_forward_chunked_scan``:
-    ``u``/``delta`` [B, L, D], ``A`` [D, N], ``B``/``C`` [B, L, N],
-    ``D`` [D]; returns ``y`` [B, L, D] in ``u``'s dtype.
-
-    Raises:
-        ValueError: If L is not divisible by chunk_size.
-    """
+    """Selective state-space scan forward (SISO, Mamba-1 recurrence)."""
     seq_len = u.shape[1]
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}")
@@ -288,17 +215,7 @@ def forward_chunked_scan(
 
 
 def triton_scan_resource_meta(config: KernelConfig | None = None) -> dict[str, int] | None:
-    """Resource metadata of the compiled Triton forward scan kernel, if any.
-
-    Feed the result to ``gate_res_02_resource_limits`` via the harness;
-    None (nothing compiled / no triton) keeps the gate not-applicable.
-
-    Must match ``_ForwardScanCuda.forward``'s dispatch: an explicit
-    ``scan_mode`` audits exactly that kernel, but when ``scan_mode`` is unset the
-    dispatch resolves the mode by *shape* (``_resolve_scan_mode``), either kernel
-    can run, so the audit returns the max envelope over both, never the serial one
-    alone. Mirrors ``backward_selective_scan.triton_bwd_scan_resource_meta``.
-    """
+    """Resource metadata of the compiled Triton forward scan kernel, if any."""
     if not _triton_usable():
         return None
     from lethe.kernels.ops import _triton_chunk_parallel_fwd, _triton_fwd_scan

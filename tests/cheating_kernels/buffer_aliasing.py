@@ -1,13 +1,4 @@
-"""Cheating kernel: hands back one persistent output buffer on every call.
-
-Computes the reference correctly into a module-level buffer and returns that
-same storage each call. The values are correct and deterministic, so every
-value/precision gate (and ORD-02's equality check) passes — but two results
-alias: holding the first result and calling again silently overwrites it.
-ORD-02's cross-call aliasing check (distinct ``data_ptr`` per call) rejects it.
-
-Expected rejector: ORD-02 (atomic determinism / output-buffer aliasing).
-"""
+"""Cheating kernel: hands back one persistent output buffer on every call."""
 
 from __future__ import annotations
 

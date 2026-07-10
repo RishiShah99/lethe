@@ -1,26 +1,4 @@
-"""Pin the chunk-parallel-carry C6 fused-block backward algebra.
-
-The serial C6 backward (``_triton_fused_block_bwd``; mirrored by
-``test_fused_block_bwd_kernel_replica``) walks two serial-L sweeps: a forward
-re-stage that register-carries the scan state ``h`` across chunks, and a reverse
-sweep that register-carries the adjoint ``ag = a_bar*g``. Both are the same
-linear recurrences C1/C2 carry, so both reassociate the same way — this extends
-the long-L lever from the SISO backward (C2) to the fused training block.
-
-  - forward ``h_t = a_t*h_{t-1} + (dbar*z)_t*B_t`` (z = conv->SiLU): local
-    per-chunk reduce -> ``Sloc``/``Adecay`` -> O(L/K) carry -> ``hin`` entering
-    each chunk; a per-chunk readout recomputes h and stages ``ys``.
-  - reverse ``g_t = dys_t*C_t + a_{t+1}*g_{t+1}`` (dys = RMSNorm-bwd output):
-    the C2 reverse twin — local reverse reduce -> ``Sg`` -> O(L/K) newest-first
-    carry (the *same* ``Adecay`` product) -> ``Gin`` -> per-chunk reverse readout
-    seeded from ``Gin``.
-
-The norm backward (kernel 2) and the gather-form grad_x (kernel 4) are already
-chunk-free and carry over unchanged. Every gradient grouping is the serial
-replica's, byte-for-byte; only the two carries move from registers to the
-chunked decomposition. This holds the replica to the eps*sqrt(chain)*scale band
-(fp64 exact) so the Triton kernel that mirrors it has a hardware-free target.
-"""
+"""Pin the chunk-parallel-carry C6 fused-block backward algebra."""
 
 from __future__ import annotations
 
@@ -129,8 +107,7 @@ def chunk_parallel_fused_bwd_replica(
         gin[c] = gcarry
         gcarry = adecay[c] * gcarry + sg[c]
 
-    # kernel 3: per-chunk reverse readout, seeded from hin (forward) + Gin
-    # (reverse). The inner body is the serial replica's, unchanged.
+    # kernel 3: per-chunk reverse readout, seeded from hin (forward) + Gin (reverse).
     n_d_blocks = (d_model + block_d - 1) // block_d
     dconv = torch.empty(batch, l_out, d_model, dtype=dt)
     grad_delta = torch.empty(batch, l_out, d_model, dtype=dt)

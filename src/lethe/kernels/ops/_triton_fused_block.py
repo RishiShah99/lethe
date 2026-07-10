@@ -1,45 +1,4 @@
-"""Triton kernels for the Mamba fused-block forward (C5).
-
-Import this module only when ``triton`` is installed and a CUDA device is
-the target, the public dispatcher in ``fused_block_forward.py`` guards
-both. Layout assumptions (enforced by the launcher via ``.contiguous()``):
-
-    x            : [B, L, D]      row-major, L = L_out + K - 1 (caller pre-pads)
-    conv_weight  : [D, 1, K]
-    conv_bias    : [D]
-    delta        : [B, L_out, D]
-    A            : [D, N]
-    B, C         : [B, L_out, N]
-    D_skip       : [D]
-    norm_weight  : [D]
-    y            : [B, L_out, D]
-
-The op is two kernels, not one. A literal single kernel is structurally
-excluded by the suite's own rules: RMSNorm needs a cross-D reduction per
-(b, t), and a cross-program reduction requires atomics (forbidden, ORD-02)
-or a grid sync (none exists); the one-program-per-batch alternative pays
-2*D*N*4 bytes/step of HBM state traffic and serialises D. So:
-
-- **Kernel A** fuses conv1d + SiLU + selective scan in one serial-L pass,
-  one program per (batch, D-block), C1's layout. The conv is local in t,
-  so it rides the scan's serial loop: each step loads the K-column x window
-  as one [BLOCK_D, BLOCK_K] block, of which only the newest column is an
-  L2 miss (the other K-1 columns were loaded on previous steps). Neither
-  the conv activation nor SiLU ever round-trips HBM, the official path
-  stages both (causal_conv1d kernel, then the scan kernel re-reads). Only
-  the scan output is staged, once, in fp32, so the mixed-precision
-  contract (compute fp32, round once at the final store) survives the
-  kernel split.
-- **Kernel B** is a deterministic RMSNorm: one program per (batch,
-  t-block), the full-D sum of squares accumulated in-program over fixed
-  D-chunks (no atomics, fixed order, ORD-02 by construction).
-
-Scan invariants carried from C1 verbatim: fp32 state and arithmetic with
-upcast-at-load, libdevice exp/log1p (ex2.approx flushes subnormals and
-splits the EXC-01 masks), softplus threshold 20 matching torch, masked h
-update keeping padded D-lanes exactly zero, int64 offset bases advanced by
-int32 per-step increments. No tl.dot, no atomics.
-"""
+"""Triton kernels for the Mamba fused-block forward (C5)."""
 
 from __future__ import annotations
 
@@ -61,11 +20,9 @@ _SOFTPLUS_THRESHOLD = tl.constexpr(20.0)
 
 # One CTA holds the whole state dim; N above this needs a multi-block design.
 MAX_BLOCK_N = 128
-# The x window is materialised as a [BLOCK_D, BLOCK_K] register block per
-# step; Mamba uses K=4 universally and nothing in the suite exceeds it.
+# The x window materialises as a [BLOCK_D, BLOCK_K] register block; suite never exceeds K=4.
 MAX_CONV_K = 8
-# Kernel B's load tile is [BLOCK_T, BLOCK_D_NORM] fp32 registers; cap the
-# product so the tile stays ~8 KB/program.
+# Kernel B's load tile is [BLOCK_T, BLOCK_D_NORM] fp32; cap the product to ~8 KB/program.
 _NORM_TILE = 2048
 _MAX_BLOCK_D_NORM = 256
 
@@ -122,10 +79,7 @@ def _conv_scan_kernel(  # type: ignore[no-untyped-def]
             x_ptr + x_off[:, None] + offs_k[None, :] * d_model, mask=mask_dk, other=0.0
         ).to(tl.float32)
         conv = tl.sum(conv_w * xw, axis=1) + conv_b
-        # SiLU as x * (1 / (1 + exp(-x))) with full-precision exp: matches
-        # torch's non-finite semantics (silu(-Inf) = -Inf * 0 = NaN,
-        # silu(+Inf) = +Inf) and keeps large-|x| sigmoids exact where
-        # ex2.approx would flush.
+        # Full-precision exp (not ex2.approx) matches torch's non-finite semantics: silu(-Inf)=NaN.
         z = conv * (1.0 / (1.0 + libdevice.exp(-conv)))
 
         dlt = tl.load(delta_ptr + od_off, mask=mask_d, other=0.0).to(tl.float32)
@@ -136,9 +90,7 @@ def _conv_scan_kernel(  # type: ignore[no-untyped-def]
 
         a_bar = libdevice.exp(dbar[:, None] * a)
         bu = (dbar * z)[:, None] * b_t[None, :]
-        # Padding lanes must stay exactly zero through the whole update:
-        # a non-finite z in a padded lane would mint NaNs that poison the
-        # real lanes' N-reduction below.
+        # Padding lanes must stay exactly zero; a non-finite z there would poison the N-reduction.
         h = tl.where(mask_dn, a_bar * h + bu, 0.0)
 
         y_t = tl.sum(h * c_t[None, :], axis=1) + d_skip * z
@@ -205,14 +157,7 @@ def launch_fused_block_forward(
     *,
     config: KernelConfig | None = None,
 ) -> Tensor:
-    """Launch the fused block. Inputs must be CUDA tensors of one dtype.
-
-    ``config`` overrides the conv-scan kernel's searched knobs (block_d,
-    num_warps, num_stages); ``num_warps`` is the legacy bench-sweep hook. The
-    norm kernel keeps its own heuristic, a memory-bound pass, not the
-    autotuner's subject. A None config or None field keeps the shipped
-    heuristic.
-    """
+    """Launch the fused block."""
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]
     n_state = a.shape[1]
@@ -225,11 +170,7 @@ def launch_fused_block_forward(
     block_n = triton.next_power_of_2(n_state)
     if block_n > MAX_BLOCK_N:
         raise ValueError(f"n_state={n_state} exceeds single-block budget {MAX_BLOCK_N}")
-    # block_d tiles D into independent per-D outputs, bitwise correctness-
-    # invariant (it sets only which program computes which d, never the math).
-    # A grid sweep with full-gate confirmation found block_d=16 with num_warps=4
-    # the robust optimum: 1.64x over the prior block_d=64 default at (2,2048,1024),
-    # gate-clean, and 1.45-1.66x across width 256-4096 x seq 1024-16384.
+    # block_d only tiles D into independent per-D outputs; it never changes the math.
     block_d = min(16, triton.next_power_of_2(d_model))
     if config is not None and config.block_d is not None:
         block_d = config.block_d
@@ -249,9 +190,7 @@ def launch_fused_block_forward(
     out = torch.empty(batch, l_out, d_model, device=x.device, dtype=x.dtype)
 
     grid_scan = (batch, triton.cdiv(d_model, block_d))
-    # num_warps=4 is the sweep-universal best for the conv-scan kernel; the
-    # prior block_d*block_n>=512 heuristic dropped to 2 at small N, forfeiting
-    # the win there (block_d=16 alone measured 1.25x, the (16, 4) pair 1.64x).
+    # num_warps=4 wins universally here; block_d=16 alone measured 1.25x, with nw=4 together 1.64x.
     num_warps_scan = num_warps if num_warps is not None else 4
     if config is not None and config.num_warps is not None:
         num_warps_scan = config.num_warps

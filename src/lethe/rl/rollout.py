@@ -1,13 +1,4 @@
-"""Rollout data structures for GRPO over kernel-generation policies.
-
-A *rollout* is a batch of candidates generated from one prompt, each
-scored by the verifier. GRPO computes group-relative advantages over
-this batch and uses them to update the policy.
-
-These types are deliberately pure-data dataclasses with no model
-dependencies: the trainer mutates them, the verifier scores them,
-the policy generates them.
-"""
+"""Rollout data structures for GRPO over kernel-generation policies."""
 
 from __future__ import annotations
 
@@ -16,21 +7,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Candidate:
-    """A single generated kernel candidate.
-
-    Attributes
-    ----------
-    source:
-        Generated Triton source code (as a string).
-    target_op:
-        Name of the reference op this candidate implements (e.g.,
-        ``"forward_chunked_scan"``).
-    generation_id:
-        RL step (or evaluation cycle) that produced this candidate.
-    prompt_id:
-        Identifier of the prompt that produced this candidate. All
-        candidates in a Rollout share the same ``prompt_id``.
-    """
+    """A single generated kernel candidate."""
 
     source: str
     target_op: str
@@ -53,17 +30,7 @@ class ScoredCandidate:
 
 @dataclass(frozen=True)
 class Rollout:
-    """A batch of scored candidates from a single prompt.
-
-    Attributes
-    ----------
-    prompt:
-        The exact prompt string fed to the policy.
-    prompt_id:
-        Stable identifier for the prompt across runs.
-    candidates:
-        Scored candidates sampled for this prompt.
-    """
+    """A batch of scored candidates from a single prompt."""
 
     prompt: str
     prompt_id: str
@@ -74,16 +41,7 @@ class Rollout:
         return tuple(c.reward for c in self.candidates)
 
     def advantages(self) -> tuple[float, ...]:
-        """Group-relative advantages via the single ground-truth estimator.
-
-        Delegates to :func:`lethe.rl.grpo.compute_group_advantages`, the
-        estimator the live optimizer step uses (``eps=1e-4``). A local
-        reimplementation here previously carried a divergent ``eps=1e-8`` floor: a
-        latent foot-gun that would resurrect behaviour the trainer tuned away for
-        any future caller. Fewer than two candidates carry no relative signal, so
-        advantages are zeroed. The import is deferred to keep this module
-        dependency-free at import time and to avoid a rollout<->grpo cycle.
-        """
+        """Group-relative advantages via the single ground-truth estimator."""
         rewards = self.rewards
         if len(rewards) < 2:
             return tuple(0.0 for _ in rewards)

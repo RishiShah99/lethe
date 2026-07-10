@@ -1,11 +1,4 @@
-"""Level-3 de-glue wiring — CPU pins for the fused-kernel module + selector threading.
-
-The kernel itself is box-only (silicon gates: results/k1_incb2_v3_*.json); these tests
-pin what is CPU-checkable: the module imports cleanly off-box, the dim lock matches the
-baked tile, and the cw K#1 default selector routes L3 first on the exact proven tile,
-honors the FMR_DISABLE_L3 kill-switch, and never routes L3 off-tile. The kernel spec
-(``_run_k1_incB2_modelled``) is fp64-pinned by the existing cw orchestration tests.
-"""
+"""Level-3 de-glue wiring: CPU pins for the fused-kernel module + selector threading."""
 
 from __future__ import annotations
 

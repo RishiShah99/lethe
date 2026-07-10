@@ -1,26 +1,8 @@
-"""Verified warm-start targets: one self-contained eager solution per curriculum op.
-
-Option-A SFT data for the cold-start fix: the base policy never samples a
-contract-passing kernel, so GRPO groups are degenerate and the update is
-skipped — there is no gradient to follow. These modules are correct
-eager-torch candidates that pass the full gate battery through
-``score_candidate_source`` at reward 0.5; SFT on prompt→target pairs puts
-contract passes inside the sampling distribution so the speedup term can
-take over from a live gradient.
-
-Sources are consumed as *text*, never imported by the trainer — the SFT
-completion is exactly the bytes the verifier scored. Every target must
-clear ``candidate_scoring._ast_screen`` (no package / official-kernel /
-dynamic-import references) and must mirror the reference math
-statement-for-statement: the gates compare against autograd through the
-references, so replication fidelity IS the correctness argument.
-"""
+"""Verified warm-start targets: one self-contained eager solution per curriculum op."""
 
 from pathlib import Path
 
-# Two variants per op: "eager" (Option A — correct torch, lands the 0.5
-# contract floor) and "triton" (Option B — the hand-written kernels made
-# self-contained, the neighborhood the speedup term explores from).
+# Two variants per op: eager lands the 0.5 contract floor, triton seeds speedup exploration.
 _OPS: tuple[str, ...] = (
     "forward_chunked_scan",
     "backward_selective_scan",

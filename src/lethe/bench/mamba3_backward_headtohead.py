@@ -1,52 +1,4 @@
-"""Backward bench: ours vs the crippled official Mamba-3 backward on B200.
-
-The c2/c6 benches compare ``ours_triton`` against ``selective_scan_fn``, the
-**Mamba-1 SSD CUDA** backward, which is healthy on Blackwell. That is the wrong
-baseline for the #904 comparison; the honest head-to-head is against the
-**Mamba-3** backward that #904 cripples: the path that launches
-``mamba3_siso_bwd_kernel_dqkv``, which on sm_100 loses every ``num_warps >= 4``
-config to the TMEM-budget overflow (544 > 512) and runs at the spilled
-``num_warps=2`` survivor.
-
-What this measures, honestly: the wall-clock of **the backward kernel that
-runs in the real crippled model** vs our backward, at the same
-(B, L, d_model). It is NOT "same math, ours faster": our op is a
-Mamba-1-style SISO selective-scan backward (u, delta, A, B, C, D); the
-official ``mamba3_siso_combined`` backward is a richer Mamba-3 chunk-scan
-(Q/K/V/DT/Trap/angles/gates) doing materially more work. The point of the
-comparison is that the official path is the one #904 cripples and ours runs
-full-strength, not that the two compute identical FLOPs, so MFU is reported
-for **ours only** (under the explicit SSM FLOP model below); the official
-side reports wall-clock alone (a shared FLOP model applied to it would be a
-tautology). Wall-clock is the claim.
-
-Two official comparators, both exercising the crippled kernel:
-
-- ``official_siso_combined_bwd``: the closest one: the Mamba-3 SISO
-  chunk-scan training function ``mamba3_siso_combined`` (its backward
-  dispatches to the crippled kernel), differentiated, vs our
-  ``backward_selective_scan`` at the same (B, L, d_model). Its signature
-  (Q, K, V, ADT, DT, Trap, Q_bias, K_bias, Angles, ...) is Mamba-3-specific,
-  so rather than hand-build those tensors (which would mean guessing Mamba-3
-  internals) we *capture* the exact tensors a real ``Mamba3`` module feeds
-  the function via a monkeypatch hook, detach them into fresh leaves, and
-  time the backward on those, at the model's real head config (recorded in
-  ``official_meta``). A profiler check on the warm-up backward confirms a
-  ``mamba3_siso_bwd``/``dqkv`` kernel actually launched; if not (or capture
-  fails), the row is a recorded skip, never a fabricated timing.
-- ``official_mamba3_module_bwd``: the robust backstop: the full ``Mamba3``
-  SISO module backward (always exercises the kernel, but includes in/out
-  projections, so it is *not* shape-matched to our scan-only op, labelled,
-  for sanity not for the headline).
-
-Timing mirrors the c2/c6 benches: the official forward runs once outside the
-timed region and the timed backward reuses its forward-saved activations
-(conservative against us, every timed call of ours re-stages the forward
-in-kernel). CUDA-event timed, median over trials.
-
-Usage: ``uv run python -m
-lethe.bench.mamba3_backward_headtohead --out ~/out/headtohead.json``
-"""
+"""Backward bench: ours vs official Mamba-3's crippled backward on B200; c2/c6 use Mamba-1."""
 
 from __future__ import annotations
 
@@ -73,13 +25,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     _HAS_MAMBA3 = False
 
-# SSM selective-scan FLOP model (forward), per (batch, len, d_model, d_state)
-# element: discretized decay apply (1 mul) + input term dt*B*x (2 mul) +
-# state add (1) + output C*h reduction (1 mul + 1 add) ~= 6 FLOPs; round to
-# 8 for the dt/exp discretization tail. Backward redoes the forward sweep and
-# carries an adjoint sweep -> ~2x. Applied to OURS only (the official op is a
-# richer chunk-scan, not FLOP-matched); rough, documented so our achieved-
-# TFLOP/s is reproducible context, not load-bearing. Wall-clock is the claim.
+# SSM FLOP model per element (B,L,D,N): decay+dt*B*x+state+C*h ~6 FLOPs, round to 8 for dt/exp.
 _SSM_FWD_FLOPS_PER_ELEM = 8
 _SSM_BWD_FLOPS_PER_ELEM = 16
 
@@ -109,8 +55,7 @@ class ShapeSpec:
         return _SSM_BWD_FLOPS_PER_ELEM * self.batch * self.seq_len * self.d_model * self.n_state
 
 
-# Matched to the c2 bench shapes; headdim=64, n_state=128 is the Mamba-3
-# SISO default (d_state=128). d_model multiples of headdim.
+# Matched to the c2 bench shapes; headdim=64, n_state=128 is the Mamba-3 SISO default (d_state=128).
 SHAPES = [
     ShapeSpec(2, 512, 1024, 128, 64),  # small, every comparator runs
     ShapeSpec(8, 2048, 4096, 128, 64),  # training shape, the #904 regime
@@ -155,12 +100,7 @@ def _ours_scan_inputs(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0) -> tup
 
 
 def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # type: ignore[no-untyped-def]
-    """Run one Mamba3 forward, capture the args it feeds mamba3_siso_combined.
-
-    Monkeypatches the function in its defining module so the captured tensors
-    are exactly what the real model passes, no Mamba-3-internal guessing.
-    Returns (callable, captured_args_tuple, captured_kwargs, layer_cfg).
-    """
+    """Run one Mamba3 forward, capture the args it feeds mamba3_siso_combined."""
     import sys
 
     import mamba_ssm.ops.triton.mamba3.mamba3_siso_combined as siso_mod
@@ -176,15 +116,10 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
             captured["kwargs"] = kwargs
         return real_fn(*args, **kwargs)
 
-    # The module may import the function by value (from ... import
-    # mamba3_siso_combined), so the live reference lives in the caller's
-    # namespace, not only the defining module. Patch every loaded module
-    # that exposes the symbol bound to the real fn.
+    # Imports bind by value: the live reference may sit in other modules' namespaces too.
     patched: list[Any] = []
     for mod in list(sys.modules.values()):
-        # getattr on a PEP-562 lazy module (e.g. the torchvision stub) can
-        # trigger an import that raises ModuleNotFoundError, which the None
-        # default does not catch, guard and skip.
+        # A PEP-562 lazy module's getattr can raise ModuleNotFoundError; guard past None default.
         try:
             attr = getattr(mod, "mamba3_siso_combined", None)
         except Exception:
@@ -211,16 +146,7 @@ def _capture_siso_args(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # t
 
 
 def _official_siso_combined(spec: ShapeSpec, dtype: torch.dtype, seed: int = 0):  # type: ignore[no-untyped-def]
-    """Forward (graph retained) of mamba3_siso_combined on detached leaves.
-
-    Returns (y, leaves, dy, meta) for repeated ``torch.autograd.grad`` timing.
-    Leaves are the differentiable float captured tensors detached fresh, so
-    the timed backward isolates the scan (the crippled kernel), exactly as
-    our backward_selective_scan timing isolates the scan from any projection.
-    ``meta`` records the captured shapes/dtypes and the real Mamba3 head
-    config so the row is auditable (the official op runs at the model's
-    native d_state/headdim, not our spec's).
-    """
+    """Forward (graph retained) of mamba3_siso_combined on detached leaves."""
     real_fn, args, kwargs, layer_cfg = _capture_siso_args(spec, dtype, seed)
 
     def _leaf(t: Any) -> Any:
@@ -285,8 +211,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
     u, delta, a, b_proj, c_proj, d_skip, dy = _ours_scan_inputs(spec, dtype)
 
-    # Bench BOTH our scan modes explicitly so the headline uses our best, not
-    # whatever the shape-gated selector (calibrated at N=16) picks at N=128.
+    # Bench both scan modes: the selector (calibrated at N=16) may pick differently at N=128.
     def _bench_ours(mode: str) -> dict[str, float]:
         cfg = KernelConfig(scan_mode=mode)
 
@@ -319,7 +244,7 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
     try:
         impls["official_mamba3_module_bwd"] = _bench_official_module(spec, dtype, trials)
-        row["module_bwd_note"] = "projection-inclusive; not shape-matched to ours — sanity only"
+        row["module_bwd_note"] = "projection-inclusive; not shape-matched to ours, sanity only"
         torch.cuda.empty_cache()
     except Exception:
         skipped["official_mamba3_module_bwd"] = traceback.format_exc(limit=4)
@@ -328,21 +253,13 @@ def _run_shape(spec: ShapeSpec, dtype: torch.dtype, quick: bool) -> dict[str, An
 
 
 def _crippled_kernel_launches(fn: Callable[[], Any]) -> tuple[list[str], list[str]]:
-    """(matched, all) CUDA kernel names observed running ``fn`` one call.
-
-    ``matched`` = the #904 backward kernels (``mamba3_siso_bwd``/``dqkv``, or
-    any ``mamba3``-prefixed CUDA kernel, since the official backward launches
-    only mamba3_* kernels). Empty matched => the timed backward does not run
-    the crippled kernel, so the comparison would be fabricated and the caller
-    must skip (review B1/N3). ``all`` is a sample for the skip diagnostic.
-    """
+    """(matched, all) CUDA kernel names observed running ``fn`` one call."""
     from torch.profiler import ProfilerActivity, profile
 
     with profile(activities=[ProfilerActivity.CUDA]) as prof:
         fn()
         torch.cuda.synchronize()
-    # FunctionEventAvg exposes the op/kernel name as ``.key`` (``.name`` only
-    # on raw FunctionEvent); fall back across torch versions.
+    # FunctionEventAvg names live in .key (.name only on raw FunctionEvent); torch-version fallback.
     names = sorted(
         {str(getattr(e, "key", None) or getattr(e, "name", "")) for e in prof.key_averages()}
     )
@@ -368,15 +285,12 @@ def _bench_official_combined(
             f"(grads nonzero={sum(nonzero)}/{len(grads)}); refusing a fabricated "
             f"timing. Observed CUDA kernels: {observed}"
         )
-    # No achieved_tflops/MFU here: the official op (rich Mamba-3 chunk-scan)
-    # does materially more work than our spec's SSM FLOP model, so applying
-    # spec.bwd_flops() to it would be a tautology (= wall-clock rescaled).
-    # Wall-clock at matched (B, L, d_model) is the comparison.
+    # MFU omitted: the official op does more work than our FLOP model; that would be tautological.
     result: dict[str, Any] = dict(_time(_bwd, warmup=10, trials=trials))
     result["crippled_kernels_launched"] = launched
     result["grads_nonzero"] = f"{sum(nonzero)}/{len(grads)}"
     result["flop_note"] = (
-        "richer op than ours; MFU omitted (not FLOP-matched) — wall-clock is the claim"
+        "richer op than ours; MFU omitted (not FLOP-matched), wall-clock is the claim"
     )
     return result, meta
 
@@ -447,7 +361,7 @@ def main() -> None:
             "bwd_flops_per_elem": _SSM_BWD_FLOPS_PER_ELEM,
             "peak_tflops": _PEAK_TFLOPS,
             "note": "applied to OURS only (achieved_tflops/mfu); the official op is a "
-            "richer Mamba-3 chunk-scan, not FLOP-matched — it reports wall-clock only",
+            "richer Mamba-3 chunk-scan, not FLOP-matched, it reports wall-clock only",
         },
         "runs": [],
     }

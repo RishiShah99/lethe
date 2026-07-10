@@ -1,12 +1,4 @@
-"""Triton fused-block forward: conv1d + SiLU + selective scan + RMSNorm.
-
-Two kernels, not one. RMSNorm needs a cross-D reduction per (b, t); that
-requires atomics (forbidden, ORD-02) or a grid sync (none exists in Triton),
-so the norm is a separate launch. Kernel A fuses conv1d + SiLU + selective
-scan in one serial-L pass per (batch, D-block). Kernel B is a deterministic
-RMSNorm accumulating the full-D sum-of-squares in-program over fixed D-chunks.
-fp32 state and arithmetic throughout; libdevice exp/log1p keep subnormals.
-"""
+"""Triton fused-block forward: conv1d + SiLU + selective scan + RMSNorm."""
 
 from __future__ import annotations
 
@@ -80,9 +72,7 @@ def _conv_scan_kernel(  # type: ignore[no-untyped-def]
             x_ptr + x_off[:, None] + offs_k[None, :] * d_model, mask=mask_dk, other=0.0
         ).to(tl.float32)
         conv = tl.sum(conv_w * xw, axis=1) + conv_b
-        # SiLU: x * sigmoid(x) with full-precision exp — matches torch's
-        # non-finite semantics and keeps large-|x| sigmoids exact where
-        # ex2.approx would flush.
+        # SiLU: full-precision exp matches torch's non-finite semantics, exact where ex2.approx flushes.
         z = conv * (1.0 / (1.0 + libdevice.exp(-conv)))
 
         dlt = tl.load(delta_ptr + od_off, mask=mask_d, other=0.0).to(tl.float32)
@@ -93,9 +83,7 @@ def _conv_scan_kernel(  # type: ignore[no-untyped-def]
 
         a_bar = libdevice.exp(dbar[:, None] * a)
         bu = (dbar * z)[:, None] * b_t[None, :]
-        # Padding lanes must stay exactly zero through the whole update:
-        # a non-finite z in a padded lane would mint NaNs that poison the
-        # real lanes' N-reduction below.
+        # Padding lanes must stay zero: a non-finite z there would mint a NaN and poison the N-reduction.
         h = tl.where(mask_dn, a_bar * h + bu, 0.0)
 
         y_t = tl.sum(h * c_t[None, :], axis=1) + d_skip * z
@@ -160,11 +148,7 @@ def launch_fused_block_forward(
     eps: float,
     num_warps: int | None = None,
 ) -> Tensor:
-    """Launch the two-kernel fused-block forward. Inputs must be CUDA tensors.
-
-    ``num_warps`` overrides the conv-scan kernel's heuristic; the norm
-    kernel keeps its own — it is memory-bound, not the sweep's subject.
-    """
+    """Launch the two-kernel fused-block forward."""
     batch, seq_in, d_model = x.shape
     conv_k = conv_weight.shape[-1]
     n_state = a.shape[1]
@@ -248,18 +232,7 @@ def fused_block_forward(
     eps: float = 1e-5,
     chunk_size: int = 64,
 ) -> Tensor:
-    """Mamba fused-block forward: conv1d -> SiLU -> selective scan -> RMSNorm.
-
-    ``x`` [B, L, D] carries the causal left-padding (valid conv, L_out = L - (K-1)).
-    ``conv_weight`` [D, 1, K], ``conv_bias``/``D``/``norm_weight`` [D],
-    ``delta`` [B, L_out, D], ``A`` [D, N], ``B``/``C`` [B, L_out, N].
-    Returns ``y`` [B, L_out, D] in ``x``'s dtype.
-    ``chunk_size`` is validated but is a blocking hint only.
-
-    Raises:
-        ValueError: if ``conv_kernel_size`` disagrees with ``conv_weight``'s
-            trailing dim, or if L_out is not divisible by ``chunk_size``.
-    """
+    """Mamba fused-block forward: conv1d -> SiLU -> selective scan -> RMSNorm."""
     conv_k = conv_weight.shape[-1]
     if conv_k != conv_kernel_size:
         raise ValueError(

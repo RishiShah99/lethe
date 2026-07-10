@@ -1,21 +1,4 @@
-"""Family entry wrappers, GLA / LA / SSD-class / KDA modes of the GDN-2 assembly.
-
-One backward serves the gated linear-recurrence family: each wrapper materializes its
-family's gate settings (``b = 0, w = 1`` for the no-erase members; ``b = w = β·1`` for
-KDA), runs the channel-wise assembly, and maps the six GDN-2 grads onto the family's
-own parameters (discard what the family does not parameterize, channel-sum what it
-holds scalar). Grad bundles are the family oracles' NamedTuples, one contract per
-family, shared between oracle and wrapper.
-
-The no-erase members default to the skip-T fast path (``assemble_gdn2_backward_no_erase``:
-T = I exactly, K#2 skipped, K#1 fed exact-zero ``wy``); KDA runs the full WY machinery.
-``k1_fn``/``k2_fn`` inject the compiled tcgen05 kernels on Blackwell hardware; the
-default is the pure-torch channel-wise references.
-
-Mixed-precision contract matches ``assembled_channelwise_gdn2_backward``: half inputs
-upcast to fp32, each grad rounds once at the end; fp64 runs through with ``create_graph``
-following ``do.requires_grad``.
-"""
+"""Family entry wrappers, GLA / LA / SSD-class / KDA modes of the GDN-2 assembly."""
 
 from __future__ import annotations
 
@@ -109,11 +92,7 @@ def ssd_backward(
     k2_fn: K2FnCW | None = None,
     fast_path: bool = True,
 ) -> SsdGrads:
-    """SSD-class (scalar per-head decay, no erase): ``g`` [B, L, H] broadcast across d_k.
-
-    ``b = 0, w = 1``; the channel-wise ``dg`` collapses to the scalar decay grad by
-    channel sum. Returns (dq, dk, dv, dg[B, L, H]).
-    """
+    """SSD-class (scalar per-head decay, no erase): ``g`` [B, L, H] broadcast across d_k."""
     if g.dim() != 3:
         raise ValueError(f"SSD-class g must be [B, L, H], got {tuple(g.shape)}")
     g_cw = g.unsqueeze(-1).expand(*g.shape, q.shape[-1])
@@ -149,11 +128,7 @@ def kda_backward(
     k1_fn: K1FnCW | None = None,
     k2_fn: K2FnCW | None = None,
 ) -> KdaGrads:
-    """KDA (per-channel decay, scalar β): ``b = w = β·1``, the full WY machinery.
-
-    ``beta`` [B, L, H] in (0, 1). The scalar gate grad recombines both axes:
-    ``grad_beta = db.sum(-1) + dw.sum(-1)``. Returns (dq, dk, dv, dg, dbeta).
-    """
+    """KDA (per-channel decay, scalar β): ``b = w = β·1``, the full WY machinery."""
     if beta.dim() != 3:
         raise ValueError(f"KDA beta must be [B, L, H], got {tuple(beta.shape)}")
     in_dtype = q.dtype
@@ -203,15 +178,7 @@ def _no_erase_family_backward(
     fast_path: bool,
     skip_half_round: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, torch.dtype | None]:
-    """Shared ``b = 0, w = 1`` route: (dq, dk, dv, dg, in_dtype_if_half) with dg per-channel.
-
-    ``fast_path`` skips K#2 entirely (its dk2/dg2 vanish exactly at b=0), so injecting
-    ``k2_fn`` there is a contract error; pass ``fast_path=False`` to exercise the full
-    WY machinery (e.g. grading the tcgen05 K#2 on b=0 operands).
-
-    When ``skip_half_round=True``, returns grads in fp32 and the original half dtype as
-    the fifth element; caller is responsible for rounding once after any reductions.
-    """
+    """Shared ``b = 0, w = 1`` route: (dq, dk, dv, dg, in_dtype_if_half) with dg per-channel."""
     if fast_path and k2_fn is not None:
         raise ValueError("fast_path skips K#2; pass fast_path=False to inject k2_fn")
     in_dtype = q.dtype

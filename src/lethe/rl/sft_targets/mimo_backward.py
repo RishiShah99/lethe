@@ -1,12 +1,4 @@
-"""Mamba-3 MIMO selective-scan backward pass via autograd (eager PyTorch).
-
-The rank-R forward (Eqs 12-14: mimo_x expansion, per-rank scan, aggregated
-readout, mimo_o down-projection) is rebuilt with leaf tensors and
-differentiated with torch.autograd.grad, so each of the seven gradients'
-non-finite dataflow matches autograd's grouping exactly. fp16/bf16 inputs
-are upcast once to float32, differentiated in float32, and each gradient
-is rounded once at return.
-"""
+"""Mamba-3 MIMO selective-scan backward pass via autograd (eager PyTorch)."""
 
 import torch
 from torch import Tensor

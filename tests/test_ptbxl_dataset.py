@@ -1,10 +1,4 @@
-"""Unit tests for PTBXL dataset (CPU-side, no real data required).
-
-A synthetic PTB-XL fixture is constructed in tmp_path that mirrors the
-official PhysioNet layout exactly:
-  ptbxl_database.csv, scp_statements.csv, records100/<subdir>/*.hea
-The wfdb dependency is mocked so these tests run without the wfdb package.
-"""
+"""Unit tests for PTBXL dataset (CPU-side, no real data required)."""
 
 from __future__ import annotations
 
@@ -18,10 +12,6 @@ import pytest
 import torch
 
 from lethe.medical.data import _SUPERCLASSES, PTBXL, _parse_scp_codes
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 _DIAG_CODES = {
     "NORM": "NORM",
@@ -41,7 +31,7 @@ _SCP_STMTS_ROWS = [
     ("STTC", 1, "STTC", "STTC"),
     ("CD", 1, "CD", "CD"),
     ("HYP", 1, "HYP", "HYP"),
-    # non-diagnostic row — must be excluded from labels
+    # non-diagnostic row, must be excluded from labels
     ("LNGQT", 0, "", ""),
 ]
 
@@ -99,7 +89,7 @@ def _make_database(root: Path, n_per_fold: int = 3) -> pd.DataFrame:
 def _make_fixture(root: Path) -> None:
     _make_scp_stmts(root)
     _make_database(root)
-    # Create stub WFDB header/data files (not actually read — wfdb is mocked)
+    # Create stub WFDB header/data files (not actually read; wfdb is mocked)
     for rate in ("records100", "records500"):
         (root / rate).mkdir(parents=True, exist_ok=True)
 
@@ -114,11 +104,6 @@ def _mock_rdsamp(record_path: str, **_: Any) -> tuple[np.ndarray, dict[str, Any]
     """Return a (1000, 12) float64 array and empty fields dict."""
     signal = np.zeros((1000, 12), dtype=np.float64)
     return signal, {}
-
-
-# ---------------------------------------------------------------------------
-# _parse_scp_codes
-# ---------------------------------------------------------------------------
 
 
 class TestParseSCPCodes:
@@ -140,11 +125,6 @@ class TestParseSCPCodes:
     def test_non_dict_returns_empty(self) -> None:
         # Defensive: column can be malformed in edge cases
         assert _parse_scp_codes("[]") == {}
-
-
-# ---------------------------------------------------------------------------
-# PTBXL construction
-# ---------------------------------------------------------------------------
 
 
 class TestPTBXLConstruction:
@@ -203,13 +183,8 @@ class TestPTBXLConstruction:
         assert "EXTRA" not in ds.classes
 
 
-# ---------------------------------------------------------------------------
-# PTBXL label construction
-# ---------------------------------------------------------------------------
-
-
 class TestPTBXLLabels:
-    """Label vector tests do not require wfdb — they inspect _labels directly."""
+    """Label vector tests do not require wfdb; they inspect _labels directly."""
 
     def test_norm_superclass_label(self, ptbxl_root: Path) -> None:
         ds = PTBXL(ptbxl_root, split="train", label_set="superclass")
@@ -225,8 +200,7 @@ class TestPTBXLLabels:
         assert others.sum().item() == 0.0
 
     def test_mi_cd_multi_hot(self, ptbxl_root: Path) -> None:
-        # Second record per fold: {'IMI': 80.0, 'CD': 20.0}
-        # IMI maps to MI superclass; CD maps to CD
+        # Second record per fold: {'IMI': 80.0, 'CD': 20.0}; IMI maps to MI superclass, CD to CD
         ds = PTBXL(ptbxl_root, split="train", label_set="superclass")
         label = ds._labels[1]
         mi_idx = ds._class_index["MI"]
@@ -238,7 +212,7 @@ class TestPTBXLLabels:
             assert label[ds._class_index[cls]].item() == 0.0
 
     def test_non_diagnostic_code_excluded(self, ptbxl_root: Path) -> None:
-        # Third record per fold: {'LNGQT': 100.0} — LNGQT is non-diagnostic
+        # Third record per fold: {'LNGQT': 100.0}, LNGQT is non-diagnostic
         ds = PTBXL(ptbxl_root, split="train", label_set="superclass")
         label = ds._labels[2]
         assert label.sum().item() == 0.0
@@ -289,11 +263,6 @@ class TestPTBXLLabels:
             assert lbl.shape == (ds.n_classes,)
 
 
-# ---------------------------------------------------------------------------
-# PTBXL __getitem__ (wfdb mocked)
-# ---------------------------------------------------------------------------
-
-
 class TestPTBXLGetItem:
     def test_signal_shape_100hz(self, ptbxl_root: Path) -> None:
         with patch("lethe.medical.data.wfdb") as mock_wfdb:
@@ -342,9 +311,7 @@ class TestPTBXLGetItem:
         assert "records500" in call_path
 
     def test_signal_normalized_per_lead(self, ptbxl_root: Path) -> None:
-        # The loader NaN-guards then per-lead z-scores (zero mean / unit std over
-        # time) — raw mV scales otherwise NaN the deep SSM. Layout stays
-        # [lead, t] from the transpose.
+        # The loader NaN-guards then per-lead z-scores; raw mV scales would otherwise NaN the deep SSM.
         arr = np.arange(12000, dtype=np.float64).reshape(1000, 12)
         with patch("lethe.medical.data.wfdb") as mock_wfdb:
             mock_wfdb.rdsamp.return_value = (arr, {})
@@ -373,11 +340,6 @@ class TestPTBXLGetItem:
             item = ds[0]
         assert isinstance(item, tuple)
         assert len(item) == 2
-
-
-# ---------------------------------------------------------------------------
-# Sampling-rate → filename column routing
-# ---------------------------------------------------------------------------
 
 
 class TestSamplingRateRouting:

@@ -1,15 +1,4 @@
-"""Adversarial test: every cheating kernel must be rejected by the verifier.
-
-For each deliberately-broken kernel in ``tests/cheating_kernels/``:
-
-1. Run all 12 Kernel-Contract gates against the canonical reference.
-2. Assert at least one *implemented* gate returns ``passed=False``.
-3. Where the cheat targets a specific gate, assert that gate rejects it.
-
-If a cheating kernel slips past every implemented gate, the verifier has
-a hole — the test fails, the gate is hardened, the suite re-runs until
-every cheat is caught.
-"""
+"""Adversarial test: every cheating kernel must be rejected by the verifier."""
 
 from __future__ import annotations
 
@@ -48,9 +37,7 @@ from tests.cheating_kernels import (
 )
 from tests.cheating_kernels._reference import reference_op
 
-# Names of the gates that are actually implemented — stubbed gates report
-# ``passed=False`` with reason ``"not_implemented"``, which does not count
-# as a real verifier rejection.
+# Implemented gates only; stubbed gates report passed=False reason="not_implemented".
 _IMPLEMENTED_GATES: tuple[str, ...] = (
     "gate_cmp_01_input_variation",
     "gate_cmp_02_gradient_correctness",
@@ -106,11 +93,6 @@ def _assert_caught_by_some_gate(
             f"passed={results[gate_name].passed} reason={results[gate_name].reason!r}"
         )
     return results
-
-
-# ---------------------------------------------------------------------------
-# Individual cheating kernels
-# ---------------------------------------------------------------------------
 
 
 class TestReturnsInput:
@@ -179,8 +161,7 @@ class TestNondeterministic:
 
 class TestBufferAliasing:
     def test_caught(self) -> None:
-        # Value-correct everywhere; the only violation is returning one aliased
-        # buffer across calls, so ORD-02 must be the rejector.
+        # Value-correct everywhere; only violation is returning one aliased buffer across calls.
         _assert_caught_by_some_gate(
             buffer_aliasing.cheating_op,
             expected_gates=("gate_ord_02_atomic_determinism",),
@@ -253,10 +234,7 @@ class TestSubnormalFlushBug:
 
 class TestNanOnSubnormal:
     def test_caught(self) -> None:
-        # Regression: a candidate that mints NaN only on subnormal-magnitude
-        # inputs used to slip past EXC-02 (matching zero-mask + NaN max_err).
-        # EXC-02 is the sole gate that feeds all-subnormal probes, so it must be
-        # the rejector — no other gate exercises this input regime.
+        # Regression: NaN only on subnormal inputs used to slip past EXC-02's zero-mask check.
         _assert_caught_by_some_gate(
             nan_on_subnormal.cheating_op,
             expected_gates=("gate_exc_02_subnormal_handling",),
@@ -271,11 +249,6 @@ class TestDeviceSilentMove:
         )
 
 
-# ---------------------------------------------------------------------------
-# Sanity: the reference itself must pass every implemented gate.
-# ---------------------------------------------------------------------------
-
-
 class TestReferencePassesAllGates:
     def test_reference_against_itself(self) -> None:
         results = run_all_gates(reference_op, reference_op)
@@ -285,19 +258,9 @@ class TestReferencePassesAllGates:
             )
 
 
-# ---------------------------------------------------------------------------
-# Gate-discrimination pins: isolate the branch / dtype each gate rejects on,
-# not just that *some* gate fired (closes the asserted-not-tested gaps).
-# ---------------------------------------------------------------------------
-
-
 class TestOrd02AliasingBranch:
     def test_aliasing_branch_rejects_with_named_reason(self) -> None:
-        # buffer_aliasing is value-correct AND deterministic (snapshots are
-        # byte-identical), so ORD-02's determinism branch passes and ONLY the
-        # distinct-data_ptr aliasing branch can reject it. Pin the reason +
-        # the buffer count so a regression that silently drops the aliasing
-        # check (leaving only determinism) is caught.
+        # buffer_aliasing is value-correct and deterministic; only the aliasing branch can reject it.
         result = gate_ord_02_atomic_determinism(buffer_aliasing.cheating_op, reference_op, n_runs=5)
         assert not result.passed
         assert "aliasing" in result.reason.lower()
@@ -305,10 +268,7 @@ class TestOrd02AliasingBranch:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
     def test_aliasing_branch_rejects_on_cuda(self) -> None:
-        # The CUDA caching allocator recycles freed addresses, so the gate
-        # holds every raw output alive to keep distinct buffers distinct. This
-        # asserts the aliasing branch still fires on-device (was argued
-        # structurally only) — the box half of #9.
+        # CUDA recycles freed addresses; the gate holds outputs alive so buffers stay distinct.
         result = gate_ord_02_atomic_determinism(
             buffer_aliasing.cheating_op, reference_op, n_runs=5, device="cuda"
         )
@@ -318,11 +278,7 @@ class TestOrd02AliasingBranch:
 
 class TestPrc01Discrimination:
     def test_prc01_accepts_honest_rejects_fp32_only(self) -> None:
-        # Named PRC-01 discrimination (closes the "no isolated PRC-01 test"
-        # gap): the gate ACCEPTS the honest reference at every dtype and
-        # REJECTS the fp32-only cheat with a dtype-specific failure — proving
-        # the rejection is PRC-01's precision-regime check, not a mislabel of
-        # PRC-02's accumulator check.
+        # PRC-01 discrimination: honest reference passes, fp32-only cheat fails on a half dtype.
         honest = gate_prc_01_precision_regime(reference_op, reference_op)
         assert honest.passed, f"PRC-01 rejected the honest reference: {honest.reason}"
 

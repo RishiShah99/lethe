@@ -1,14 +1,4 @@
-"""Kernel candidate discovery + loading.
-
-Candidate kernels live in directories on disk, one ``.py`` file per
-kernel. Each file declares one callable (the kernel) plus optional
-``__candidate_op__`` metadata identifying which reference op it
-implements.
-
-The loader scans a directory for ``kernel_*.py`` files, reads their
-source, and bundles each into a ``KernelCandidate`` for the verifier
-to compile, run, and score.
-"""
+"""Kernel candidate discovery + loading."""
 
 from __future__ import annotations
 
@@ -22,25 +12,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class KernelCandidate:
-    """A single candidate kernel ready for verification.
-
-    Attributes
-    ----------
-    source_path:
-        Absolute path to the candidate's ``.py`` file.
-    source_code:
-        The full text of the candidate source (read eagerly so the
-        verifier's compile sandbox can submit it without re-reading).
-    callable_name:
-        Name of the kernel callable inside the module. Defaults to the
-        file's basename without ``kernel_`` prefix and ``.py`` suffix.
-    target_op:
-        Name of the reference op this candidate implements, if declared
-        via ``__candidate_op__`` in the module. ``None`` when not declared.
-    metadata:
-        Free-form metadata read from a module-level ``__candidate_meta__``
-        dict, if present.
-    """
+    """A single candidate kernel ready for verification."""
 
     source_path: Path
     source_code: str
@@ -50,13 +22,7 @@ class KernelCandidate:
 
 
 def _parse_module_attrs(source: str) -> dict[str, Any]:
-    """Extract literal module-level assignments (constants only).
-
-    Walks the AST and picks up assignments where the RHS is a literal
-    (string, number, list, dict, tuple). Skips anything that requires
-    execution. This lets us read ``__candidate_op__ = "forward_chunked_scan"``
-    without importing the module.
-    """
+    """Extract literal module-level assignments (constants only)."""
     attrs: dict[str, Any] = {}
     try:
         tree = ast.parse(source)
@@ -91,23 +57,7 @@ def _infer_callable_name(path: Path, attrs: dict[str, Any]) -> str:
 
 
 def load_candidate(path: str | Path) -> KernelCandidate:
-    """Load a single candidate file into a ``KernelCandidate``.
-
-    Parameters
-    ----------
-    path:
-        Path to the candidate ``.py`` file.
-
-    Returns
-    -------
-    KernelCandidate
-        Frozen dataclass with source and metadata populated.
-
-    Raises
-    ------
-    FileNotFoundError
-        If *path* does not point to an existing file.
-    """
+    """Load a single candidate file into a ``KernelCandidate``."""
     p = Path(path).resolve()
     if not p.is_file():
         raise FileNotFoundError(f"candidate file not found: {p}")
@@ -132,23 +82,7 @@ def load_candidate(path: str | Path) -> KernelCandidate:
 
 
 def discover_candidates(directory: str | Path) -> list[KernelCandidate]:
-    """Find all ``kernel_*.py`` candidates in *directory* (non-recursive).
-
-    Parameters
-    ----------
-    directory:
-        Directory to scan. Files matching ``kernel_*.py`` are loaded.
-
-    Returns
-    -------
-    list[KernelCandidate]
-        Candidates sorted by file name for deterministic ordering.
-
-    Raises
-    ------
-    NotADirectoryError
-        If *directory* does not exist or is not a directory.
-    """
+    """Find all ``kernel_*.py`` candidates in *directory* (non-recursive)."""
     d = Path(directory).resolve()
     if not d.is_dir():
         raise NotADirectoryError(f"not a directory: {d}")
@@ -158,19 +92,7 @@ def discover_candidates(directory: str | Path) -> list[KernelCandidate]:
 
 
 def import_candidate(candidate: KernelCandidate) -> Callable[..., Any]:
-    """Import the candidate's module and return its kernel callable.
-
-    Each call produces a fresh module instance (no caching), so RL
-    sweeps that regenerate kernels under the same path get the new
-    version.
-
-    Raises
-    ------
-    AttributeError
-        If the named callable is not present in the loaded module.
-    ImportError
-        If the module fails to load.
-    """
+    """Import the candidate's module and return its kernel callable."""
     spec = importlib.util.spec_from_file_location(
         f"_fmrl_candidate_{candidate.source_path.stem}",
         candidate.source_path,

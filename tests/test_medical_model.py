@@ -1,8 +1,4 @@
-"""CPU tests for Mamba3ECGClassifier (Phase F.2).
-
-tiny() forwards on CPU (eager fallback); analytic param count matches the live
-module and the b1 config is ~1.1B.
-"""
+"""CPU tests for Mamba3ECGClassifier (Phase F.2)."""
 
 from __future__ import annotations
 
@@ -30,12 +26,7 @@ class TestForward:
 
 
 class TestStability:
-    """A = -exp(A_log) must keep the scan a strict contraction for any A_log.
-
-    The prior init passed log_A directly as A, leaving the j=0 column at A=0 (a
-    pure integrator) and letting A drift positive under training → the L=1000
-    scan overflowed to NaN. These pin that the parametrisation now precludes it.
-    """
+    """A = -exp(A_log) must keep the scan a strict contraction for any A_log."""
 
     def test_effective_A_strictly_negative_at_init(self) -> None:
         model = Mamba3ECGClassifier(Mamba3Config.tiny())
@@ -44,8 +35,7 @@ class TestStability:
             assert (A < 0).all()
 
     def test_forward_finite_when_A_log_drifts_positive(self) -> None:
-        # Simulate a positive drift that the old A=log_A init would have turned
-        # into a_bar>1 (geometric blow-up); A=-exp(A_log) clamps it to (0,1).
+        # old A=log_A could blow up a_bar>1; A=-exp(A_log) clamps it to (0,1).
         model = Mamba3ECGClassifier(Mamba3Config.tiny())
         with torch.no_grad():
             for block in model.blocks:

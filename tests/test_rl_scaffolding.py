@@ -1,10 +1,4 @@
-"""Tests for the RL scaffolding (rollout types, reward bridge, GRPO skeleton).
-
-These are interface / data-flow tests — no actual model loading or
-gradient updates. The goal is to validate that a scored rollout
-flows end-to-end through the GRPOTrainer without exceptions and
-produces sensible summary metrics.
-"""
+"""Tests for the RL scaffolding (rollout types, reward bridge, GRPO skeleton)."""
 
 from __future__ import annotations
 
@@ -24,10 +18,6 @@ from lethe.rl import (
     compute_grpo_loss,
     score_callable,
 )
-
-# ---------------------------------------------------------------------------
-# Rollout types
-# ---------------------------------------------------------------------------
 
 
 class TestRolloutAdvantages:
@@ -53,9 +43,7 @@ class TestRolloutAdvantages:
     def test_advantages_normalised(self) -> None:
         rollout = self._make([1.0, 2.0, 3.0, 4.0])
         advs = rollout.advantages()
-        # Variance is ~1 up to the ground-truth eps shift (division by std+1e-4,
-        # not std): the estimator normalises by population std. abs_tol reflects
-        # eps=1e-4, not the rejected 1e-8 the local reimplementation used.
+        # Variance is ~1 up to the eps shift: division is by std+1e-4, not std.
         mean = sum(advs) / len(advs)
         var = sum((a - mean) ** 2 for a in advs) / len(advs)
         assert math.isclose(var, 1.0, abs_tol=1e-3)
@@ -69,9 +57,7 @@ class TestRolloutAdvantages:
         assert rollout.advantages() == (0.0, 0.0, 0.0)
 
     def test_advantages_delegate_to_grpo_ground_truth(self) -> None:
-        # Single ground-truth definition: Rollout.advantages must equal
-        # compute_group_advantages (the estimator the live optimizer step uses),
-        # so no divergent eps floor can be reintroduced here unnoticed.
+        # Rollout.advantages must equal compute_group_advantages, the estimator the live optimizer uses.
         for rewards in ([1.0, 2.0, 3.0, 4.0], [0.5, 0.5, 2.0], [-1.0, 4.0]):
             rollout = self._make(rewards)
             expected = compute_group_advantages(torch.tensor(rewards, dtype=torch.float64)).tolist()
@@ -80,11 +66,6 @@ class TestRolloutAdvantages:
     def test_best_returns_highest_reward(self) -> None:
         rollout = self._make([1.0, 5.0, 3.0])
         assert rollout.best().reward == 5.0
-
-
-# ---------------------------------------------------------------------------
-# StubPolicy
-# ---------------------------------------------------------------------------
 
 
 class TestStubPolicy:
@@ -101,11 +82,6 @@ class TestStubPolicy:
         policy = StubPolicy()
         with pytest.raises(ValueError):
             policy.generate("prompt", -1)
-
-
-# ---------------------------------------------------------------------------
-# score_callable
-# ---------------------------------------------------------------------------
 
 
 def _ref(t: torch.Tensor) -> torch.Tensor:
@@ -166,11 +142,6 @@ class TestScoreCallable:
         assert sc.reward == pytest.approx(2.0 + 1.0)
 
 
-# ---------------------------------------------------------------------------
-# GRPOTrainer end-to-end on stub policy
-# ---------------------------------------------------------------------------
-
-
 class TestGRPOTrainerSkeleton:
     def _trainer(
         self,
@@ -228,11 +199,6 @@ class TestGRPOTrainerSkeleton:
         assert metrics.mean_reward == pytest.approx(0.5)
         assert metrics.max_reward == pytest.approx(0.5)
         assert metrics.loss is None
-
-
-# ---------------------------------------------------------------------------
-# Loss smoke test (stub has been replaced — full coverage in test_grpo_loss.py)
-# ---------------------------------------------------------------------------
 
 
 class TestComputeGrpoLoss:
