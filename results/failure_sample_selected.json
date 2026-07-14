@@ -1,0 +1,1045 @@
+{
+  "money_cell_size": 1533,
+  "bucket_sizes": {
+    "EXC-01": 827,
+    "ORD-02": 67,
+    "CMP-03": 200,
+    "aliasing": 12,
+    "crash": 0,
+    "pre_gate": 48,
+    "CMP-01": 172,
+    "PRC-02": 123,
+    "EXC-02": 42,
+    "ORD-01": 0,
+    "ORD-03": 1,
+    "PRC-01": 26,
+    "RES-01": 15
+  },
+  "n_selected": 31,
+  "selected": [
+    {
+      "id": "42",
+      "stratum": "EXC-01",
+      "op_class": "reduction",
+      "native_shape": [
+        128,
+        3,
+        32,
+        32
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.6074766355140188,
+      "our_channels": [
+        "EXC-01"
+      ],
+      "our_fail_reasons": {
+        "EXC-01": "scattered_nan: NaN mask mismatch"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "43",
+      "stratum": "EXC-01",
+      "op_class": "reduction",
+      "native_shape": [
+        2,
+        4,
+        5
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.47049180327868856,
+      "our_channels": [
+        "EXC-01"
+      ],
+      "our_fail_reasons": {
+        "EXC-01": "scattered_nan: NaN mask mismatch"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "46",
+      "stratum": "EXC-01",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.8327683615819209,
+      "our_channels": [
+        "CMP-01",
+        "CMP-03",
+        "ORD-01",
+        "EXC-01"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "random[0]: max_err=1.234e-03 > atol=4.308e-05 (scaled); random[1]: max_err=1.245e-03 > atol=4.308e-05 (scaled); random[2]: max_err=1.212e-03 > atol=4.308e-05 (scaled)",
+        "CMP-03": "shape=(32, 128): max_err=1.117e-03 > atol=4.308e-05; shape=(128, 128): max_err=1.344e-03 > atol=4.308e-05",
+        "ORD-01": "max_err=1.208e-03 > atol=4.308e-05",
+        "EXC-01": "scattered_nan: NaN mask mismatch"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": false,
+        "trials_passed": 0,
+        "reason": "allclose failed",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "49",
+      "stratum": "EXC-01",
+      "op_class": "matmul",
+      "native_shape": [
+        16,
+        2048
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.6785046728971963,
+      "our_channels": [
+        "PRC-01",
+        "PRC-02",
+        "EXC-01"
+      ],
+      "our_fail_reasons": {
+        "PRC-01": "torch.float16: exception \u2014 at 18:36:\n    BLOCK_SIZE: tl.constexpr,\n):\n    pid = tl.program_id(0)\n    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)\n    mask = offs < N_ELEMS\n\n    # Load contiguous chunk\n    x = tl.load(x_ptr + offs, mask=mask, other=0.0)\n\n    # ELU: z = x if x > 0 else alpha * (...",
+        "PRC-02": "exception during execution: at 18:36:\n    BLOCK_SIZE: tl.constexpr,\n):\n    pid = tl.program_id(0)\n    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)\n    mask = offs < N_ELEMS\n\n    # Load contiguous chunk\n    x = tl.load(x_ptr + offs, mask=mask, other=0.0)\n\n    # ELU: z = x if x > 0 else alpha * ...",
+        "EXC-01": "scattered_nan: NaN mask mismatch"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "64",
+      "stratum": "EXC-01",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        100
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.5847750865051903,
+      "our_channels": [
+        "EXC-01"
+      ],
+      "our_fail_reasons": {
+        "EXC-01": "scattered_nan: NaN mask mismatch"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "69",
+      "stratum": "EXC-01",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.9210206561360876,
+      "our_channels": [
+        "CMP-01",
+        "CMP-03",
+        "ORD-01",
+        "ORD-03",
+        "EXC-01"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "random[0]: max_err=5.197e-03 > atol=4.308e-05 (scaled); random[1]: max_err=5.965e-03 > atol=4.308e-05 (scaled); random[2]: max_err=6.135e-03 > atol=4.308e-05 (scaled)",
+        "CMP-03": "shape=(32, 128): max_err=4.951e-03 > atol=4.308e-05; shape=(128, 128): max_err=6.014e-03 > atol=4.308e-05",
+        "ORD-01": "max_err=5.509e-03 > atol=4.308e-05",
+        "ORD-03": "not within atol=1.0e-03/rtol=1.0e-03: max_err=2.038e-03 (reduction order differs)",
+        "EXC-01": "scattered_nan: NaN mask mismatch"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": false,
+        "trials_passed": 0,
+        "reason": "allclose failed",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "56",
+      "stratum": "ORD-02",
+      "op_class": "conv",
+      "native_shape": [
+        32,
+        10,
+        64,
+        64
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.5286195286195285,
+      "our_channels": [
+        "ORD-02",
+        "EXC-02"
+      ],
+      "our_fail_reasons": {
+        "ORD-02": "run 0 and run 1 differ (non-deterministic)",
+        "EXC-02": "flush-to-zero behaviour disagrees with reference"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "92",
+      "stratum": "ORD-02",
+      "op_class": "reduction",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.46123260437375746,
+      "our_channels": [
+        "ORD-02",
+        "EXC-02"
+      ],
+      "our_fail_reasons": {
+        "ORD-02": "run 0 and run 1 differ (non-deterministic)",
+        "EXC-02": "flush-to-zero behaviour disagrees with reference"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "802",
+      "stratum": "ORD-02",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        1024
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.7586649550706034,
+      "our_channels": [
+        "ORD-02"
+      ],
+      "our_fail_reasons": {
+        "ORD-02": "run 0 and run 1 differ (non-deterministic)"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "85",
+      "stratum": "CMP-03",
+      "op_class": "matmul",
+      "native_shape": [
+        16,
+        1024
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.7731843575418994,
+      "our_channels": [
+        "CMP-01",
+        "CMP-03",
+        "ORD-01"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "random[7]: max_err=4.313e-04 > atol=2.725e-04 (scaled)",
+        "CMP-03": "shape=(32, 1024): max_err=3.580e-04 > atol=2.598e-04",
+        "ORD-01": "max_err=3.772e-04 > atol=2.577e-04"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": false,
+        "trials_passed": 0,
+        "reason": "allclose failed",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "123",
+      "stratum": "CMP-03",
+      "op_class": "softmax",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.45019920318725093,
+      "our_channels": [
+        "CMP-01",
+        "CMP-03"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "long_seq: max_err=2.974e-01 > atol=4.308e-05 (scaled)",
+        "CMP-03": "shape=(64, 256): max_err=9.635e-02 > atol=4.308e-05"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "138",
+      "stratum": "CMP-03",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        1024
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.5930232558139534,
+      "our_channels": [
+        "CMP-01",
+        "CMP-03",
+        "ORD-01"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "random[0]: max_err=7.224e-04 > atol=1.811e-04 (scaled); random[1]: max_err=8.045e-04 > atol=1.812e-04 (scaled); random[2]: max_err=7.286e-04 > atol=1.807e-04 (scaled)",
+        "CMP-03": "shape=(32, 1024): max_err=7.209e-04 > atol=1.780e-04; shape=(128, 1024): max_err=7.781e-04 > atol=1.807e-04",
+        "ORD-01": "max_err=7.894e-04 > atol=1.809e-04"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": false,
+        "trials_passed": 0,
+        "reason": "allclose failed",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "144",
+      "stratum": "CMP-03",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 1.051413881748072,
+      "our_channels": [
+        "CMP-01",
+        "CMP-03",
+        "ORD-01",
+        "PRC-01",
+        "PRC-02"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "random[0]: max_err=7.175e-04 > atol=4.308e-05 (scaled); random[1]: max_err=6.990e-04 > atol=4.308e-05 (scaled); random[2]: max_err=7.952e-04 > atol=5.197e-05 (scaled)",
+        "CMP-03": "shape=(32, 128): max_err=6.860e-04 > atol=4.308e-05; shape=(128, 128): max_err=7.277e-04 > atol=4.775e-05",
+        "ORD-01": "max_err=7.292e-04 > atol=4.523e-05",
+        "PRC-01": "torch.float16: exception \u2014 at 36:12:\n    while k0 < K:\n        a_ptrs = A_ptr + (offs_m[:, None] * stride_am + (offs_k[None, :] + k0) * stride_ak)\n        b_ptrs = B_ptr + ((offs_k[:, None] + k0) * stride_bk + offs_n[None, :] * stride_bn)\n\n        mask_a = (offs_m[:, None] < M) & ((offs_k[None, :] +...",
+        "PRC-02": "exception during execution: at 36:12:\n    while k0 < K:\n        a_ptrs = A_ptr + (offs_m[:, None] * stride_am + (offs_k[None, :] + k0) * stride_ak)\n        b_ptrs = B_ptr + ((offs_k[:, None] + k0) * stride_bk + offs_n[None, :] * stride_bn)\n\n        mask_a = (offs_m[:, None] < M) & ((offs_k[None, :] ..."
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": false,
+        "trials_passed": 0,
+        "reason": "allclose failed",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "394",
+      "stratum": "aliasing",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        100
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 4.037900874635569,
+      "our_channels": [
+        "PRC-01",
+        "PRC-02",
+        "aliasing"
+      ],
+      "our_fail_reasons": {
+        "PRC-01": "torch.float16: exception \u2014 at 15:8:\n    mask = offs < n_elements\n\n    # Provide vectorization hints to the compiler\n    tl.max_contiguous(offs, 128)\n    tl.multiple_of(offs, 128)\n\n    # Coalesced load\n    x = tl.load(x_ptr + offs, mask=mask, other=0)\n\n    # Fused compute: y = sigmoid(x^2)\n    z = x ...",
+        "PRC-02": "exception during execution: at 15:8:\n    mask = offs < n_elements\n\n    # Provide vectorization hints to the compiler\n    tl.max_contiguous(offs, 128)\n    tl.multiple_of(offs, 128)\n\n    # Coalesced load\n    x = tl.load(x_ptr + offs, mask=mask, other=0)\n\n    # Fused compute: y = sigmoid(x^2)\n    z = x..."
+      },
+      "our_status": "gated",
+      "output_aliasing": true,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "1120",
+      "stratum": "aliasing",
+      "op_class": "reduction",
+      "native_shape": [
+        100
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.8100961538461539,
+      "our_channels": [
+        "aliasing"
+      ],
+      "our_fail_reasons": {},
+      "our_status": "gated",
+      "output_aliasing": true,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "491",
+      "stratum": "pre_gate",
+      "op_class": "matmul",
+      "native_shape": [
+        128,
+        512
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 4.411764705882353,
+      "our_channels": [
+        "pre_gate"
+      ],
+      "our_fail_reasons": {},
+      "our_status": "cand_native_fail",
+      "output_aliasing": null,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "518",
+      "stratum": "pre_gate",
+      "op_class": "reduction",
+      "native_shape": null,
+      "out_dtype": "torch.float32",
+      "final_speedup": 36.199095022624434,
+      "our_channels": [
+        "pre_gate"
+      ],
+      "our_fail_reasons": {},
+      "our_status": "not_auditable",
+      "output_aliasing": null,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "28",
+      "stratum": "CMP-01",
+      "op_class": "norm",
+      "native_shape": [
+        16,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.4468354430379747,
+      "our_channels": [
+        "CMP-01"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "large_1e6: max_err=nan > atol=2.154e-05 (scaled)"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "174",
+      "stratum": "CMP-01",
+      "op_class": "norm",
+      "native_shape": [
+        128,
+        3,
+        32,
+        32
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.7019867549668873,
+      "our_channels": [
+        "CMP-01"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "large_1e6: max_err=nan > atol=2.985e-04 (scaled)"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "179",
+      "stratum": "CMP-01",
+      "op_class": "scan",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.8362831858407079,
+      "our_channels": [
+        "CMP-01",
+        "PRC-02"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "random[0]: max_err=1.121e+22 > atol=6.053e+21 (scaled)",
+        "PRC-02": "max_err=inf exceeds atol=2.810e+24 + rtol=0.0*|ref| \u2014 likely missing FP32 accumulator"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "208",
+      "stratum": "CMP-01",
+      "op_class": "norm",
+      "native_shape": [
+        16,
+        50,
+        10,
+        10,
+        10
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.8513689700130377,
+      "our_channels": [
+        "CMP-01",
+        "EXC-02"
+      ],
+      "our_fail_reasons": {
+        "CMP-01": "large_1e6: max_err=3.592e+00 > atol=1.530e-03 (scaled); long_seq: exception \u2014 Expected 50 channels, got 200",
+        "EXC-02": "flush-to-zero behaviour disagrees with reference"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "120",
+      "stratum": "PRC-02",
+      "op_class": "matmul",
+      "native_shape": [
+        64,
+        128,
+        1024,
+        3
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 1.9182389937106918,
+      "our_channels": [
+        "PRC-02"
+      ],
+      "our_fail_reasons": {
+        "PRC-02": "exception during execution: ModelNew currently supports float32. Got torch.float16"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "133",
+      "stratum": "PRC-02",
+      "op_class": "reduction",
+      "native_shape": [
+        16,
+        3,
+        256,
+        256
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.6636125654450262,
+      "our_channels": [
+        "PRC-01",
+        "PRC-02"
+      ],
+      "our_fail_reasons": {
+        "PRC-01": "torch.float16: exception \u2014 at 31:30:\n    # Base index for (n, h, w) across channels\n    base = n * (3 * HW) + h * W + w  # [BLOCK_M]\n\n    mean_s = tl.load(mean_ptr)  # scalar\n\n    # Load the three channels directly\n    x0 = tl.load(x_ptr + base + 0 * HW, mask=mask_m, other=0.0)\n    x1 = tl.load(x_pt...",
+        "PRC-02": "exception during execution: at 31:30:\n    # Base index for (n, h, w) across channels\n    base = n * (3 * HW) + h * W + w  # [BLOCK_M]\n\n    mean_s = tl.load(mean_ptr)  # scalar\n\n    # Load the three channels directly\n    x0 = tl.load(x_ptr + base + 0 * HW, mask=mask_m, other=0.0)\n    x1 = tl.load(x_p..."
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "140",
+      "stratum": "PRC-02",
+      "op_class": "norm",
+      "native_shape": [
+        64,
+        128,
+        1
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 1.1234396671289877,
+      "our_channels": [
+        "PRC-01",
+        "PRC-02"
+      ],
+      "our_fail_reasons": {
+        "PRC-01": "torch.float16: exception \u2014 at 26:19:\n    pid_b = tl.program_id(0)\n    pid_c = tl.program_id(1)\n\n    c_offsets = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)\n    mask_c = c_offsets < C\n    row_start = pid_b * STRIDE_ROW\n\n    x = tl.load(x_ptr + row_start + c_offsets, mask=mask_c, other=0.0)\n    # Load run...",
+        "PRC-02": "exception during execution: at 26:19:\n    pid_b = tl.program_id(0)\n    pid_c = tl.program_id(1)\n\n    c_offsets = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)\n    mask_c = c_offsets < C\n    row_start = pid_b * STRIDE_ROW\n\n    x = tl.load(x_ptr + row_start + c_offsets, mask=mask_c, other=0.0)\n    # Load ru..."
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "186",
+      "stratum": "EXC-02",
+      "op_class": "norm",
+      "native_shape": [
+        16,
+        3,
+        10,
+        10,
+        10
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 1.1229385307346327,
+      "our_channels": [
+        "EXC-02"
+      ],
+      "our_fail_reasons": {
+        "EXC-02": "flush-to-zero behaviour disagrees with reference"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "248",
+      "stratum": "EXC-02",
+      "op_class": "softmax",
+      "native_shape": [
+        64,
+        10
+      ],
+      "out_dtype": "torch.int64",
+      "final_speedup": 0.6257088846880906,
+      "our_channels": [
+        "EXC-02"
+      ],
+      "our_fail_reasons": {
+        "EXC-02": "flush-to-zero behaviour disagrees with reference"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      }
+    },
+    {
+      "id": "469",
+      "stratum": "EXC-02",
+      "op_class": "scan",
+      "native_shape": [
+        3,
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.6291666666666667,
+      "our_channels": [
+        "EXC-02"
+      ],
+      "our_fail_reasons": {
+        "EXC-02": "flush-to-zero behaviour disagrees with reference"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "2047",
+      "stratum": "ORD-03",
+      "op_class": "reduction",
+      "native_shape": [
+        16,
+        3,
+        128,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.8644578313253012,
+      "our_channels": [
+        "ORD-03"
+      ],
+      "our_fail_reasons": {
+        "ORD-03": "not within atol=1.0e-03/rtol=1.0e-03: max_err=4.510e-03 (reduction order differs)"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "320",
+      "stratum": "PRC-01",
+      "op_class": "scan",
+      "native_shape": [
+        64,
+        128
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.7225806451612903,
+      "our_channels": [
+        "PRC-01"
+      ],
+      "our_fail_reasons": {
+        "PRC-01": "torch.float16: max_err=1.250e-01 > atol=6.594e-02; torch.bfloat16: max_err=1.250e+00 > atol=6.000e-01"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "353",
+      "stratum": "PRC-01",
+      "op_class": "scan",
+      "native_shape": [
+        16,
+        32,
+        32
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.5244299674267101,
+      "our_channels": [
+        "PRC-01"
+      ],
+      "our_fail_reasons": {
+        "PRC-01": "torch.float16: max_err=4.688e-02 > atol=2.206e-02"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    },
+    {
+      "id": "142",
+      "stratum": "RES-01",
+      "op_class": "matmul",
+      "native_shape": [
+        1,
+        5
+      ],
+      "out_dtype": "torch.float32",
+      "final_speedup": 0.8160237388724035,
+      "our_channels": [
+        "RES-01"
+      ],
+      "our_fail_reasons": {
+        "RES-01": "input device=cpu \u2192 output device=cuda"
+      },
+      "our_status": "gated",
+      "output_aliasing": false,
+      "ext_paper_era": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.01
+      },
+      "ext_hardened": {
+        "correct": true,
+        "trials_passed": 5,
+        "reason": "",
+        "atol": 0.0001
+      }
+    }
+  ]
+}

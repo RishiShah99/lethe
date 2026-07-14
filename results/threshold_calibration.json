@@ -1,0 +1,151 @@
+{
+  "op": "reference_forward_chunked_scan (C1)",
+  "shape": [
+    2,
+    64,
+    32
+  ],
+  "device": "cpu",
+  "note": "thresholds byte-identical to verifier/audit_harness gate_overrides; trip point = uniform multiplicative-error eps where the gate flips pass->fail",
+  "gates": [
+    {
+      "gate_id": "CMP-01",
+      "kind": "thresholded",
+      "rationale": "value correctness, output-scale-aware atol",
+      "honest_floor": 2.852858407216819e-07,
+      "trip_point": 4.206777862350292e-05,
+      "real_error_onset": 0.0024050312037212883,
+      "trip_sweep": {
+        "last_pass_eps": 3.91234346722825e-05,
+        "first_fail_eps": 4.523370744772096e-05,
+        "trip_point": 4.206777862350292e-05
+      },
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "margin_trip_over_floor": 147.45834744929823,
+      "margin_onset_over_trip": 57.17038746556533,
+      "clean_separation": true
+    },
+    {
+      "gate_id": "CMP-03",
+      "kind": "thresholded",
+      "rationale": "shape polymorphism, same scaled value atol at each variant",
+      "honest_floor": 2.852858407216819e-07,
+      "trip_point": 4.206777862350292e-05,
+      "real_error_onset": 0.0024050312037212883,
+      "trip_sweep": {
+        "last_pass_eps": 3.91234346722825e-05,
+        "first_fail_eps": 4.523370744772096e-05,
+        "trip_point": 4.206777862350292e-05
+      },
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "margin_trip_over_floor": 147.45834744929823,
+      "margin_onset_over_trip": 57.17038746556533,
+      "clean_separation": true
+    },
+    {
+      "gate_id": "ORD-01",
+      "kind": "thresholded",
+      "rationale": "reduction-order tolerance = 4*eps*sqrt(N)*scale",
+      "honest_floor": 2.852858407216819e-07,
+      "trip_point": 3.147017512392533e-05,
+      "real_error_onset": 0.0024050312037212883,
+      "trip_sweep": {
+        "last_pass_eps": 2.926756251156816e-05,
+        "first_fail_eps": 3.383855153428233e-05,
+        "trip_point": 3.147017512392533e-05
+      },
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "margin_trip_over_floor": 110.31103066424838,
+      "margin_onset_over_trip": 76.42255545927526,
+      "clean_separation": true
+    },
+    {
+      "gate_id": "ORD-03",
+      "kind": "thresholded",
+      "rationale": "non-commutative reduction on catastrophic-cancellation input",
+      "honest_floor": 2.852858407216819e-07,
+      "trip_point": 0.0010244816918434088,
+      "real_error_onset": 0.0012732202335210864,
+      "trip_sweep": {
+        "last_pass_eps": 0.0009527777281159314,
+        "first_fail_eps": 0.0011015819387358995,
+        "trip_point": 0.0010244816918434088
+      },
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "margin_trip_over_floor": 3591.070938718157,
+      "margin_onset_over_trip": 1.2427945210324922,
+      "clean_separation": true
+    },
+    {
+      "gate_id": "PRC-02",
+      "kind": "thresholded",
+      "rationale": "fp16 accumulator loses ~sqrt(N)*scale; fp32 accumulator stays under atol=2e-2",
+      "threshold_atol_scaled": 0.02,
+      "stressor": "non-contractive cumsum (the reduction regime PRC-02 targets)",
+      "sweep_over_N": [
+        {
+          "seq_len": 64,
+          "fp32_carry_passes": true,
+          "fp16_carry_fails": false,
+          "fp16_carry_rel_err": 0.001711244882718772
+        },
+        {
+          "seq_len": 512,
+          "fp32_carry_passes": true,
+          "fp16_carry_fails": false,
+          "fp16_carry_rel_err": 0.009014661277454277
+        },
+        {
+          "seq_len": 2048,
+          "fp32_carry_passes": true,
+          "fp16_carry_fails": true,
+          "fp16_carry_rel_err": 0.03514032559092086
+        },
+        {
+          "seq_len": 8192,
+          "fp32_carry_passes": true,
+          "fp16_carry_fails": true,
+          "fp16_carry_rel_err": 0.19087345570918654
+        }
+      ],
+      "clean_separation": true
+    },
+    {
+      "gate_id": "EXC-01",
+      "kind": "tolerance_free",
+      "rationale": "NaN/+Inf/-Inf position masks compared by exact equality",
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "defect": "masked load other=0 swallows a propagating NaN/Inf",
+      "clean_separation": true
+    },
+    {
+      "gate_id": "EXC-02",
+      "kind": "tolerance_free",
+      "rationale": "subnormal zero-mask compared by exact equality",
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "defect": "flush-to-zero of subnormal outputs the reference preserves",
+      "clean_separation": true
+    },
+    {
+      "gate_id": "ORD-02",
+      "kind": "tolerance_free",
+      "rationale": "5 calls on identical input compared byte-for-byte",
+      "honest_passes_gate": true,
+      "defect_fails_gate": true,
+      "defect": "fresh RNG perturbation each call (non-deterministic output)",
+      "clean_separation": true
+    }
+  ],
+  "summary": {
+    "n_gates": 8,
+    "n_thresholded": 5,
+    "n_tolerance_free": 3,
+    "all_clean_separation": true
+  }
+}

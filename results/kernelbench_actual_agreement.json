@@ -1,0 +1,121 @@
+{
+  "purpose": "agreement between KernelBench's ACTUAL eval and our replica (paper-era)",
+  "kernelbench_commit": "48642c5c",
+  "joined_rows": 1030,
+  "skipped_kb_unusable": 0,
+  "cells_their_vs_our_replica": {
+    "their_pass_our_pass": 844,
+    "their_pass_our_fail": 7,
+    "their_fail_our_pass": 8,
+    "their_fail_our_fail": 171
+  },
+  "agreement_rate": 0.9854,
+  "n_disagreements": 15,
+  "disagreements": [
+    {
+      "id": "405",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "1448",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "1109",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "1918",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "2324",
+      "op_class": "norm",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'max_difference': ['1.151850'], 'avg_difference': ['0.573657'], 'correctness_issue': 'Output mismatch', 'correct"
+    },
+    {
+      "id": "245",
+      "op_class": "softmax",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'max_difference': ['0.672503'], 'avg_difference': ['0.046961'], 'correctness_issue': 'Output mismatch', 'correct"
+    },
+    {
+      "id": "489",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "1811",
+      "op_class": "matmul",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'runtime_error': 'Subtraction, the `-` operator, with two bool tensors is not supported. Use the `^` or `logical"
+    },
+    {
+      "id": "1405",
+      "op_class": "scan",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'max_difference': ['4.359551', '4.998608', '4.641034', '3.536331'], 'avg_difference': ['0.570891', '0.574539', '"
+    },
+    {
+      "id": "234",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "2332",
+      "op_class": "softmax",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'max_difference': ['0.138453', '0.140684', '0.104099', '0.132405', '0.121427'], 'avg_difference': ['0.003846', '"
+    },
+    {
+      "id": "836",
+      "op_class": "conv",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'max_difference': ['4.855021'], 'avg_difference': ['0.000048'], 'correctness_issue': 'Output mismatch', 'correct"
+    },
+    {
+      "id": "929",
+      "op_class": "norm",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'runtime_error': \"at 26:12:\\n    # Starting row index for this program's group\\n    start_row = pid_grp * GROUP_"
+    },
+    {
+      "id": "2095",
+      "op_class": "norm",
+      "their_correct": true,
+      "our_replica_correct": false,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'correctness_trials': '(5 / 5)'}"
+    },
+    {
+      "id": "2201",
+      "op_class": "reduction",
+      "their_correct": false,
+      "our_replica_correct": true,
+      "their_reason": "{'hardware': 'NVIDIA B200', 'device': 'cuda:0', 'max_difference': ['5.096638', '5.276818', '5.084324', '5.177947'], 'avg_difference': ['0.398256', '0.412762', '"
+    }
+  ]
+}

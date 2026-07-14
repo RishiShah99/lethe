@@ -1,0 +1,560 @@
+{
+  "device": "cuda",
+  "cuda_name": "NVIDIA H100 80GB HBM3",
+  "scalar_reduction_vs_fla_naive": {
+    "available": true,
+    "rows": [
+      {
+        "shape": [
+          1,
+          64,
+          2,
+          16,
+          16
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 1.3877787807814457e-16,
+        "indep_tol": 1e-09,
+        "err_fla": 1.0325965309893048e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          128,
+          4,
+          32,
+          32
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 1.6653345369377348e-16,
+        "indep_tol": 1e-09,
+        "err_fla": 2.3904747936676074e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          256,
+          8,
+          64,
+          64
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 1.1102230246251565e-16,
+        "indep_tol": 1e-09,
+        "err_fla": 1.880528839037776e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          512,
+          4,
+          128,
+          128
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 5.898059818321144e-17,
+        "indep_tol": 1e-09,
+        "err_fla": 1.0192614983972614e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          512,
+          16,
+          128,
+          128
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 1.249000902703301e-16,
+        "indep_tol": 1e-09,
+        "err_fla": 6.049282565145919e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          1024,
+          2,
+          128,
+          128
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 6.938893903907228e-17,
+        "indep_tol": 1e-09,
+        "err_fla": 1.2622546138874036e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          2048,
+          4,
+          64,
+          64
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 1.6653345369377348e-16,
+        "indep_tol": 1e-09,
+        "err_fla": 3.5226707942315194e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          3,
+          128,
+          6,
+          96,
+          96
+        ],
+        "dtype": "torch.float64",
+        "err_indep": 8.326672684688674e-17,
+        "indep_tol": 1e-09,
+        "err_fla": 2.1037340064422594e-07,
+        "fla_tol": 1e-05,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          64,
+          2,
+          16,
+          16
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 7.450580596923828e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 7.450580596923828e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          128,
+          4,
+          32,
+          32
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 7.450580596923828e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 8.940696716308594e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          256,
+          8,
+          64,
+          64
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 5.960464477539063e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 5.960464477539063e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          512,
+          4,
+          128,
+          128
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 2.9802322387695312e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 2.9802322387695312e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          512,
+          16,
+          128,
+          128
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 6.705522537231445e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 6.705522537231445e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          1024,
+          2,
+          128,
+          128
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 3.725290298461914e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 3.725290298461914e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          2048,
+          4,
+          64,
+          64
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 8.195638656616211e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 8.195638656616211e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      },
+      {
+        "shape": [
+          3,
+          128,
+          6,
+          96,
+          96
+        ],
+        "dtype": "torch.float32",
+        "err_indep": 3.725290298461914e-08,
+        "indep_tol": 0.0001,
+        "err_fla": 3.725290298461914e-08,
+        "fla_tol": 0.0001,
+        "passed": true
+      }
+    ],
+    "all_passed": true
+  },
+  "chunk_kernel_vs_fla": {
+    "available": true,
+    "rows": [
+      {
+        "shape": [
+          1,
+          64,
+          2,
+          16,
+          16
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.0006575188661952502,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          128,
+          4,
+          32,
+          32
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.0006590902401098775,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          256,
+          8,
+          64,
+          64
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.00037667081912556855,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          512,
+          4,
+          128,
+          128
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.00029034524238119586,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          512,
+          16,
+          128,
+          128
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.0003051372868744795,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          1024,
+          2,
+          128,
+          128
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.00028230818599334073,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          2048,
+          4,
+          64,
+          64
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.0005362476898273516,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          3,
+          128,
+          6,
+          96,
+          96
+        ],
+        "dtype": "torch.float32",
+        "max_err_rel": 0.00023096424780805203,
+        "tol": 0.02,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          64,
+          2,
+          16,
+          16
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0023202211732785416,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          128,
+          4,
+          32,
+          32
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0025988803624499845,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          256,
+          8,
+          64,
+          64
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0012451312253822788,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          512,
+          4,
+          128,
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0010830536691383633,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          512,
+          16,
+          128,
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0010409073074255787,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          2,
+          1024,
+          2,
+          128,
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0009602161230577999,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          1,
+          2048,
+          4,
+          64,
+          64
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0018388033685722283,
+        "tol": 0.08,
+        "passed": true
+      },
+      {
+        "shape": [
+          3,
+          128,
+          6,
+          96,
+          96
+        ],
+        "dtype": "torch.bfloat16",
+        "max_err_rel": 0.0009990167566566177,
+        "tol": 0.08,
+        "passed": true
+      }
+    ],
+    "all_passed": true
+  },
+  "determinism": {
+    "all_passed": true,
+    "rows": [
+      {
+        "shape": [
+          1,
+          64,
+          2,
+          16,
+          16
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          2,
+          128,
+          4,
+          32,
+          32
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          1,
+          256,
+          8,
+          64,
+          64
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          2,
+          512,
+          4,
+          128,
+          128
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          1,
+          512,
+          16,
+          128,
+          128
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          4,
+          256,
+          8,
+          64,
+          128
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          2,
+          1024,
+          2,
+          128,
+          128
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          1,
+          2048,
+          4,
+          64,
+          64
+        ],
+        "bitwise_equal": true
+      },
+      {
+        "shape": [
+          3,
+          128,
+          6,
+          96,
+          96
+        ],
+        "bitwise_equal": true
+      }
+    ]
+  },
+  "GO": true
+}

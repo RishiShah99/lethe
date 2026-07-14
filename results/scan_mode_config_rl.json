@@ -1,0 +1,47 @@
+{
+  "experiment": "E2.c config-RL: does a GRPO policy learn to select scan_mode/chunk_len per shape?",
+  "box": "gpu-flash-mamba-rl a4-highgpu-8g 8xB200 spot, europe-north1-b (relocated from us-east1-b via snapshot)",
+  "run": {
+    "driver": "scratch/e2_config_rl.py",
+    "policy": "Qwen/Qwen2.5-Coder-32B-Instruct (fresh, no adapter)",
+    "steps_per_level": 14,
+    "k": 7,
+    "temperature": 1.1,
+    "kl_coef": 0.04,
+    "baseline": "shipped serial-default heuristic (speedup measured vs it, same path as the RL reward)",
+    "completed": true,
+    "levels_completed": 6
+  },
+  "per_level": [
+    {"op": "backward_selective_scan", "batch": 2, "seq_len": 16384, "width": 1024, "regime": "long-L", "late_mode": "chunk_parallel", "late_mode_frac": 1.0, "serial_sampled": false, "late_mean_reward": 3.697, "best_speedup": 7.26},
+    {"op": "backward_selective_scan", "batch": 8, "seq_len": 2048, "width": 2048, "regime": "saturated", "late_mode": "chunk_parallel", "late_mode_frac": 1.0, "serial_sampled": false, "late_mean_reward": 2.179, "best_speedup": 1.24},
+    {"op": "fused_block_backward", "batch": 2, "seq_len": 16384, "width": 1024, "regime": "long-L", "late_mode": "chunk_parallel", "late_mode_frac": 1.0, "serial_sampled": false, "late_mean_reward": 3.913, "best_speedup": 7.02},
+    {"op": "fused_block_backward", "batch": 8, "seq_len": 2048, "width": 2048, "regime": "saturated", "late_mode": "chunk_parallel", "late_mode_frac": 1.0, "serial_sampled": false, "late_mean_reward": 2.157, "best_speedup": 1.20},
+    {"op": "forward_chunked_scan", "batch": 2, "seq_len": 16384, "width": 1024, "regime": "long-L", "late_mode": "chunk_parallel", "late_mode_frac": 1.0, "serial_sampled": false, "late_mean_reward": 2.494, "best_speedup": 5.32},
+    {"op": "forward_chunked_scan", "batch": 8, "seq_len": 2048, "width": 2048, "regime": "saturated", "late_mode": "chunk_parallel", "late_mode_frac": 1.0, "serial_sampled": false, "late_mean_reward": 1.282, "best_speedup": 1.53}
+  ],
+  "saturated_mode_check": {
+    "note": "best-tuned serial vs best-tuned chunk_parallel at b8/L2048/d2048, scored through the same score_config_candidate path (driver scratch/e2_mode_check.py). speedup is vs the shipped serial default.",
+    "backward_selective_scan": {
+      "serial_default": 1.00,
+      "best_explicit_serial_tune": 0.96,
+      "chunk_parallel_best": 1.20,
+      "winner": "chunk_parallel"
+    },
+    "fused_block_backward": {
+      "serial_default": 1.00,
+      "best_explicit_serial_tune": 1.05,
+      "chunk_parallel_best": 1.18,
+      "winner": "chunk_parallel"
+    }
+  },
+  "verdict": {
+    "policy_learned": "chunk_parallel at every level (100% of late-step emissions); serial was never sampled",
+    "beats_shipped_default_at_all_6_shapes": true,
+    "speedup_range": "1.20-7.26x (long-L 5.3-7.3x, saturated 1.2-1.5x)",
+    "crossover_hypothesis": "FALSIFIED -- no shape-dependent serial<->chunk_parallel crossover survives joint chunk_len tuning. The follow-up mode-check shows tuned chunk_parallel >= best-tuned serial even at the saturated shape for BOTH backward ops. The prior rigor's 'serial best at saturated (chunk_parallel 0.85x)' was an artifact of a fixed/untuned chunk_len; with chunk_len~256 chunk_parallel wins everywhere tested.",
+    "caveat": "The policy never explored serial (narrow exploration at temperature 1.1), so this run alone shows 'commits to chunk_parallel, reward-optimal' rather than 'weighed serial and rejected it'. The independent mode-check confirms chunk_parallel is in fact optimal, so the policy's commitment is reward-correct.",
+    "implication": "chunk_parallel + chunk_len~256 + num_warps=4 is a candidate NEW DEFAULT for these SISO ops -- it beats the well-tuned shipped serial kernel at every tested shape incl saturated. Needs a broader shape sweep before changing the shipped default.",
+    "asset3": "Config-RL (RL-as-autotuner) genuinely beats the shipped hand-written kernel at all 6 shapes; all configs contract-clean (full gate battery per config, bug-routing bonus on the #904 backward ops)."
+  }
+}

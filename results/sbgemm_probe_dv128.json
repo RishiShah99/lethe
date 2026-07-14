@@ -1,0 +1,21 @@
+{
+  "shape": [
+    2,
+    2048,
+    8
+  ],
+  "d_v": 128,
+  "chunk_len": 64,
+  "full_bwd_ms": 92.71383666992188,
+  "closed_stageB_sbe_on_ms": 1.0596688270568848,
+  "closed_stageB_sbe_off_ms": 18.162028503417968,
+  "decomp": {
+    "four_gemms_ms": 0.2507936000823975,
+    "sbe_einsum_ms": 0.4635312080383301,
+    "finalize_glue_ms": 0.31766719818115235,
+    "sbe_kernel_used": true
+  },
+  "k1_rung_ms": 18.91336669921875,
+  "k2_rung_ms": 18.41681823730469,
+  "savefwd_ref_ms": 5.67
+}

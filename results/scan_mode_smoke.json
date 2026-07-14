@@ -1,0 +1,10 @@
+{
+  "description": "GPU smoke (B200) for the scan_mode selector: chunk_parallel vs serial via the public forward_chunked_scan. Correctness = agreement with serial (fp32, rel to output scale); fp64 algebra pinned by test_chunk_parallel_scan_replica. Speedup = t_serial / t_chunk_parallel.",
+  "rows": [
+    {"shape": "b2_l16384_d1024_n64", "chunk_len": 256, "max_abs_diff": 7.62939453125e-06, "rel_to_scale": 2.3722982932618543e-07, "t_serial_ms": 31.9512, "t_chunk_parallel_ms": 6.323, "speedup": 5.053},
+    {"shape": "b4_l16384_d2048_n64", "chunk_len": 256, "max_abs_diff": 7.62939453125e-06, "rel_to_scale": 2.2948756917472484e-07, "t_serial_ms": 32.0678, "t_chunk_parallel_ms": 22.5395, "speedup": 1.423},
+    {"shape": "b2_l1024_d1024_n64", "chunk_len": 128, "max_abs_diff": 5.7220458984375e-06, "rel_to_scale": 2.1308296747579714e-07, "t_serial_ms": 1.279, "t_chunk_parallel_ms": 0.498, "speedup": 2.569},
+    {"shape": "b8_l2048_d2048_n64", "chunk_len": 128, "max_abs_diff": 9.059906005859375e-06, "rel_to_scale": 2.9424605858953183e-07, "t_serial_ms": 3.9961, "t_chunk_parallel_ms": 5.6368, "speedup": 0.709}
+  ],
+  "finding": "chunk_parallel matches serial to ~2-3e-7 of scale (essentially exact fp32) and is the long-L/under-saturated lever (5.05x at b2/L16384/d1024); serial wins when SM-saturated (0.71x at b8/L2048/d2048). The shape-dependent crossover is the >1 reward signal a shape-aware mode selector / config-RL action can learn."
+}

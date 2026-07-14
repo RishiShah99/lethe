@@ -1,0 +1,30 @@
+{
+  "nt": 32,
+  "B": 2,
+  "H": 8,
+  "device": "NVIDIA B200",
+  "shape": {
+    "B": 2,
+    "H": 8,
+    "NT": 32,
+    "C": 64,
+    "d_k": 128,
+    "gscale": 1.0
+  },
+  "checks": [
+    {
+      "name": "dq_intra",
+      "scale_rel": 2.319898584346447e-07,
+      "finite": true,
+      "passed": true
+    },
+    {
+      "name": "dk_intra",
+      "scale_rel": 4.2628295204849564e-07,
+      "finite": true,
+      "passed": true
+    }
+  ],
+  "deterministic": true,
+  "GO": true
+}

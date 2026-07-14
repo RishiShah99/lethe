@@ -1,0 +1,82 @@
+{
+  "torch": "2.12.0+cu130",
+  "cuda": "13.0",
+  "device": "NVIDIA B200",
+  "capability": [
+    10,
+    0
+  ],
+  "TRITON_PRINT_AUTOTUNING": "1",
+  "triton": "3.7.0",
+  "introspection": {
+    "mamba_ssm_version": "2.3.2.post1",
+    "importable": {
+      "mamba_ssm.modules.mamba3": true,
+      "mamba_ssm.ops.triton.mamba3.mamba3_mimo_rotary_step": true,
+      "mamba_ssm.ops.triton.mamba3.angle_dt": true,
+      "mamba_ssm.ops.tilelang.mamba3.mamba3_mimo": true
+    }
+  },
+  "layer": {
+    "config": {
+      "d_model": 2048
+    },
+    "n_params": 26165632,
+    "defaults": {
+      "d_state": 128,
+      "headdim": 64,
+      "nheads": 64,
+      "mimo_rank": 1,
+      "chunk_size": 64
+    }
+  },
+  "runs": [
+    {
+      "batch": 2,
+      "seqlen": 2048,
+      "forward": "ok",
+      "backward": "ok",
+      "grad_norm": 15112.8271484375
+    },
+    {
+      "batch": 4,
+      "seqlen": 4096,
+      "forward": "ok",
+      "backward": "ok",
+      "grad_norm": 31954.18359375
+    }
+  ],
+  "evidence": {
+    "c7907": false,
+    "internal_compiler_error": false,
+    "ptxas_error": false,
+    "tmem_budget": true,
+    "tmem_mention": true,
+    "register_spill": false,
+    "out_of_resource": true,
+    "shared_memory": false
+  },
+  "evidence_matches": {
+    "tmem_budget": [
+      "Required: 544, Hardware limit: 512",
+      "Required: 544, Hardware limit: 512",
+      "Required: 544, Hardware limit: 512",
+      "Required: 544, Hardware limit: 512",
+      "Required: 544, Hardware limit: 512"
+    ],
+    "tmem_mention": [
+      "tensor memory",
+      "tensor memory",
+      "tensor memory",
+      "tensor memory",
+      "tensor memory"
+    ],
+    "out_of_resource": [
+      "out of resource",
+      "out of resource",
+      "out of resource",
+      "out of resource",
+      "out of resource"
+    ]
+  }
+}

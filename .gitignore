@@ -45,9 +45,11 @@ Thumbs.db
 
 # Project-local working dirs (one-off probes + raw run artifacts stay local)
 scratch/
-results/
 *.log
 wandb/
+
+# results/ IS tracked (the paper's evidence JSONs); raw box dumps + tarballs stay local
+results/**/*.tgz
 
 # fleet (GPU VM state + pulled artifacts)
 .fleet.json

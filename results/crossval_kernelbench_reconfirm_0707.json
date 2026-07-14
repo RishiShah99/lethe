@@ -1,0 +1,55 @@
+{
+  "corpus": "hkust-nlp/drkernel-coldstart-8k",
+  "population": "accepted_only (final_speedup>0)",
+  "joined_rows": 2638,
+  "cells_paper_era": {
+    "ext_pass_our_pass": 984,
+    "ext_pass_our_fail": 1482,
+    "ext_fail_our_pass": 15,
+    "ext_fail_our_fail": 157
+  },
+  "cells_hardened": {
+    "ext_pass_our_pass": 968,
+    "ext_pass_our_fail": 1257,
+    "ext_fail_our_pass": 31,
+    "ext_fail_our_fail": 382
+  },
+  "money_cell_external_PASS_our_FAIL": 1482,
+  "money_cell_rate": 0.5618,
+  "money_cell_tolerance_free": 954,
+  "money_cell_by_our_gate": {
+    "EXC-01": 825,
+    "CMP-01": 541,
+    "CMP-03": 341,
+    "PRC-02": 295,
+    "ORD-01": 294,
+    "PRC-01": 223,
+    "EXC-02": 190,
+    "ORD-03": 85,
+    "ORD-02": 80,
+    "RES-01": 42,
+    "pre_gate_or_crash_or_alias": 33
+  },
+  "worked_example_ids": [
+    "28",
+    "64",
+    "110",
+    "128",
+    "130",
+    "123",
+    "190",
+    "186",
+    "206",
+    "263",
+    "278",
+    "228",
+    "320",
+    "349",
+    "364",
+    "416",
+    "430",
+    "410",
+    "448",
+    "469"
+  ]
+}

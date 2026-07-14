@@ -1,0 +1,34 @@
+{
+  "claim": "#18 \u2014 Mamba3ECGClassifier forward+backward dispatches to the C5/C6 Triton path",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.12.0+cu130"
+  },
+  "runs": [
+    {
+      "dtype": "float32",
+      "n_layers": 3,
+      "forward_triton_launches": 3,
+      "forward_eager_launches": 0,
+      "backward_triton_serial_launches": 0,
+      "backward_triton_chunk_parallel_launches": 3,
+      "dispatched_to_triton_c5_c6": true
+    },
+    {
+      "dtype": "bfloat16",
+      "n_layers": 3,
+      "forward_triton_launches": 3,
+      "forward_eager_launches": 0,
+      "backward_triton_serial_launches": 0,
+      "backward_triton_chunk_parallel_launches": 3,
+      "dispatched_to_triton_c5_c6": true
+    }
+  ],
+  "resource_meta": {
+    "n_regs": 56,
+    "spill_bytes": 0,
+    "shared_bytes": 1024
+  },
+  "all_dispatched": true
+}

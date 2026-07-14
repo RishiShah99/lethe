@@ -1,0 +1,149 @@
+{
+  "claim": "native channel-wise GDN-2 backward wall-clock vs fla/cuLA (correctness+availability, not fastest; ours is host-orchestrated pre-fusion)",
+  "env": {
+    "gpu": "NVIDIA B200",
+    "capability": "10.0",
+    "torch": "2.11.0+cu128",
+    "triton": "3.6.0",
+    "python": "3.12.3"
+  },
+  "dtype": "bfloat16",
+  "runs": [
+    {
+      "shape": {
+        "batch": 1,
+        "seq_len": 512,
+        "nheads": 4,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_native_cw": {
+          "median_ms": 74.47881317138672,
+          "std_ms": 0.8362289025995421,
+          "min_ms": 73.66681671142578,
+          "max_ms": 75.33904266357422,
+          "n_trials": 3.0,
+          "note": "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
+        },
+        "fla_scalar": {
+          "median_ms": 0.865119993686676,
+          "std_ms": 0.012043398019636725,
+          "min_ms": 0.8511679768562317,
+          "max_ms": 0.9025279879570007,
+          "n_trials": 20.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      },
+      "fla_over_ours": 0.011615652248591925,
+      "cula_over_ours": null
+    },
+    {
+      "shape": {
+        "batch": 1,
+        "seq_len": 1024,
+        "nheads": 8,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_native_cw": {
+          "median_ms": 269.3223571777344,
+          "std_ms": 6.381596995387251,
+          "min_ms": 267.9268798828125,
+          "max_ms": 279.6116027832031,
+          "n_trials": 3.0,
+          "note": "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
+        },
+        "fla_scalar": {
+          "median_ms": 0.8815680146217346,
+          "std_ms": 0.19784143706404841,
+          "min_ms": 0.8585280179977417,
+          "max_ms": 1.5810879468917847,
+          "n_trials": 20.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      },
+      "fla_over_ours": 0.0032732819653734126,
+      "cula_over_ours": null
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 2048,
+        "nheads": 8,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_native_cw": {
+          "median_ms": 1010.0477905273438,
+          "std_ms": 4.982950746631662,
+          "min_ms": 1007.158935546875,
+          "max_ms": 1016.863525390625,
+          "n_trials": 3.0,
+          "note": "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
+        },
+        "fla_scalar": {
+          "median_ms": 0.8794560134410858,
+          "std_ms": 0.01413772835026236,
+          "min_ms": 0.849951982498169,
+          "max_ms": 0.9048320055007935,
+          "n_trials": 20.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      },
+      "fla_over_ours": 0.0008707073285927627,
+      "cula_over_ours": null
+    },
+    {
+      "shape": {
+        "batch": 2,
+        "seq_len": 4096,
+        "nheads": 4,
+        "d_k": 128,
+        "d_v": 128,
+        "chunk": 64
+      },
+      "dtype": "bfloat16",
+      "impls": {
+        "ours_native_cw": {
+          "median_ms": 1071.071044921875,
+          "std_ms": 9.807085567951873,
+          "min_ms": 1056.0772705078125,
+          "max_ms": 1074.5252685546875,
+          "n_trials": 3.0,
+          "note": "host-orchestrated (launch-bound, pre-fusion); re-stages forward; channel-wise"
+        },
+        "fla_scalar": {
+          "median_ms": 0.8784799873828888,
+          "std_ms": 0.011464743576746213,
+          "min_ms": 0.8559679985046387,
+          "max_ms": 0.8940479755401611,
+          "n_trials": 20.0,
+          "note": "fla scalar fused Triton backward (autograd.grad; fwd saved); scalar gate = less work"
+        }
+      },
+      "skipped": {
+        "cula": "Traceback (most recent call last):\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 233, in _run_shape\n    impls[name] = runner(inp, trials)\n                  ^^^^^^^^^^^^^^^^^^^\n  File \"/home/rishi_e3ahealth_com/flash-mamba-rl/src/flash_mamba_rl/bench/gdn2_backward_headtohead.py\", line 171, in _bench_cula\n    raise ImportError(\"cuLA chunked gated-delta backward not importable (tried cula/kda)\")\nImportError: cuLA chunked gated-delta backward not importable (tried cula/kda)\n"
+      },
+      "fla_over_ours": 0.0008201883446928266,
+      "cula_over_ours": null
+    }
+  ]
+}

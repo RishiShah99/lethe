@@ -1,0 +1,75 @@
+{
+  "run": "phase_e_curriculum_warmstart_v1",
+  "init_adapter": "sft_out/adapter_step_240 (SFT v1: 240 steps, 6 eager targets, loss 0.53->0.00)",
+  "policy": "Qwen/Qwen2.5-Coder-32B-Instruct + LoRA r16",
+  "k": 8,
+  "temperature": 1.0,
+  "reward_shaping": "view_fraction",
+  "per_level_cap": 60,
+  "baseline_coldstart": "same curriculum from base: 0 contract passes on every level reached (L0-L2), mean_r pinned at the 0.1 compile ceiling; artifacts at box phase_e_out_coldstart/",
+  "result": {
+    "level_idx": 6,
+    "levels": [
+      {
+        "op": "forward_chunked_scan",
+        "steps": 8,
+        "consecutive_at_threshold": 8,
+        "promoted": true,
+        "closed": true,
+        "best_mean_reward": 0.5,
+        "best_max_reward": 0.5,
+        "best_contract_rate": 1.0
+      },
+      {
+        "op": "complex_scan_rope",
+        "steps": 8,
+        "consecutive_at_threshold": 8,
+        "promoted": true,
+        "closed": true,
+        "best_mean_reward": 0.5,
+        "best_max_reward": 0.5,
+        "best_contract_rate": 1.0
+      },
+      {
+        "op": "fused_block_forward",
+        "steps": 8,
+        "consecutive_at_threshold": 8,
+        "promoted": true,
+        "closed": true,
+        "best_mean_reward": 0.5,
+        "best_max_reward": 0.5,
+        "best_contract_rate": 1.0
+      },
+      {
+        "op": "backward_selective_scan",
+        "steps": 8,
+        "consecutive_at_threshold": 8,
+        "promoted": true,
+        "closed": true,
+        "best_mean_reward": 0.4729166626930237,
+        "best_max_reward": 0.5,
+        "best_contract_rate": 0.75
+      },
+      {
+        "op": "mimo_backward",
+        "steps": 8,
+        "consecutive_at_threshold": 8,
+        "promoted": true,
+        "closed": true,
+        "best_mean_reward": 0.5,
+        "best_max_reward": 0.5,
+        "best_contract_rate": 1.0
+      },
+      {
+        "op": "fused_block_backward",
+        "steps": 8,
+        "consecutive_at_threshold": 8,
+        "promoted": true,
+        "closed": true,
+        "best_mean_reward": 0.5,
+        "best_max_reward": 0.5,
+        "best_contract_rate": 1.0
+      }
+    ]
+  }
+}

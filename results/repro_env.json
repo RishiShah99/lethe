@@ -1,0 +1,9 @@
+{
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "torch": "2.12.0+cpu",
+  "triton": null,
+  "numpy": "2.4.6",
+  "git_head": "99afd0b021474b8d56be0a5e652a938bdc85d69a",
+  "cuda_available": false
+}

@@ -1,0 +1,72 @@
+{
+  "phase": "0",
+  "purpose": "Gating recon for 'first native Blackwell tcgen05/TMEM CuTe training backward for GDN-2'. Pin competitor HEADs + record receipts. GO iff no public native sm_100 GDN-2 training backward exists AND cuLA's reverse inter-chunk state-recurrence backward is still Triton.",
+  "checked_on": "2026-06-28",
+  "verdict": "GO",
+  "verdict_rationale": "No public native sm_100 GDN-2 channel-wise training backward exists anywhere (NVlabs GDN-2 repo is Triton-only; cuLA has no csrc/gdn; fla GDN backward is Triton; flashinfer GDN is inference decode/prefill only). cuLA's reverse inter-chunk state recurrence backward (chunk_gated_delta_rule_bwd_dhu) is STILL imported from fla (Triton) at HEAD. Both GO conditions satisfied.",
+  "pins": {
+    "inclusionAI/cuLA": {
+      "head_sha": "6cacc37fd420e72c859c1dec6c870a13dc2a0e9a",
+      "head_date": "2026-06-25",
+      "head_subject": "ci: align pytorch version requirements in wheel build (#99)",
+      "license": "Apache-2.0",
+      "findings": {
+        "csrc_dirs": ["api", "cutlass", "kda", "kerutils"],
+        "csrc_gdn_present": false,
+        "csrc_kda_arches": ["sm100", "sm90"],
+        "reverse_state_kernel_still_triton": true,
+        "reverse_state_evidence": "cula/kda/chunk_bwd.py imports `from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_bwd_dhu` (the reverse inter-chunk dS recurrence) -- still Triton/fla.",
+        "wy_vjp_already_native_cutedsl_for_scalar_kda": true,
+        "wy_vjp_evidence": "cula/kda/chunk_bwd.py uses `chunk_kda_bwd_wy_dqkg_fused as ..._cutedsl` from cula.ops.chunk_wy_dqkg_sm100 -- the WY/triangular-inverse VJP is ALREADY native CuTe DSL, but only for SCALAR KDA (single beta), not GDN-2 channel-wise.",
+        "scope_refinement": "Of PROJECT_PLAN's 'two hard kernels': the reverse-state recurrence is clean whitespace (cuLA still Triton). The WY/triangular-inverse VJP is NOT whitespace for scalar KDA (cuLA shipped it in CuTe). It is new ONLY in its GDN-2 channel-wise form (db on key axis, dw on value axis)."
+      }
+    },
+    "NVlabs/GatedDeltaNet-2": {
+      "head_sha": "95709fc250357c2dd109361c353192f2aa5913f9",
+      "head_date": "2026-05-25",
+      "head_subject": "Update README.md",
+      "license": "NVIDIA non-commercial source (NC) -- math reference ONLY, never copy code",
+      "arxiv": "2605.22791",
+      "findings": {
+        "has_csrc_or_cuda": false,
+        "op_backend": "Triton only (lit_gpt/gdn2_ops/: chunk_gdn2.py [training chunkwise], chunk_kda.py, fused_recurrent_gdn2.py [decode])",
+        "docstring_quote": "The recurrence itself is implemented by the Triton kernels in gdn2_ops; this layer only prepares their inputs and consumes their outputs.",
+        "no_native_gdn2_backward": true
+      }
+    },
+    "fla-org/flash-linear-attention": {
+      "head_sha": "f7a1465b9f15a34b7a657b2824f3501e5741abcd",
+      "head_date": "2026-06-27",
+      "head_subject": "[Test] Add per-kernel torch baselines + tests for GDN kernels (#985)",
+      "license": "MIT",
+      "role": "correctness oracle (study + match)",
+      "findings": {
+        "gdn_backward_is_triton": true,
+        "three_complex_backward_kernels": ["chunk_bwd_dqkwg", "prepare_wy_repr_bwd", "chunk_gated_delta_rule_bwd_dhu"],
+        "tests": "tests/ops/test_gdn_kernels.py (41 tests pass on H100, Triton 3.7.1); tests/ops/test_gdn.py = full-bwd vs torch.autograd on naive reference",
+        "note": "requirements.txt of GDN-2 installs fla from git+https://github.com/sustcsonglin/flash-linear-attention (redirects here)."
+      }
+    },
+    "flashinfer-ai/flashinfer": {
+      "head_sha": null,
+      "role": "ruled out -- inference library, no training backward",
+      "findings": {
+        "gdn_paths": ["flashinfer/gdn_decode.py", "flashinfer/gdn_prefill.py", "flashinfer/gdn_kernels/blackwell/gdn_prefill.py", "flashinfer/gdn_kernels/delta_rule_dsl/"],
+        "any_backward_path": false,
+        "note": "PR #3001 added chunk_gated_delta_rule for Blackwell sm_100 but it is forward/prefill INFERENCE only. No backward. Irrelevant to a training backward claim."
+      }
+    }
+  },
+  "nearest_neighbors_disclosed": [
+    {
+      "name": "TileLang gdn example",
+      "what": "scalar-GDN forward + backward chunked kernels in TileLang DSL, validated against fla",
+      "why_not_falsifying": "TileLang DSL (compiles to CUDA via tile-level IR), NOT hand-written CuTe/tcgen05+TMEM; and it is scalar GDN, not GDN-2 channel-wise. Does not falsify 'first native CuTe tcgen05 GDN-2 training backward' but must be cited honestly in the writeup."
+    }
+  ],
+  "surviving_whitespace": [
+    "Native Blackwell (tcgen05+TMEM, CuTe DSL) reverse inter-chunk state-recurrence backward (dhu) -- even cuLA leaves this in Triton. Strongest 'first' claim.",
+    "GDN-2 channel-wise training backward in full (db on key axis, dw on value axis, per-channel decay) -- no native impl anywhere."
+  ],
+  "scope_correction_for_plan": "The WY/triangular-inverse VJP is NO LONGER generic whitespace -- cuLA already ships it in CuTe DSL for scalar KDA. Recalibrate the 'two hard kernels' framing: (1) reverse-state recurrence backward = clean whitespace; (2) WY VJP = new only in the GDN-2 channel-wise variant. The headline 'first native GDN-2 backward + the reverse-state kernel cuLA leaves in Triton' stands."
+}
