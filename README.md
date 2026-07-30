@@ -133,3 +133,6 @@ native `tcgen05` training backward for the GDN family, with the family reduction
 checked, not asserted; the first open Mamba-3 MIMO backward; and an RL loop that
 grades kernel generation on contract-grounded correctness before it ever rewards
 speed.
+
+## Acknowledgements
+Thank you to Google (GCP) and E3A Healthcare for providing the resources to run this project!
