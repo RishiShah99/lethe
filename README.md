@@ -1,5 +1,7 @@
 # Lethe
 
+Check out the paper on the whole project: https://doi.org/10.5281/zenodo.21563213
+
 Native Blackwell (`sm_100`) training kernels for the gated-linear-recurrence family, and a contract-grade verifier that measures the correctness gap in LLM-generated GPU kernels. 
 
 GPU kernels are the bottom of the AI stack. The leading post-transformer family
