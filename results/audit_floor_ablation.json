@@ -1,6 +1,6 @@
 {
   "corpus": "hkust-nlp/drkernel-coldstart-8k",
-  "purpose": "Appendix B.1 selection funnel and B.2 floor-composition ablation",
+  "purpose": "Evidence for paper Appendix B.1 (selection funnel, class sensitivity) and B.2 (floor channel composition)",
   "funnel": {
     "ssm_adjacent_classes": 3134,
     "accepted_final_speedup_gt_0": 2970,
@@ -11,15 +11,6 @@
       "reference_not_executable": 51,
       "toolchain_or_compile_artifact": 281
     }
-  },
-  "op_class_counts": {
-    "attention": 8,
-    "conv": 239,
-    "matmul": 751,
-    "norm": 352,
-    "reduction": 758,
-    "scan": 140,
-    "softmax": 390
   },
   "floor_channels": [
     "exc01",
@@ -36,38 +27,51 @@
     "pre_gate": 62,
     "exc02": 238
   },
-  "floor": {
-    "reported": {
-      "kernels": 1043,
-      "rate": 0.3954
+  "floor_reported": {
+    "kernels": 1043,
+    "denominator": 2638,
+    "rate": 0.3954
+  },
+  "floor_with_exc02": {
+    "kernels": 1154,
+    "denominator": 2638,
+    "rate": 0.4375
+  },
+  "class_sensitivity": {
+    "attention": {
+      "kernels": 8,
+      "own_floor_rate": 0.25,
+      "corpus_floor_without_class": 0.3958
     },
-    "without_exc01": {
-      "kernels": 229,
-      "rate": 0.0868
+    "conv": {
+      "kernels": 239,
+      "own_floor_rate": 0.3096,
+      "corpus_floor_without_class": 0.4039
     },
-    "without_ord02": {
-      "kernels": 961,
-      "rate": 0.3643
+    "matmul": {
+      "kernels": 751,
+      "own_floor_rate": 0.3422,
+      "corpus_floor_without_class": 0.4165
     },
-    "without_pre_gate": {
-      "kernels": 981,
-      "rate": 0.3719
+    "norm": {
+      "kernels": 352,
+      "own_floor_rate": 0.3466,
+      "corpus_floor_without_class": 0.4029
     },
-    "without_crash": {
-      "kernels": 1027,
-      "rate": 0.3893
+    "reduction": {
+      "kernels": 758,
+      "own_floor_rate": 0.591,
+      "corpus_floor_without_class": 0.3165
     },
-    "without_aliasing": {
-      "kernels": 1028,
-      "rate": 0.3897
+    "scan": {
+      "kernels": 140,
+      "own_floor_rate": 0.2714,
+      "corpus_floor_without_class": 0.4023
     },
-    "with_exc02": {
-      "kernels": 1154,
-      "rate": 0.4375
-    },
-    "with_exc02_without_exc01": {
-      "kernels": 402,
-      "rate": 0.1524
+    "softmax": {
+      "kernels": 390,
+      "own_floor_rate": 0.2615,
+      "corpus_floor_without_class": 0.4186
     }
   }
 }
