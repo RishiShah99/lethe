@@ -1,0 +1,73 @@
+{
+  "corpus": "hkust-nlp/drkernel-coldstart-8k",
+  "purpose": "Appendix B.1 selection funnel and B.2 floor-composition ablation",
+  "funnel": {
+    "ssm_adjacent_classes": 3134,
+    "accepted_final_speedup_gt_0": 2970,
+    "reference_executable": 2919,
+    "not_toolchain_artifact": 2638,
+    "dropped": {
+      "not_accepted": 164,
+      "reference_not_executable": 51,
+      "toolchain_or_compile_artifact": 281
+    }
+  },
+  "op_class_counts": {
+    "attention": 8,
+    "conv": 239,
+    "matmul": 751,
+    "norm": 352,
+    "reduction": 758,
+    "scan": 140,
+    "softmax": 390
+  },
+  "floor_channels": [
+    "exc01",
+    "ord02",
+    "aliasing",
+    "crash",
+    "pre_gate"
+  ],
+  "per_channel_rows": {
+    "exc01": 868,
+    "ord02": 126,
+    "aliasing": 25,
+    "crash": 16,
+    "pre_gate": 62,
+    "exc02": 238
+  },
+  "floor": {
+    "reported": {
+      "kernels": 1043,
+      "rate": 0.3954
+    },
+    "without_exc01": {
+      "kernels": 229,
+      "rate": 0.0868
+    },
+    "without_ord02": {
+      "kernels": 961,
+      "rate": 0.3643
+    },
+    "without_pre_gate": {
+      "kernels": 981,
+      "rate": 0.3719
+    },
+    "without_crash": {
+      "kernels": 1027,
+      "rate": 0.3893
+    },
+    "without_aliasing": {
+      "kernels": 1028,
+      "rate": 0.3897
+    },
+    "with_exc02": {
+      "kernels": 1154,
+      "rate": 0.4375
+    },
+    "with_exc02_without_exc01": {
+      "kernels": 402,
+      "rate": 0.1524
+    }
+  }
+}
