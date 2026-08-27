@@ -16,7 +16,8 @@ whole kernel space with a battery rigorous enough to falsify published work.
 Two `tcgen05` kernels in the CUTLASS CuTe DSL:
 
 - **K#1, reverse-state scan.** Carries the adjoint recurrence backward through the
-chunks, resident in TMEM. The novel piece.
+chunks: one TMEM reservation held across the whole reverse scan for the MMA
+accumulators, with the fp32 `dS` carry held outside TMEM. The novel piece.
 - **K#2, WY / triangular-inverse VJP.** Backward of the chunked delta-rule update,
 7 GEMMs per chunk on a `(128, 64, 128)` tile.
 
