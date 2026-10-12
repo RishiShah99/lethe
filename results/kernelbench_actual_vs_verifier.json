@@ -1,0 +1,15 @@
+{
+  "purpose": "KernelBench's own correctness code (unmodified correctness logic) against the contract verifier, on the kernels where both ran",
+  "kernelbench_commit": "48642c5c",
+  "kernelbench_rows": "results/kernelbench_actual_rows.jsonl",
+  "verifier_rows": "results/audit_rows.jsonl.gz",
+  "population": "rows of kernelbench_actual_rows.jsonl inside the 2,638 headline denominator (final_speedup > 0, not excluded, not a toolchain artifact; paper Appendix B)",
+  "joined_rows": 901,
+  "cells": {
+    "kb_pass_verifier_pass": 345,
+    "kb_pass_verifier_fail": 479,
+    "kb_fail_verifier_pass": 9,
+    "kb_fail_verifier_fail": 68
+  },
+  "kb_pass_rate": 0.9145
+}
